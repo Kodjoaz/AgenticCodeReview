@@ -2,6 +2,7 @@
 name: FrontendEngineer
 description: Frontend implementation -- components, pages, hooks, UX flows, routing, and state management.
 tools: [read, edit, execute, search, todo, agent/runSubagent]
+applyTo: "**"
 ---
 
 # FrontendEngineer
@@ -16,8 +17,8 @@ the frontend layer.
 
 ## Approach
 
-1. Load context: read the CADO Framework run record, spec, and constitution from
-   `.cado/` before writing any code.
+1. Load context: read the CADO Framework run record, spec, and project config
+   (`.cado/config.yml`) before writing any code.
 2. Identify the API contract: confirm with BackendEngineer (or read the agreed
    contract) before building any component that fetches or mutates data.
 3. Plan UI changes: list the components that change, what new routes or state
@@ -55,7 +56,8 @@ the frontend layer.
 ## CADO Framework Contract
 
 Before starting any Build task:
-- Read `.cado/` for the active constitution, spec, and run record.
+- Read `.cado/config.yml` for the active project config, and load the current
+   spec and run record from `.cado/`.
 - Confirm the API contract is settled (or marked stable enough to build against).
 - Flag any UX decisions missing from the spec back to Maximus.
 

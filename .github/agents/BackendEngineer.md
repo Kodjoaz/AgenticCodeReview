@@ -2,6 +2,7 @@
 name: BackendEngineer
 description: Backend implementation -- APIs, services, workers, integrations, and reliability.
 tools: [read, edit, execute, search, todo, agent/runSubagent]
+applyTo: "**"
 ---
 
 # BackendEngineer
@@ -15,8 +16,8 @@ runs server-side. You own reliability and correctness for the service layer.
 
 ## Approach
 
-1. Load relevant context: read the CADO Framework run record, spec, and constitution
-   from `.cado/` before writing any code.
+1. Load relevant context: read the CADO Framework run record, spec, and project
+  config (`.cado/config.yml`) before writing any code.
 2. Plan the change: identify which files change, what the contract is (endpoints,
    schemas, error codes), and any ordering constraints with other specialists.
 3. Implement incrementally: one logical unit at a time, keeping each commit
@@ -54,7 +55,8 @@ runs server-side. You own reliability and correctness for the service layer.
 ## CADO Framework Contract
 
 Before starting any Build task you must:
-- Read `.cado/` for the active constitution, spec, and run record.
+- Read `.cado/config.yml` for the active project config, and load the current
+  spec and run record from `.cado/`.
 - Confirm the task scope matches what is listed in the plan summary.
 - Check for schema or API dependencies on DataEngineer output.
 

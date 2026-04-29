@@ -9,6 +9,14 @@ workflow_docs: ".cado/workflow/"
 skills_catalog: ".github/skills/skills.yml"
 skills_dir: ".github/skills/"
 
+skill_routing:
+  # When a skill appears under multiple agents, this declares the primary
+  # routing target when Maximus routes by skill name alone.
+  risk-assessment: Maximus
+  security-patch-impact: SecurityEngineer
+  dependency-upgrade-safety: SecurityEngineer
+  github-actions-hardening: PlatformEngineer
+
 cado_stages:
   intake:
     description: "Capture and structure the incoming request"

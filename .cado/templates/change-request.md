@@ -1,72 +1,34 @@
-# Change Request
-
-> Use this template to submit a change request through the CADO Framework intake stage.
-> Complete all sections before routing to the Conductor.
-
----
+# CADO Framework Change Request
 
 ## Goal
 
-<!--
-State the primary objective in one or two sentences.
-What outcome do you need to achieve? Be specific about the end state.
--->
+Describe the desired outcome.
 
 ## Scope
 
-<!--
-List the systems, services, APIs, configurations, or components in scope.
-- Component A
-- Component B
--->
+Describe what is in scope for this change.
 
 ## Non-Goals
 
-<!--
-Explicitly state what is OUT of scope to prevent scope creep.
-- Not changing X
-- Not modifying Y
--->
+Describe what this change will not do.
 
 ## Constraints
 
-<!--
-List hard technical, business, or time constraints.
-- Must be backward-compatible with API v2
-- No downtime window available before 2026-06-01
-- Must pass SOC2 audit requirements
--->
+List technical, policy, schedule, or environment constraints.
 
 ## Acceptance Criteria
 
-<!--
-List concrete, verifiable conditions that define "done".
-Each criterion should be testable.
-- [ ] All existing integration tests pass
-- [ ] New endpoint returns 200 with correct schema
-- [ ] Deployment completes with zero downtime
--->
+List the conditions that must be true for the change to succeed.
 
 ## Risk Notes
 
-<!--
-Describe any known risks or unknowns.
-Conductor uses this to assign an initial risk tier (low / medium / high).
-- Risk: database migration may lock table for N seconds
-- Unknown: third-party API rate limit behavior under load
--->
+Record likely risks, unknowns, and risk tier hints.
 
-## Rollout / Rollback Needs
+## Rollout Needs
 
-<!--
-Describe any special rollout considerations or rollback procedures required.
-- Requires feature flag: FEATURE_XYZ
-- Rollback: revert migration with: alembic downgrade -1
--->
+Describe rollout sequencing, environment needs, or coordination needs.
 
----
+## Rollback Needs
 
-*Submitted by*: [NAME]
-*Date*: [DATE]
-*Priority*: [low | medium | high | critical]
+Describe how the change can be reversed if it fails.
 

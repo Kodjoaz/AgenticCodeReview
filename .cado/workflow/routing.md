@@ -2,6 +2,13 @@
 
 The Conductor routes work to specialists based on ownership, coupling, and risk. Routing should reduce ambiguity, not spread responsibility. Each specialist receives a bounded task, a required output, and a handoff target.
 
+## Routing Precedence
+
+This file is the canonical ownership authority. The `routing-matrix` skill
+provides model category hints and risk floor suggestions to assist Maximus, but
+does not override ownership decisions defined here. When they conflict, this
+file takes precedence.
+
 ## Specialist Routing
 
 Use the smallest specialist set that can safely complete the work.
@@ -11,7 +18,10 @@ Use the smallest specialist set that can safely complete the work.
 - Platform: infrastructure, deployment, config, runtime operations, CI/CD workflow automation, and observability
 - Security: auth, permissions, secret handling, cryptography, abuse controls, and governance policy checks
 - QA: test strategy, regression checks, release confidence, and evidence review
-- Docs: user docs, runbooks, change notes, and rollout communication
+- Docs: no standalone Docs specialist. Route by content type:
+  - User docs, release notes, changelog → ProductManager
+  - Runbooks, deployment guides, operational notes → PlatformEngineer
+  - Rollout communication → ProductManager
 
 Routing rules:
 

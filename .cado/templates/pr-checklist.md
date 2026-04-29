@@ -1,67 +1,43 @@
-# PR Checklist — CADO Framework
-
-> Complete this checklist before requesting review.
-> Every item in the applicable sections must be checked or explicitly waived with a reason.
-
----
+# CADO Framework PR Checklist
 
 ## Risk Tier
 
-- [ ] **Low** — No gate approval required. Self-reviewed.
-- [ ] **Medium** — Gate approval required from one designated reviewer.
-- [ ] **High** — Gate approval required from two reviewers, including a domain lead.
+- [ ] Low
+- [ ] Medium
+- [ ] High
 
-Assigned risk tier: `<!-- low | medium | high -->`
+## Approvals
 
----
+- [ ] Approval not required
+- [ ] `cado-approve` label present before Build
+- [ ] Extra reviewer or owner approval captured if local policy requires it
 
-## Stage Completion
+## Evidence
 
-- [ ] **Intake** — Change request is complete and matches this PR's scope
-- [ ] **Plan** — Plan summary exists (run record or inline) covering approach and rollback
-- [ ] **Gate** — Required approvals obtained for the assigned risk tier
-- [ ] **Build** — Implementation matches plan; no unplanned scope changes
-- [ ] **Prove** — Tests run and passing; coverage meets baseline
-- [ ] **Ship** — Deployment/merge steps documented; run record updated
-
----
-
-## Gate Approvals
-
-| Reviewer | Role | Approved At |
-|----------|------|-------------|
-| <!-- name --> | <!-- role --> | <!-- timestamp --> |
-| <!-- name --> | <!-- role --> | <!-- timestamp --> |
-
----
-
-## Evidence Checklist
-
-- [ ] Run record (`run-record.md` or inline) attached or linked
-- [ ] Test output or CI link provided
-- [ ] Affected components listed (services, routes, DB tables, config keys)
-- [ ] No new secrets or credentials committed in plaintext
-- [ ] Breaking changes documented (or confirmed: none)
-- [ ] Observability impact noted (new metrics, log lines, or traces — or confirmed: none)
-
----
+- [ ] Tests run or CI result recorded
+- [ ] Lint or format result recorded
+- [ ] Build or package result recorded if relevant
+- [ ] Security checks recorded if relevant
+- [ ] Migration and rollback notes recorded if relevant
+- [ ] Docs updates recorded if relevant
+- [ ] Evidence section is complete
 
 ## Rollback Notes
 
-<!--
-Describe how to revert this change if it must be rolled back after merge/deploy.
-If rollback is not applicable, state why.
--->
+- [ ] Rollback not required
+- [ ] Rollback steps documented
+- [ ] Operator impact documented
 
-Rollback procedure:
+## Evidence Section
+
+```md
+## Evidence
+
+- Category: <Tests | Lint | Build | Security | Migration | Docs>
+  Tool: <tool>
+  Command: <command or job>
+  Result: pass | fail | partial
+  Link: <optional>
+  Notes: <short outcome>
 ```
-<!-- e.g., git revert <sha>, or alembic downgrade -1, or toggle feature flag -->
-```
-
-Rollback owner: <!-- name or team -->
-
----
-
-*PR Author*: <!-- @handle -->
-*CADO Framework Run ID*: <!-- cado-run-YYYYMMDD-NNN or N/A -->
 

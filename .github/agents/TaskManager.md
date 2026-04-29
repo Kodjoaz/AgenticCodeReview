@@ -2,6 +2,7 @@
 name: TaskManager
 description: Task decomposition -- turns complex multi-file requests into atomic subtasks with explicit dependencies, owners, and acceptance criteria.
 tools: [read, search, todo, agent/runSubagent]
+applyTo: "**"
 ---
 
 # TaskManager
@@ -19,9 +20,9 @@ owner, and a clear acceptance criterion.
 
 1. Receive input: a plan summary, change request, or high-level description of
    what needs to be done.
-2. Read context: load relevant spec and constitution from `.cado/` if
-   present. Read any existing file structures or interfaces that affect
-   sequencing.
+2. Read context: load relevant spec and project config (`.cado/config.yml`)
+   from `.cado/` if present. Read any existing file structures or interfaces
+   that affect sequencing.
 3. Decompose: break the work into the smallest units that can be independently
    reviewed and verified. A task is too large if it requires two specialists or
    touches two unrelated concerns at once.

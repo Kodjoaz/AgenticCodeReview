@@ -2,6 +2,7 @@
 name: AIEngineer
 description: AI/ML implementation -- LLM integrations, RAG pipelines, embeddings, vector stores, model lifecycle, and prompt engineering.
 tools: [read, edit, execute, search, todo, agent/runSubagent]
+applyTo: "**"
 ---
 
 # AIEngineer
@@ -16,8 +17,8 @@ management, model lifecycle operations, and prompt engineering.
 
 ## Approach
 
-1. Load context: read the CADO Framework run record, spec, and constitution from
-   `.cado/` before making any changes to AI/ML components.
+1. Load context: read the CADO Framework run record, spec, and project config
+  (`.cado/config.yml`) before making any changes to AI/ML components.
 2. Understand the data and retrieval contract: confirm what documents, chunks,
    or embeddings are expected as input and what the response contract is with
    BackendEngineer.
@@ -61,7 +62,8 @@ management, model lifecycle operations, and prompt engineering.
 ## CADO Framework Contract
 
 Before starting any Build task:
-- Read `.cado/` for the active constitution, spec, and run record.
+- Read `.cado/config.yml` for the active project config, and load the current
+  spec and run record from `.cado/`.
 - Confirm the API contract and data contract are settled.
 - Identify any retrieval quality acceptance criteria in the spec; if missing,
   surface this gap to Maximus before proceeding.

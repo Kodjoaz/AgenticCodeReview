@@ -2,6 +2,7 @@
 name: ContextScout
 description: Fast read-only context discovery -- searches, reads, and returns the minimal file set needed to answer a question or start a task.
 tools: [read, search]
+applyTo: "**"
 ---
 
 # ContextScout

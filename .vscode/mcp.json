@@ -2,7 +2,23 @@
   "servers": {
     "github": {
       "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/"
+      "url": "https://api.githubcopilot.com/mcp/",
+      "startOnLaunch": true
+    },
+    "ado": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@azure-devops/mcp", "aienableapplication", "--authentication", "envvar"],
+      "startOnLaunch": true,
+      "env": {
+        "ADO_MCP_AUTH_TOKEN": ""
+      }
+    },
+    "azure": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@azure/mcp@latest", "server", "start"],
+      "startOnLaunch": true
     }
   }
 }

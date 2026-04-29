@@ -8,7 +8,14 @@ description: Use official Specify/Spec Kit workflow and canonical artifacts for 
 Purpose: Use official Spec Kit as a lightweight planning layer under the TIFINIA agent framework.
 
 Owner: ProductManager
-Used In: Phase 2 Define
+Used In: Plan stage (CADO)
+
+> **CADO path mapping**: When Spec Kit is active, the Spec Kit constitution at
+> `.specify/memory/constitution.md` serves as the project foundation document.
+> CADO specialist agents that reference "project config (`.cado/config.yml`)"
+> should also read `.specify/memory/constitution.md` when Spec Kit is the
+> active framework, as it contains the canonical project principles and stack
+> definition.
 
 ---
 

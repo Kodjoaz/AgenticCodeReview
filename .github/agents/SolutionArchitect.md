@@ -2,6 +2,7 @@
 name: SolutionArchitect
 description: Architecture -- cross-domain design, ADRs, breaking-change governance, and API contracts.
 tools: [read, edit, search, todo, agent/runSubagent]
+applyTo: "**"
 ---
 
 # SolutionArchitect
@@ -18,8 +19,8 @@ start without your prior review.
 
 ## Approach
 
-1. Load context: read the CADO Framework run record, spec, and constitution from
-   `.cado/` before making any architectural recommendation or decision.
+1. Load context: read the CADO Framework run record, spec, and project config
+  (`.cado/config.yml`) before making any architectural recommendation or decision.
 2. Assess scope: determine whether the change introduces a new service, modifies
    a cross-domain contract, or carries breaking-change risk for consumers.
 3. Design: produce a clear architecture description including: components
@@ -83,7 +84,8 @@ changes.
 ## CADO Framework Contract
 
 Before starting any design or review task:
-- Read `.cado/` for the active constitution, spec, and run record.
+- Read `.cado/config.yml` for the active project config, and load the current
+  spec and run record from `.cado/`.
 - Confirm whether an ADR is required for this change. If yes, produce the ADR
   before Maximus can proceed to Build.
 

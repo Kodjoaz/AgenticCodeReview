@@ -50,11 +50,25 @@ Add as many entries as needed. If a category is not relevant, say why it is not 
 - Partial results must explain what remains open.
 - A failed check is blocking unless the Conductor records an explicit exception and reason.
 
+## Baseline Passing Thresholds
+
+When no project-specific thresholds are defined in `.cado/config.yml`, apply
+these baselines:
+
+- Tests: all tests pass; no new failures introduced relative to the base branch.
+- Lint / format: no new violations; pre-existing violations may be recorded as
+  exceptions with owner and issue reference.
+- Build / package: clean build with no errors.
+- Security checks: no HIGH or CRITICAL severity findings left unaddressed.
+- Migration / rollback: both forward and rollback paths verified by test or
+  manual procedure; procedure documented.
+- Docs: updated when any user-visible behavior changes.
+
 ## Definition Of Done
 
 A run can move to Ship only when:
+
 - Required checks have been completed.
 - Evidence is recorded in a consistent format.
 - Risk-related proof is present when relevant.
 - Missing or failing evidence has been resolved or formally blocked.
-
