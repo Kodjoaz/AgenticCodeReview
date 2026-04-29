@@ -1,4 +1,4 @@
-please do review of enterprisemessagetransit in the file docs/EMT-DistinguishedEngineerReview.md
+please do review detail plan for enterprisemessagetransit
 Use the code source of EnterpriseMessageTransit as source of your review.
 Here are the list of review:
 Qualité du code
@@ -39,6 +39,10 @@ Débogabilité en production
 EMT revendique une architecture « transport-agnostic » mais son code courant ne tient pas cette promesse
 portabilité multi-hôte (Azure Functions / AKS / ARO) et multi-broker (Service Bus / Kafka Confluent / RabbitMQ).
 e jour où RAMQ décide de déplacer un domaine de Functions vers AKS, ou de remplacer Service Bus par Kafka pour un flux à haut débit, aucune ligne de code métier ne doit changer. Seule la configuration de démarrage bouge. C'est la définition concrète de la portabilité
+
+
+Toute ta revision doit etre sauver dans le fichier Docs/EMT-ReviewPlan.md
+
 
 
 Je veux plus de details sur chaque point pour qu'un développeur junior comprenne ton analyse.
