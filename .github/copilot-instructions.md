@@ -43,7 +43,7 @@ AgenticCodeReview/
 │   ├── prompts/         # CADO stage prompt stubs (intentionally minimal — DO NOT fill with content)
 │   ├── skills/          # CADO skill definitions
 │   └── workflows/       # CI/CD workflows
-├── Docs/                # Root-level documentation (UNTRACKED by git)
+├── Docs/                # Root-level documentation (tracked in git)
 │   ├── CADO-Upgrade.md
 │   └── Specs/           # Root-level spec copies (e.g. EMTReviewSpec.md)
 └── EnterpriseMessageTransit/   # .NET messaging library (C#, net8.0 / netstandard2.0)
@@ -60,8 +60,8 @@ AgenticCodeReview/
 - **Never fill these files with generated content.** They are not empty by mistake.
 - If you must restore them: `git checkout -- .github/prompts/`
 
-### `Docs/` — Untracked Root Documentation
-- The `Docs/` folder at the repository root is **not tracked by git**.
+### `Docs/` — Root Documentation
+- The `Docs/` folder at the repository root is **tracked in git**.
 - `Docs/Specs/` holds root-level copies of spec files for easy access.
 - When a user reports "specs/content missing", the issue is likely a file missing from `Docs/Specs/`, **not** empty prompt stubs.
 - Source of truth for specs is `EnterpriseMessageTransit/Docs/Specs/` (committed to git).
