@@ -1,0 +1,202 @@
+# CADO Framework Agent Registry
+# version: 0.2.0
+
+version: "0.2.0"
+updated: "2026-04-28"
+framework: cado
+signals_protocol: ".cado/signals/"
+workflow_docs: ".cado/workflow/"
+skills_catalog: ".github/skills/skills.yml"
+skills_dir: ".github/skills/"
+
+cado_stages:
+  intake:
+    description: "Capture and structure the incoming request"
+  plan:
+    description: "Decompose into tasks with specialist assignments"
+  gate:
+    description: "Risk-based approval check before build"
+  build:
+    description: "Specialist implementation lanes"
+  prove:
+    description: "Validation + evidence collection"
+  ship:
+    description: "Ship summary and handoff record"
+
+agents:
+  # Orchestration
+  - name: Maximus
+    role_id: conductor
+    display_name: Maximus
+    aliases:
+      - Maximus
+      - Conductor
+    file: Maximus.md
+    domain: orchestration
+    role: CADO Framework Orchestrator (Maximus)
+    priority: core
+    status: active
+    is_primary_coordinator: true
+    is_entry_agent: true
+    description: "Single entry orchestrator. Owns intake gating, stage transitions, risk classification, specialist routing, gate enforcement, and prove verification."
+    skills:
+      - requirements-clarity
+      - decomposition
+      - routing-matrix
+      - risk-assessment
+      - gate-enforcement
+      - evidence-validation
+
+  # Engineering
+  - name: BackendEngineer
+    file: BackendEngineer.md
+    domain: engineering
+    role: Backend Engineer
+    priority: core
+    status: active
+    description: "Backend APIs, services, workers, integrations, reliability."
+    skills:
+      - backend-delivery
+      - decomposition
+      - evidence-validation
+      - api-change-impact
+
+  - name: FrontendEngineer
+    file: FrontendEngineer.md
+    domain: engineering
+    role: Frontend Engineer
+    priority: core
+    status: active
+    description: "UI components, UX flows, routing, state management."
+    skills:
+      - frontend-delivery
+      - decomposition
+      - evidence-validation
+
+  - name: DataEngineer
+    file: DataEngineer.md
+    domain: engineering
+    role: Data Engineer
+    priority: core
+    status: active
+    description: "Database schemas, migrations, data contracts, data integrity."
+    skills:
+      - data-integrity
+      - decomposition
+      - evidence-validation
+
+  - name: AIEngineer
+    file: AIEngineer.md
+    domain: engineering
+    role: AI/ML Engineer
+    priority: core
+    status: active
+    description: "LLM integrations, RAG, embeddings, model lifecycle."
+    skills:
+      - ai-delivery
+      - decomposition
+      - evidence-validation
+
+  # Platform & Security
+  - name: PlatformEngineer
+    file: PlatformEngineer.md
+    domain: platform
+    role: Platform Engineer
+    priority: core
+    status: active
+    description: "Infrastructure, CI/CD, workflow automation, Docker/K8s, config governance, observability."
+    skills:
+      - platform-delivery
+      - risk-assessment
+      - evidence-validation
+      - ci-failure-triage
+      - dependency-upgrade-safety
+      - security-patch-impact
+      - github-actions-hardening
+
+  - name: SecurityEngineer
+    file: SecurityEngineer.md
+    domain: security
+    role: Security Engineer
+    priority: core
+    status: active
+    description: "Auth, RBAC, secrets, compliance, threat modeling, and governance policy review."
+    skills:
+      - security-review
+      - risk-assessment
+      - gate-enforcement
+      - dependency-upgrade-safety
+      - security-patch-impact
+      - governance-policy-review
+      - github-actions-hardening
+
+  # Quality
+  - name: QualityEngineer
+    file: QualityEngineer.md
+    domain: quality
+    role: Quality Engineer
+    priority: core
+    status: active
+    description: "Test strategy, coverage gates, evidence review, release readiness."
+    skills:
+      - quality-gates
+      - evidence-validation
+      - test-gap-detector
+      - docs-sync-checker
+      - release-notes-generator
+      - qa-adversarial-verification
+
+  # Product & Architecture
+  - name: ProductManager
+    file: ProductManager.md
+    domain: product
+    role: Product Manager
+    priority: core
+    status: active
+    description: "Requirements, roadmap, specs, release planning."
+    skills:
+      - requirements-clarity
+      - decomposition
+      - docs-sync-checker
+      - pr-review-summary
+      - release-notes-generator
+      - specification-contract-authoring
+
+  - name: SolutionArchitect
+    file: SolutionArchitect.md
+    domain: architecture
+    role: Solution Architect
+    priority: core
+    status: active
+    description: "End-to-end design, ADRs, cross-domain architecture decisions."
+    skills:
+      - architecture-governance
+      - risk-assessment
+      - decomposition
+      - api-change-impact
+      - specification-contract-authoring
+      - governance-policy-review
+
+  # Utility
+  - name: TaskManager
+    file: TaskManager.md
+    domain: utility
+    role: Task Manager
+    priority: utility
+    status: active
+    description: "Decomposes complex multi-file tasks into atomic subtasks with dependencies and agent assignments."
+    skills:
+      - decomposition
+      - routing-matrix
+
+  - name: ContextScout
+    file: ContextScout.md
+    domain: utility
+    role: Context Scout
+    priority: utility
+    status: active
+    description: "Fast read-only codebase and context discovery."
+    skills:
+      - context-discovery
+
+

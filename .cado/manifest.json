@@ -1,0 +1,11 @@
+{
+  "framework": "cado",
+  "version": "0.3.3",
+  "description": "Stage-based multi-agent delivery framework",
+  "installed_at": "2026-04-29T16:58:08Z",
+  "homepage": "https://github.com/Keayoub/cado",
+  "requires": {
+    "min_version": "0.1.0"
+  },
+  "files": {}
+}

@@ -1,0 +1,74 @@
+version: 1
+policy:
+  id: repo-gate-policy
+  extends: cado-default-v1
+  mode: report-only  # report-only | enforce
+  owners:
+    - platform-team
+
+approvals:
+  low:
+    required: false
+    min_reviewers: 0
+    required_labels: []
+  medium:
+    required: true
+    min_reviewers: 1
+    required_labels:
+      - cado-approve
+    required_roles:
+      - SolutionArchitect
+  high:
+    required: true
+    min_reviewers: 2
+    required_labels:
+      - cado-approve
+    required_roles:
+      - SecurityEngineer
+      - SolutionArchitect
+
+triggers:
+  - id: auth-change
+    when_paths:
+      - src/auth/**
+      - src/security/**
+    force_risk: high
+    require_roles:
+      - SecurityEngineer
+
+  - id: migration-change
+    when_paths:
+      - migrations/**
+      - src/db/**
+    force_risk: high
+    require_evidence:
+      - migration
+      - rollback
+
+  - id: ci-pipeline-change
+    when_paths:
+      - .github/workflows/**
+      - .cado/commands/**
+    min_risk: medium
+    require_roles:
+      - PlatformEngineer
+
+evidence:
+  required_categories:
+    - tests
+    - lint
+    - build
+  required_for_high:
+    - security
+    - rollback
+
+waivers:
+  allow: true
+  max_duration_days: 14
+  required_fields:
+    - waiver_id
+    - rule_id
+    - reason
+    - approved_by
+    - expires_at
+    - compensating_controls

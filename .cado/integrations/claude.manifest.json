@@ -1,0 +1,22 @@
+{
+  "integration": "claude",
+  "version": "0.2.0",
+  "agent_mode": true,
+  "prompt_dir": ".github/prompts",
+  "agent_dir": ".github/agents",
+  "prompt_prefix": "cado.",
+  "commands": [
+    "cado.intake",
+    "cado.plan",
+    "cado.gate",
+    "cado.build",
+    "cado.prove",
+    "cado.ship",
+    "cado.route",
+    "cado.evidence",
+    "cado.git.commit",
+    "cado.git.feature",
+    "cado.git.initialize"
+  ]
+}
+

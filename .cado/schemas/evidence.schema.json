@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/cado/schemas/evidence.schema.json",
+  "title": "CADO Framework Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "type",
+    "tool",
+    "result",
+    "timestamp"
+  ],
+  "properties": {
+    "type": {
+      "type": "string",
+      "description": "Evidence category such as Tests, Lint, Build, Security, Migration, or Docs."
+    },
+    "tool": {
+      "type": "string"
+    },
+    "command": {
+      "type": "string"
+    },
+    "result": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "partial"
+      ]
+    },
+    "link": {
+      "type": "string",
+      "format": "uri"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}
+

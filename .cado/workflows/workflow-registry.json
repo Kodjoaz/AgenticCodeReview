@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0",
+  "workflows": {
+    "cado": {
+      "name": "CADO Framework Staged Delivery",
+      "version": "0.1.0",
+      "description": "Runs intake -> plan -> gate -> build -> prove -> ship",
+      "source": "bundled",
+      "installed_at": "2026-04-29T16:58:08Z",
+      "updated_at": "2026-04-29T16:58:08Z"
+    }
+  }
+}

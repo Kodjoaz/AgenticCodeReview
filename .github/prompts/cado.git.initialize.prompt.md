@@ -1,0 +1,4 @@
+---
+agent: cado.git.initialize
+---
+

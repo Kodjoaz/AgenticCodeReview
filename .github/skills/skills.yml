@@ -1,0 +1,92 @@
+# CADO Framework Skill Catalog
+# version: 0.1.0
+# Referenced by src/agents/agents.yml via skills_catalog field.
+
+version: "0.1.0"
+updated: "2026-04-28"
+
+skills:
+  - id: requirements-clarity
+    description: "Elicits, structures, and validates requirements; identifies gaps and ambiguities before work begins."
+
+  - id: decomposition
+    description: "Breaks complex requests or features into atomic, assignable tasks with explicit dependencies."
+
+  - id: routing-matrix
+    description: "Determines correct specialist agent(s) for a given task based on domain ownership rules."
+
+  - id: risk-assessment
+    description: "Classifies task risk (blast radius, reversibility, security exposure) and applies appropriate gate thresholds."
+
+  - id: gate-enforcement
+    description: "Evaluates stage transition criteria; blocks or approves progression through CADO Framework stages."
+
+  - id: evidence-validation
+    description: "Verifies that completion evidence (test results, lint, build output) meets acceptance criteria."
+
+  - id: backend-delivery
+    description: "Implements and validates backend APIs, services, workers, and integrations."
+
+  - id: frontend-delivery
+    description: "Implements and validates UI components, UX flows, routing, and state management."
+
+  - id: data-integrity
+    description: "Designs and validates database schemas, migrations, data contracts, and tenant isolation."
+
+  - id: ai-delivery
+    description: "Implements and validates LLM integrations, RAG pipelines, embeddings, and model lifecycle operations."
+
+  - id: platform-delivery
+    description: "Manages infrastructure, CI/CD pipelines, Docker/K8s config, observability, and configuration governance."
+
+  - id: security-review
+    description: "Performs auth, RBAC, secrets, compliance, and threat-model analysis; gates security-sensitive changes."
+
+  - id: quality-gates
+    description: "Owns test strategy, coverage gates, evidence review, and release readiness assessment."
+
+  - id: architecture-governance
+    description: "Authors ADRs, enforces cross-domain design contracts, and governs breaking API/schema changes."
+
+  - id: context-discovery
+    description: "Fast read-only exploration of codebases, configs, and documentation to surface relevant context."
+
+  - id: ci-failure-triage
+    description: "Rapidly analyzes CI failures, proposes root-cause hypotheses, and defines a safe verification path."
+
+  - id: pr-review-summary
+    description: "Synthesizes PR purpose, change scope, review feedback, and go/no-go next actions."
+
+  - id: test-gap-detector
+    description: "Maps behavior changes to tests and flags meaningful coverage gaps before merge."
+
+  - id: dependency-upgrade-safety
+    description: "Assesses dependency upgrade risk, compatibility surface, and rollback readiness before adoption."
+
+  - id: docs-sync-checker
+    description: "Checks whether specs, docs, changelog, and runbooks stay aligned with shipped behavior."
+
+  - id: security-patch-impact
+    description: "Prioritizes security patching by exploitability, service exposure, and safe verification depth."
+
+  - id: api-change-impact
+    description: "Analyzes contract deltas, consumer break risk, and migration requirements for API changes."
+
+  - id: release-notes-generator
+    description: "Generates structured release notes with highlights, breaking changes, and operational guidance."
+
+  - id: governance-policy-review
+    description: "Reviews agent/tool flows for policy coverage, trust boundaries, and fail-closed governance controls."
+
+  - id: github-actions-hardening
+    description: "Hardens GitHub Actions with least privilege, immutable pinning, and secure execution patterns."
+
+  - id: specification-contract-authoring
+    description: "Authors machine-readable specs with explicit requirements, contracts, and validation criteria."
+
+  - id: qa-adversarial-verification
+    description: "Applies adversarial QA methods for reproducibility, boundary conditions, and risk-ranked findings."
+
+
+
+
