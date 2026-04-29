@@ -1,6 +1,0 @@
-D:\source\RCP-AzureMessageTransit\src\EnterpriseMessageTransit\obj\Debug\netstandard2.0\EnterpriseMessageTransit.csproj.AssemblyReference.cache
-D:\source\RCP-AzureMessageTransit\src\EnterpriseMessageTransit\obj\Debug\netstandard2.0\EnterpriseMessageTransit.GeneratedMSBuildEditorConfig.editorconfig
-D:\source\RCP-AzureMessageTransit\src\EnterpriseMessageTransit\obj\Debug\netstandard2.0\EnterpriseMessageTransit.AssemblyInfoInputs.cache
-D:\source\RCP-AzureMessageTransit\src\EnterpriseMessageTransit\obj\Debug\netstandard2.0\EnterpriseMessageTransit.AssemblyInfo.cs
-D:\source\RCP-AzureMessageTransit\src\EnterpriseMessageTransit\obj\Debug\netstandard2.0\EnterpriseMessageTransit.csproj.CoreCompileInputs.cache
-D:\source\RCP-AzureMessageTransit\src\EnterpriseMessageTransit\obj\Debug\netstandard2.0\EnterpriseMessageTransit.sourcelink.json
