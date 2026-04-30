@@ -1,56 +1,52 @@
 # CADO Framework Upgrade Guide
 
-uv tool install cado-cli --from git+https://github.com/Keayoub/cado-framework.git@v0.3.4 --force
-puis dans ton repo:
-cado upgrade
 This document describes how to upgrade the CADO Framework installation in this repository.
 
 ---
 
-## Prerequisites
+## Quick Upgrade (recommended)
 
-| Requirement | Minimum version | Notes |
-|-------------|----------------|-------|
-| Git | 2.30+ | Required to pull the cado-framework source |
-| uv | any | Used to install and run `cado-cli` |
-| cado-framework local clone | — | See step 1 |
+### Step 1 — Install or update cado-cli from GitHub
+
+```powershell
+uv tool install cado-cli --from git+https://github.com/Keayoub/cado-framework.git@v0.3.4 --force
+```
+
+Replace `v0.3.4` with the target version tag. This installs the CLI directly from the release without needing a local clone.
+
+### Step 2 — Upgrade the repo
+
+```powershell
+cd C:\Works\Agentic\AgenticCodeReview
+cado upgrade
+```
+
+`cado upgrade` detects the installed version, applies all framework files to the repo, and reports what changed.
 
 ---
 
-## Steps
+## Alternative: Upgrade from local clone
+
+Use this if you have a local clone of `cado-framework` and want to install from it.
 
 ### 1. Pull the latest cado-framework
-
-Navigate to your local clone of the CADO Framework repository and pull the latest changes:
 
 ```powershell
 cd C:\Works\Agentic\cado-framework
 git pull origin main
 ```
 
-Confirm the version in `VERSION`:
+### 2. Install cado-cli from local clone
 
 ```powershell
-Get-Content VERSION
+uv tool install --from . cado-cli --force
 ```
 
----
-
-### 2. Install (or update) cado-cli
-
-Install the CLI from the local checkout using `uv`:
-
-```powershell
-uv tool install --from . cado-cli
-```
-
-If already installed, `uv` will upgrade it automatically. Verify the installed version:
+Verify:
 
 ```powershell
 cado --version
 ```
-
----
 
 ### 3. Run the installer
 
