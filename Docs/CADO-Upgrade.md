@@ -1,5 +1,8 @@
 # CADO Framework Upgrade Guide
 
+uv tool install cado-cli --from git+https://github.com/Keayoub/cado-framework.git@v0.3.4 --force
+puis dans ton repo:
+cado upgrade
 This document describes how to upgrade the CADO Framework installation in this repository.
 
 ---
