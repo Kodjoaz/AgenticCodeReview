@@ -24,7 +24,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
         /// Steps[Cursor + 1] = étape suivante.
         /// </summary>
         [JsonPropertyName("steps")]
-        public required SlipStep[] Steps { get; init; }
+        public required IReadOnlyList<SlipStep> Steps { get; init; }
 
         /// <summary>
         /// Index 0-basé de l'étape en cours de traitement.

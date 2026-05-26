@@ -32,6 +32,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration
             _cache = new Lazy<(List<EndpointSettings>, List<EndpointSettings>, Dictionary<string, EndpointSettings>)>(() =>
             {
                 var endpoints = _config.AppSettings?.Endpoints ?? new List<EndpointSettings>();
+                ValidateDuplicateTargets(endpoints);
                 var topics = endpoints.Where(a => a.Endpoint?.EntityType == MessagingEntityType.Topic).ToList();
                 var queues = endpoints.Where(a => a.Endpoint?.EntityType == MessagingEntityType.Queue).ToList();
                 var producerIndex = endpoints

@@ -12,7 +12,6 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer;
 namespace RAMQ.Samples.Queue.RequestReply.Worker
 {
     public class DoWork : BackgroundService

@@ -48,7 +48,7 @@ var builder = new HostBuilder()
         services.ConfigureAzureProviders();
 
         // Producteur refonte
-        services.AddTransient<IMessageProducer<RequestMessage>>();
+        services.AddProducer<RequestMessage>();
         // Worker
         services.AddHostedService<DoWork>();
     });

@@ -454,8 +454,11 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             var msg = _adapter.GetMessage();
             var result = _serializer.DeserializeSafe<MessageTransitContext<T>>(msg?.Content?.ToString());
 
-            // Hydrate CorrelationId from the Service Bus envelope so the consumer always
-            // has access to the original MessageId, even after retries regenerated MessageId.
+            // Hydrate CorrelationId and Attempt from the Service Bus envelope.
+            // Même logique que RetryPolicyHandler.HandleExponentialRetryAsync :
+            //   - Session  : DeliveryCount (incrémenté par le broker sur chaque Abandon)
+            //   - No-session : ReferralCount (ApplicationProperty mis à jour lors du re-schedule)
+            //                  Fallback sur DeliveryCount si absent (ex: ImmediateRetry/Abandon).
             if (result.IsSuccess && result.Value != null && msg != null)
             {
                 if (string.IsNullOrWhiteSpace(result.Value.CorrelationId))
@@ -463,6 +466,22 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                     result.Value.CorrelationId = !string.IsNullOrWhiteSpace(msg.CorrelationId)
                         ? msg.CorrelationId
                         : msg.MessageId;
+                }
+
+                bool isSession = !string.IsNullOrWhiteSpace(msg.SessionId);
+                if (isSession)
+                {
+                    result.Value.Attempt = msg.DeliveryCount;
+                }
+                else
+                {
+                    int referralCount = 0;
+                    if (msg.ApplicationProperties.TryGetValue(AzureMessagingProperties.ReferralCount, out var rc))
+                    {
+                        if (rc is int i) referralCount = i;
+                        else if (rc is string s && int.TryParse(s, out var p)) referralCount = p;
+                    }
+                    result.Value.Attempt = referralCount + 1;
                 }
             }
 

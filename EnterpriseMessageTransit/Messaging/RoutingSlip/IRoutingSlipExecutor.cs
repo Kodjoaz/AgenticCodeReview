@@ -8,6 +8,15 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
     ///
     /// Une instance de ce type = une étape = un type TArgs.
     /// </summary>
+    /// <remarks>
+    /// <b>ProcessAsync et ExecuteAsync sont interchangeables</b> — les deux délèguent au même pipeline
+    /// interne. La distinction de nom est purement conventionnelle :
+    /// <list type="bullet">
+    ///   <item><description><c>ProcessAsync</c> — convention Queue (ServiceBusTrigger sur une file)</description></item>
+    ///   <item><description><c>ExecuteAsync</c> — convention Topic (ServiceBusTrigger sur un abonnement)</description></item>
+    /// </list>
+    /// N'utilisez qu'une seule méthode par Worker — le comportement est identique.
+    /// </remarks>
     public interface IRoutingSlipExecutor
     {
         /// <summary>

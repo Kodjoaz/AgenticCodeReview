@@ -26,10 +26,18 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
         /// <returns>La collection de services pour chaîner les appels.</returns>
         /// <example>
         /// <code>
-        /// // Dans Program.cs ou Startup.cs :
+        /// // Dans Program.cs :
         /// services.AddRoutingSlipActivity&lt;ValiderAdmissibiliteActivity, ValiderArgs&gt;("ValiderAdmissibilite");
         /// services.AddRoutingSlipActivity&lt;EnrichirDonneesActivity, EnrichirArgs&gt;("EnrichirDonnees");
-        /// services.AddRoutingSlipActivity&lt;NotifierBeneficiaireActivity, NotifierArgs&gt;("NotifierBeneficiaire");
+        ///
+        /// // Dans le Function trigger (résolution par clé = typeof(TArgs)) :
+        /// public async Task Run(
+        ///     [ServiceBusTrigger(...)] ServiceBusReceivedMessage message,
+        ///     [FromKeyedServices(typeof(ValiderArgs))] IRoutingSlipExecutor executor,
+        ///     CancellationToken ct)
+        /// {
+        ///     await executor.ProcessAsync(_provider, ct);
+        /// }
         /// </code>
         /// </example>
         public static IServiceCollection AddRoutingSlipActivity<TActivity, TArgs>(
@@ -44,8 +52,11 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
             // Activité — Scoped (1 par requête HTTP/message)
             services.TryAddScoped<IRoutingSlipActivity<TArgs>, TActivity>();
 
-            // Exécuteur associé — Scoped, lié à cette TActivity/TArgs
-            services.TryAddScoped<IRoutingSlipExecutor, RoutingSlipExecutor<TArgs>>();
+            // Exécuteur associé — Scoped, clé = typeof(TArgs).
+            // AddKeyedScoped (et non TryAddScoped sur IRoutingSlipExecutor non-générique) permet
+            // d'enregistrer plusieurs activités dans la même Function App sans collision :
+            // chaque Worker résout son executor via [FromKeyedServices(typeof(TArgs))].
+            services.AddKeyedScoped<IRoutingSlipExecutor, RoutingSlipExecutor<TArgs>>(typeof(TArgs));
 
             return services;
         }

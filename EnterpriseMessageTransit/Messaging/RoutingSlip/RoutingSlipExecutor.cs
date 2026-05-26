@@ -65,13 +65,13 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                 ?? throw new InvalidOperationException("SlipEnvelope.Message est null après désérialisation.");
 
             // 2. Valider le curseur
-            if (envelope.Cursor < 0 || envelope.Cursor >= envelope.Steps.Length)
+            if (envelope.Cursor < 0 || envelope.Cursor >= envelope.Steps.Count)
             {
                 _logger.LogError(
                     "RoutingSlipExecutor: curseur hors limites. Cursor={Cursor}, Total={Total}, SlipId={SlipId}",
-                    envelope.Cursor, envelope.Steps.Length, envelope.Header.SlipId);
+                    envelope.Cursor, envelope.Steps.Count, envelope.Header.SlipId);
                 await provider.DeadLetterMessageAsync(new InvalidOperationException(
-                    $"Curseur hors limites : {envelope.Cursor} / {envelope.Steps.Length}"), ct);
+                    $"Curseur hors limites : {envelope.Cursor} / {envelope.Steps.Count}"), ct);
                 return;
             }
 
@@ -104,13 +104,13 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                 Attempt       = ctx.Attempt,
                 StepName      = currentStep.Name,
                 StepIndex     = envelope.Cursor,
-                TotalSteps    = envelope.Steps.Length,
+                TotalSteps    = envelope.Steps.Count,
                 ClaimCheckToken = ctx.GetMessageToken()
             };
 
             _logger.LogInformation(
                 "RoutingSlipExecutor: début étape {Step} ({Index}/{Total}), SlipId={SlipId}, Attempt={Attempt}",
-                currentStep.Name, envelope.Cursor + 1, envelope.Steps.Length,
+                currentStep.Name, envelope.Cursor + 1, envelope.Steps.Count,
                 envelope.Header.SlipId, ctx.Attempt);
 
             // 5. Appeler l'activité
@@ -122,7 +122,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
             stepActivity?.SetTag("slip.name",     envelope.Header.SlipName);
             stepActivity?.SetTag("slip.step",     currentStep.Name);
             stepActivity?.SetTag("slip.cursor",   envelope.Cursor);
-            stepActivity?.SetTag("slip.total",    envelope.Steps.Length);
+            stepActivity?.SetTag("slip.total",    envelope.Steps.Count);
 
             try
             {
@@ -205,7 +205,19 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
             }
 
             // Enrichir les variables partagées
-            var mergedVariables = MergeVariables(envelope.Variables, next.EnrichVariables);
+            Dictionary<string, JsonElement> mergedVariables;
+            try
+            {
+                mergedVariables = MergeVariables(envelope.Variables, next.EnrichVariables);
+            }
+            catch (Exception ex) when (ex is JsonException or InvalidOperationException)
+            {
+                _logger.LogError(ex,
+                    "RoutingSlipExecutor: enrichissement des variables échoué à l'étape '{Step}', SlipId={SlipId}",
+                    envelope.CurrentStep.Name, envelope.Header.SlipId);
+                await provider.DeadLetterMessageAsync(ex, ct);
+                return;
+            }
 
             // Construire l'enveloppe suivante (immuable par construction)
             int nextCursor  = envelope.Cursor + 1;
@@ -236,7 +248,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
 
             _logger.LogInformation(
                 "RoutingSlipExecutor: avance vers '{Next}' ({NextIdx}/{Total}), SlipId={SlipId}",
-                nextStep.Name, nextCursor + 1, envelope.Steps.Length, envelope.Header.SlipId);
+                nextStep.Name, nextCursor + 1, envelope.Steps.Count, envelope.Header.SlipId);
 
             await provider.SendAsync(nextCtx, options, ct);
             await provider.CompleteMessageAsync(ct);
@@ -273,10 +285,10 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
         }
 
         /// <summary>Copie les étapes en marquant l'étape courante comme Completed.</summary>
-        private static SlipStep[] BuildUpdatedSteps(SlipStep[] steps, int completedCursor)
+        private static SlipStep[] BuildUpdatedSteps(IReadOnlyList<SlipStep> steps, int completedCursor)
         {
-            var updated = new SlipStep[steps.Length];
-            for (int i = 0; i < steps.Length; i++)
+            var updated = new SlipStep[steps.Count];
+            for (int i = 0; i < steps.Count; i++)
             {
                 updated[i] = i == completedCursor
                     ? steps[i] with { Status = SlipStepStatus.Completed }
@@ -287,10 +299,15 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
             return updated;
         }
 
+        private const int MaxVariableCount = 50;
+        private const int MaxVariableBytes  = 4096; // 4 Ko
+
         /// <summary>
         /// Fusionne les variables existantes avec les nouvelles valeurs de l'enrichissement.
         /// Les valeurs existantes sont préservées. Les nouvelles clés (ou écrasées) sont ajoutées.
         /// </summary>
+        /// <exception cref="InvalidOperationException">Si le nombre de clés dépasse 50 ou la taille sérialisée dépasse 4 Ko.</exception>
+        /// <exception cref="JsonException">Si une valeur de l'enrichissement ne peut pas être sérialisée en JSON.</exception>
         private static Dictionary<string, JsonElement> MergeVariables(
             Dictionary<string, JsonElement> existing,
             Action<IDictionary<string, object>>? enrich)
@@ -307,6 +324,16 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
             {
                 merged[kvp.Key] = JsonSerializer.SerializeToElement(kvp.Value);
             }
+
+            if (merged.Count > MaxVariableCount)
+                throw new InvalidOperationException(
+                    $"Variables limit exceeded: {merged.Count} clés (max {MaxVariableCount}).");
+
+            var serializedBytes = System.Text.Encoding.UTF8.GetByteCount(JsonSerializer.Serialize(merged));
+            if (serializedBytes > MaxVariableBytes)
+                throw new InvalidOperationException(
+                    $"Variables limit exceeded: {serializedBytes} octets sérialisés (max {MaxVariableBytes}).");
+
             return merged;
         }
     }

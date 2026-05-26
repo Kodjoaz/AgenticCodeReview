@@ -34,6 +34,12 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
         public CircuitBreakerManager(CircuitBreakerOptions options)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
+            if (options.FailureThreshold <= 0)
+                throw new ArgumentOutOfRangeException(nameof(options),
+                    $"FailureThreshold doit être supérieur à 0 (valeur reçue : {options.FailureThreshold}).");
+            if (options.OpenDuration <= TimeSpan.Zero)
+                throw new ArgumentOutOfRangeException(nameof(options),
+                    $"OpenDuration doit être une durée positive (valeur reçue : {options.OpenDuration}).");
         }
 
         /// <summary>

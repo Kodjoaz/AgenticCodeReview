@@ -19,6 +19,11 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
     ///     .AddStep("NotifierBeneficiaire", new NotifierArgs { Canal = "email" })
     ///     .Build();
     /// </example>
+    /// <remarks>
+    /// <b>Durée de vie :</b> instance à usage unique — créez un nouveau RoutingSlipBuilder par workflow.
+    /// Appelez <see cref="Build"/> une seule fois ; tout appel supplémentaire lève une <see cref="InvalidOperationException"/>.
+    /// <b>Thread-safety :</b> cette classe n'est pas thread-safe. Ne pas partager entre threads.
+    /// </remarks>
     public sealed class RoutingSlipBuilder
     {
         private static readonly JsonSerializerOptions _jsonOptions = new();
@@ -26,6 +31,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
         private readonly string _slipName;
         private readonly IEndpointResolver _endpointResolver;
         private readonly List<(string StepName, EndpointSettings Endpoint, JsonElement Args)> _steps = new();
+        private bool _built;
 
         /// <param name="slipName">Nom lisible du workflow. Apparaît dans les logs et métriques.</param>
         /// <param name="endpointResolver">Résout Target → EndpointSettings depuis AppSettings.Endpoints.</param>
@@ -69,6 +75,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
         /// <exception cref="InvalidOperationException">Si aucune étape n'a été ajoutée.</exception>
         public SlipEnvelope Build()
         {
+            if (_built)
+                throw new InvalidOperationException(
+                    "RoutingSlipBuilder: Build() ne peut être appelé qu'une seule fois. Créez un nouveau RoutingSlipBuilder pour un nouveau workflow.");
             if (_steps.Count == 0)
                 throw new InvalidOperationException("RoutingSlipBuilder: au moins une étape est requise.");
 
@@ -90,6 +99,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                 Status       = i == 0 ? SlipStepStatus.Active : SlipStepStatus.Pending
             }).ToArray();
 
+            _built = true;
             return new SlipEnvelope
             {
                 Header = new SlipHeader
