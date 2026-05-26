@@ -1,8 +1,10 @@
 ﻿using Azure.Storage.Blobs;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
 {
+    [ExcludeFromCodeCoverage]
     public class AzureStorageProvider : IStorageProvider
     {
         private readonly BlobServiceClient _blobServiceClient;

@@ -21,7 +21,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
         /// </summary>
         Task HandleImmediateRetryAsync(
             ServiceBusReceivedMessage message,
-            object actions,
+            IMessageSettlementActions actions,
             ImmediateRetryException exception,
             CancellationToken cancellationToken = default);
 
@@ -30,17 +30,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
         /// </summary>
         Task HandleExponentialRetryAsync(
             ServiceBusReceivedMessage message,
-            object actions,
+            IMessageSettlementActions actions,
             ExponentialRetryException exception,
-            CancellationToken cancellationToken = default);
-
-        /// <summary>
-        /// Envoie un message en Dead Letter avec contextualisation.
-        /// </summary>
-        Task HandleDeadLetterAsync(
-            ServiceBusReceivedMessage message,
-            object actions,
-            Exception exception,
             CancellationToken cancellationToken = default);
     }
 }

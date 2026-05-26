@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Threading.Tasks;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
@@ -9,7 +10,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
     /// <summary>
     /// Singleton cache for ServiceBusSender instances to allow reuse across stateless hosts (Azure Functions).
     /// </summary>
-    public class ServiceBusSenderCache : IAsyncDisposable
+    [ExcludeFromCodeCoverage]
+    internal class ServiceBusSenderCache : IAsyncDisposable
     {
         private readonly ConcurrentDictionary<string, ServiceBusSender> _cache = new();
         private readonly ConcurrentDictionary<string, object> _locks = new();
@@ -19,6 +21,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
         {
             _logger = logger;
         }
+
+        /// <summary>Nombre de senders actuellement en cache.</summary>
+        public long Count => _cache.Count;
 
         /// <summary>
         /// Retourne un <see cref="ServiceBusSender"/> mis en cache pour le couple (namespace, entité).

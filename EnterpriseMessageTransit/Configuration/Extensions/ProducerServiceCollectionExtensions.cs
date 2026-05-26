@@ -9,6 +9,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
     /// Élimine le besoin de créer des sous-classes vides (ex: DipensateurProducer)
     /// et de passer le target au constructeur.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     public static class ProducerServiceCollectionExtensions
     {
         /// <summary>

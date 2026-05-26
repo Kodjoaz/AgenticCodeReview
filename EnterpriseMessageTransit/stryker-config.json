@@ -1,0 +1,22 @@
+{
+  "stryker-config": {
+    "project": "EnterpriseMessageTransit.csproj",
+    "test-projects": [ "EnterpriseMessageTransit.Tests.csproj" ],
+    "mutation-level": "Standard",
+    "reporters": [ "html", "progress", "json" ],
+    "output-path": "StrykerOutput",
+    "threshold-high": 80,
+    "threshold-low": 70,
+    "threshold-break": 60,
+    "target-frameworks": [ "net8.0" ],
+    "mutate": [
+      "Messaging/RoutingSlip/StageAdvancer.cs",
+      "Messaging/Producer/Producer.cs",
+      "Messaging/Consumer/BaseConsumer.cs",
+      "Configuration/CircuitBreakerManager.cs"
+    ],
+    "ignored-mutations": [
+      "string"
+    ]
+  }
+}

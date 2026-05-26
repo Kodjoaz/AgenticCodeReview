@@ -1,4 +1,4 @@
-﻿namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
+namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
 {
     public class AzureServiceBusProviderOptions
     {
@@ -8,7 +8,5 @@
         public TimeSpan SessionIdleTimeout { get; set; } = TimeSpan.FromSeconds(10);
         public int MaxMessageSize { get; set; } = 256 * 1024;
         public TimeSpan ReplyTimeout { get; set; } = TimeSpan.FromMinutes(5);
-
-        //TODO: Ajouter ici toutes les options techniques nécessaires
     }
 }

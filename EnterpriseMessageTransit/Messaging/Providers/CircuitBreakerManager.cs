@@ -5,7 +5,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
     /// <summary>
     /// État du circuit breaker.
     /// </summary>
-    public enum CircuitState
+    internal enum CircuitState
     {
         /// <summary>Le circuit est fermé — les opérations passent normalement.</summary>
         Closed,
@@ -26,7 +26,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
     ///   Open → (après OpenDuration) → HalfOpen
     ///   HalfOpen → succès → Closed / échec → Open
     /// </summary>
-    public class CircuitBreakerManager
+    internal class CircuitBreakerManager
     {
         private readonly CircuitBreakerOptions _options;
         private readonly ConcurrentDictionary<string, CircuitEntry> _circuits = new();

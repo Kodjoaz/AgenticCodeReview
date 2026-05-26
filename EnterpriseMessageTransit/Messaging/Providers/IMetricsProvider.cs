@@ -71,4 +71,56 @@ public interface IMetricsProvider
     /// </summary>
     /// <param name="count">Nombre de senders en cache</param>
     void SetCachedSenders(long count);
+
+    // -------------------------------------------------------------------------
+    // Phase 2 (P2-A3) — métriques manquantes pour l'enveloppe opérationnelle
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Définit l'état courant du circuit breaker pour une entité (0=Closed, 1=Open, 2=HalfOpen).
+    /// </summary>
+    /// <param name="entityName">Entité Service Bus ciblée</param>
+    /// <param name="state">0 = Closed · 1 = Open · 2 = HalfOpen</param>
+    void SetCircuitState(string entityName, int state);
+
+    /// <summary>
+    /// Incrémente le compteur de transitions du circuit breaker.
+    /// </summary>
+    /// <param name="entityName">Entité Service Bus ciblée</param>
+    /// <param name="from">État de départ (Closed | Open | HalfOpen)</param>
+    /// <param name="to">État d'arrivée (Closed | Open | HalfOpen)</param>
+    void IncrementCircuitTransition(string entityName, string from, string to);
+
+    /// <summary>
+    /// Incrémente le compteur d'échecs de désérialisation.
+    /// </summary>
+    /// <param name="reason">Valeur de <see cref="Serialization.DeserializationFailureReason"/> (Malformed, TooLarge, Empty…)</param>
+    void IncrementDeserializationFailure(string reason);
+
+    /// <summary>
+    /// Enregistre la durée d'upload d'un blob claim-check (en millisecondes).
+    /// </summary>
+    /// <param name="durationMs">Durée en millisecondes</param>
+    /// <param name="entityName">Entité Service Bus associée</param>
+    void RecordClaimCheckUploadDuration(double durationMs, string entityName);
+
+    /// <summary>
+    /// Enregistre la durée de download d'un blob claim-check (en millisecondes).
+    /// </summary>
+    /// <param name="durationMs">Durée en millisecondes</param>
+    /// <param name="entityName">Entité Service Bus associée</param>
+    void RecordClaimCheckDownloadDuration(double durationMs, string entityName);
+
+    /// <summary>
+    /// Enregistre la durée d'écriture du journal (en millisecondes).
+    /// Permet de mesurer l'impact du pattern A5 (journal hors chemin critique).
+    /// </summary>
+    /// <param name="durationMs">Durée en millisecondes</param>
+    void RecordJournalWriteDuration(double durationMs);
+
+    /// <summary>
+    /// Incrémente le compteur de doublons détectés (message MessageId déjà traité).
+    /// </summary>
+    /// <param name="entityName">Entité Service Bus sur laquelle le doublon a été détecté</param>
+    void IncrementDuplicateDetected(string entityName);
 }

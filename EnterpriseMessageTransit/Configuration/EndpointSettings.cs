@@ -16,11 +16,11 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration
                 yield break;
             }
 
-            // La règle "Target requis" dépend du nombre d’audiences dans AppSettings.Itinerary.
+            // La règle "Target requis" dépend du nombre d'audiences dans AppSettings.Endpoints.
             // On tente de récupérer le parent AppSettings via validationContext.Items.
             if (validationContext.Items.TryGetValue("AppSettings", out var rootObj) && rootObj is AppSettings root)
             {
-                var count = root.Itinerary?.Count ?? 0;
+                var count = root.Endpoints?.Count ?? 0;
                 if (count > 1 && string.IsNullOrWhiteSpace(Target))
                 {
                     yield return new ValidationResult(

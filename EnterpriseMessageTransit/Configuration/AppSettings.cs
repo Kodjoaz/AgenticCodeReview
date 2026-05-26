@@ -10,7 +10,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration
         [Required] public string MessageTransitJournalName { get; set; } = default!;
         [Required] public string MessageTransitJournalStoreUri { get; set; } = default!;
         public string ConnectorUrl { get; set; } = default!;
-        [Required] public List<EndpointSettings> Itinerary { get; set; } = default!;
+        [Required] public List<EndpointSettings> Endpoints { get; set; } = default!;
         public ExponentialRetryPolicy? RetryPolicy { get; set; }
 
         /// <summary>
@@ -30,9 +30,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration
             {
                 yield return new ValidationResult("MessageTransitJournal is required.", new[] { nameof(MessageTransitJournalName) });
             }
-            if (Itinerary == null || Itinerary.Count == 0)
+            if (Endpoints == null || Endpoints.Count == 0)
             {
-                yield return new ValidationResult("Itinerary must contain at least one EndpointSettings.", new[] { nameof(Itinerary) });
+                yield return new ValidationResult("Endpoints must contain at least one EndpointSettings.", new[] { nameof(Endpoints) });
             }
         }
     }

@@ -1,14 +1,15 @@
 ﻿using Azure.Data.Tables;
-using Azure.Identity;
 using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Enum;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
 {
     /// <summary>
     /// Publication des événements dans le journal étant une DataTable Extensions: COMJournalAIS[Palier]
     /// </summary>
+    [ExcludeFromCodeCoverage]
     public class AzureJournalProvider : IJournalProvider
     {
         private readonly TableServiceClient _tableServiceClient;

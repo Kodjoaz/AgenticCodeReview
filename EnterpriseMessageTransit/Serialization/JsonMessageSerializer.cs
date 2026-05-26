@@ -16,6 +16,12 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Serialization
         // Cache JsonSerializerOptions instances to avoid recreating them per call.
         private static readonly JsonSerializerOptions s_serializeOptionsIndented = new JsonSerializerOptions { WriteIndented = true };
         private static readonly JsonSerializerOptions s_serializeOptionsCompact = new JsonSerializerOptions { WriteIndented = false };
+
+        static JsonMessageSerializer()
+        {
+            s_serializeOptionsIndented.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+            s_serializeOptionsCompact.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
+        }
         private static readonly JsonSerializerOptions s_deserializeOptions = new JsonSerializerOptions { MaxDepth = DefaultMaxDepth };
 
         public JsonMessageSerializer(IMessageTransitConfigurationService config, ILogger<JsonMessageSerializer> logger)

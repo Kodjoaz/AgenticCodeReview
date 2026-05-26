@@ -5,8 +5,8 @@ using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers;
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging
 {
     /// <summary>
-    /// Contexte de transit (refonte) sans couche de compatibilité legacy.
-    /// CurrentStage remplace définitivement l’ancien CurrentTarget.
+    /// Contexte de transit — enveloppe pivot entre Producer et Consumer.
+    /// Seuls les champs nécessaires au transport et à la traçabilité bout-en-bout voyagent en JSON.
     /// </summary>
     /// <typeparam name="TMessage">Représente le contenu de l'événement</typeparam>
     public class MessageTransitContext<TMessage> where TMessage : class
@@ -14,12 +14,31 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging
         public string? MessageType { get; set; }
         public TMessage? Message { get; set; }
         public string? MessageId { get; set; }
+
+        /// <summary>
+        /// Identifiant de corrélation immuable qui ne change jamais, même lors des retries.
+        /// Initialisé à la même valeur que MessageId lors de la publication.
+        /// Sur un retry exponentiel (no-session), MessageId est régénéré mais CorrelationId
+        /// continue de référencer le MessageId original pour la traçabilité de bout en bout.
+        /// </summary>
+        public string? CorrelationId { get; set; }
+
         public string? SessionId { get; set; }
+
+        /// <summary>
+        /// Numéro de séquence Service Bus. Affecté par le broker à la réception.
+        /// Omis de la sérialisation JSON lorsque sa valeur est 0 (côté Producer).
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public long SequenceNumber { get; set; }
+
+        /// <summary>
+        /// Numéro de tentative courante (retry). Incrémenté par EMT à chaque cycle de retry.
+        /// Omis de la sérialisation JSON lorsque sa valeur est 0 (premier essai).
+        /// </summary>
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public int Attempt { get; set; }
 
-        [JsonPropertyName("CurrentStage")]
-        public string? CurrentStage { get; internal set; }
         [JsonIgnore]
         public IMessageTransit? TransportMessage { get; set; }
         public List<TokenMessage>? Tokens { get; set; }
@@ -28,9 +47,6 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging
         public string? SerializedPayload { get; set; }
         [JsonIgnore]
         public bool IsClaimCheckApplied { get; set; }
-
-        // Setter rendu internal (au lieu de private) pour permettre l’affectation dans BaseProducer / BaseConsumer.
-        internal void SetCurrentStage(string? stage) => CurrentStage = stage;
 
         public TData? GetVariable<TData>(string key)
         {
@@ -69,15 +85,15 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging
         {
             return new MessageTransitContext<TResponse>
             {
-                MessageId       = MessageId,
-                SessionId       = SessionId,
-                CurrentStage    = CurrentStage,
-                SequenceNumber  = SequenceNumber,
-                Attempt         = Attempt,
-                Tokens          = Tokens,
-                Variables       = Variables,
+                MessageId        = MessageId,
+                CorrelationId    = CorrelationId,
+                SessionId        = SessionId,
+                SequenceNumber   = SequenceNumber,
+                Attempt          = Attempt,
+                Tokens           = Tokens,
+                Variables        = Variables,
                 TransportMessage = TransportMessage,
-                Message         = response
+                Message          = response
             };
         }
     }

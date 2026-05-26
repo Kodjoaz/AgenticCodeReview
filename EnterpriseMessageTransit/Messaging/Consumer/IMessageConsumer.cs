@@ -1,4 +1,6 @@
-﻿namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
+﻿using RAMQ.COM.EnterpriseMessageTransit.Serialization;
+
+namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
 {
     public interface IMessageConsumer<TMessage> where TMessage : class
     {
@@ -6,7 +8,7 @@
             MessageTransitContext<TMessage> context,
             CancellationToken cancellationToken);
 
-        bool TryDeserializeMessage<TPayload>(out MessageTransitContext<TPayload>? context) where TPayload : class;
+        Task<DeserializationResult<MessageTransitContext<TPayload>>> DeserializeMessageAsync<TPayload>(CancellationToken cancellationToken = default) where TPayload : class;
 
         Task DeadLetterMessageAsync(Exception exception, CancellationToken cancellationToken = default);
     }

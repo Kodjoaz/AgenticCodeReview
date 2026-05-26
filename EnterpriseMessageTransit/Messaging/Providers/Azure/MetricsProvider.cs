@@ -1,11 +1,13 @@
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure;
 
+using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
 
 /// <summary>
 /// Implémentation concrète des métriques custom via System.Diagnostics.Metrics.
 /// Expose des compteurs, histogrammes et jauges pour la monitoring avec OpenTelemetry/Application Insights.
 /// </summary>
+[ExcludeFromCodeCoverage]
 public class MetricsProvider : IMetricsProvider
 {
     private static readonly Meter s_meter = new("RAMQ.COM.EnterpriseMessageTransit", "1.0.0");
@@ -48,6 +50,34 @@ public class MetricsProvider : IMetricsProvider
     private readonly ObservableGauge<long> _cachedSenders;
     private long _cachedSendersCount = 0;
 
+    // Phase 2 (P2-A3) — métriques manquantes
+    private readonly Dictionary<string, long> _circuitStates = new();
+    private readonly Counter<long> _circuitTransitionsCounter = s_meter.CreateCounter<long>(
+        "circuit_transitions_total",
+        description: "Total number of circuit breaker state transitions");
+
+    private readonly Counter<long> _deserializationFailuresCounter = s_meter.CreateCounter<long>(
+        "deserialization_failures_total",
+        description: "Total number of deserialization failures by reason");
+
+    private readonly Histogram<double> _claimCheckUploadHistogram = s_meter.CreateHistogram<double>(
+        "claim_check_upload_duration_ms",
+        description: "Duration of claim-check blob upload operations in milliseconds");
+
+    private readonly Histogram<double> _claimCheckDownloadHistogram = s_meter.CreateHistogram<double>(
+        "claim_check_download_duration_ms",
+        description: "Duration of claim-check blob download operations in milliseconds");
+
+    private readonly Histogram<double> _journalWriteHistogram = s_meter.CreateHistogram<double>(
+        "journal_write_duration_ms",
+        description: "Duration of Message Transit Journal write operations in milliseconds");
+
+    private readonly Counter<long> _duplicateDetectedCounter = s_meter.CreateCounter<long>(
+        "duplicate_detected_total",
+        description: "Total number of duplicate messages detected");
+
+    private readonly ObservableGauge<long> _circuitStateGauge;
+
     /// <summary>
     /// Initialise le fournisseur de métriques avec les jauges observables.
     /// </summary>
@@ -62,6 +92,24 @@ public class MetricsProvider : IMetricsProvider
             "cached_senders",
             () => _cachedSendersCount,
             description: "Current number of cached ServiceBusSender instances");
+
+        // Phase 2 (P2-A3) — jauge multi-entités pour l'état du circuit breaker
+        _circuitStateGauge = s_meter.CreateObservableGauge(
+            "circuit_state",
+            GetCircuitStates,
+            description: "Current circuit breaker state per entity (0=Closed, 1=Open, 2=HalfOpen)");
+    }
+
+    private IEnumerable<Measurement<long>> GetCircuitStates()
+    {
+        lock (_circuitStates)
+        {
+            foreach (var kv in _circuitStates)
+            {
+                yield return new Measurement<long>(kv.Value,
+                    new KeyValuePair<string, object?>("entity", kv.Key));
+            }
+        }
     }
 
     public void IncrementMessagesSent(string entityName, string entityType)
@@ -115,6 +163,55 @@ public class MetricsProvider : IMetricsProvider
     public void SetCachedSenders(long count)
     {
         _cachedSendersCount = count;
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 2 (P2-A3) — implémentation des métriques manquantes
+    // -------------------------------------------------------------------------
+
+    public void SetCircuitState(string entityName, int state)
+    {
+        lock (_circuitStates)
+        {
+            _circuitStates[entityName] = state;
+        }
+    }
+
+    public void IncrementCircuitTransition(string entityName, string from, string to)
+    {
+        _circuitTransitionsCounter.Add(1,
+            new KeyValuePair<string, object?>("entity", entityName),
+            new KeyValuePair<string, object?>("from",   from),
+            new KeyValuePair<string, object?>("to",     to));
+    }
+
+    public void IncrementDeserializationFailure(string reason)
+    {
+        _deserializationFailuresCounter.Add(1,
+            new KeyValuePair<string, object?>("reason", reason));
+    }
+
+    public void RecordClaimCheckUploadDuration(double durationMs, string entityName)
+    {
+        _claimCheckUploadHistogram.Record(durationMs,
+            new KeyValuePair<string, object?>("entity_name", entityName));
+    }
+
+    public void RecordClaimCheckDownloadDuration(double durationMs, string entityName)
+    {
+        _claimCheckDownloadHistogram.Record(durationMs,
+            new KeyValuePair<string, object?>("entity_name", entityName));
+    }
+
+    public void RecordJournalWriteDuration(double durationMs)
+    {
+        _journalWriteHistogram.Record(durationMs);
+    }
+
+    public void IncrementDuplicateDetected(string entityName)
+    {
+        _duplicateDetectedCounter.Add(1,
+            new KeyValuePair<string, object?>("entity_name", entityName));
     }
 
     /// <summary>

@@ -1,4 +1,5 @@
 ﻿using RAMQ.COM.EnterpriseMessageTransit.Configuration;
+using RAMQ.COM.EnterpriseMessageTransit.Serialization;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
 {
@@ -12,8 +13,19 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
         /// Exposition de la résolution d'endpoint
         /// </summary>
         EndpointSettings Resolve(string? target);
-        MessageTransitContext<TMessage>? DeserializeMessage<TMessage>() where TMessage : class;
-        bool TryDeserialize<TMessage>(out MessageTransitContext<TMessage>? context) where TMessage : class;
+
+        /// <summary>
+        /// Désérialise le message entrant en retournant un résultat structuré.
+        /// Utiliser <see cref="DeserializationResult{TMessage}.IsSuccess"/> pour décider du settlement.
+        /// </summary>
+        DeserializationResult<MessageTransitContext<TMessage>> DeserializeMessageSafe<TMessage>() where TMessage : class;
+
+        /// <summary>
+        /// Retourne le <c>traceparent</c> W3C propagé par le producteur dans les
+        /// <c>ApplicationProperties</c> du message Service Bus, ou <c>null</c> si absent.
+        /// Implémentation par défaut : <c>null</c> (adaptateurs sans transport réel).
+        /// </summary>
+        string? GetTraceparent() => null;
     }
 }
 

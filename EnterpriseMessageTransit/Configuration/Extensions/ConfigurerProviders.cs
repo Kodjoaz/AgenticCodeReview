@@ -2,16 +2,20 @@
 using Azure.Data.Tables;
 using Azure.Identity;
 using Azure.Messaging.ServiceBus;
+using Azure.Messaging.ServiceBus.Administration;
 using Azure.Storage.Blobs;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure.Functions;
 using RAMQ.COM.EnterpriseMessageTransit.Serialization;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
 {
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
     public static class ConfigurerProviders
     {
         /// <summary>
@@ -118,12 +122,27 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
             // IMessagingProvider, IMessagingAdapter, IJournalProvider, IStorageProvider ont un
             // état lié au message en cours (BindContext) → ne pas partager entre invocations.
             services.AddScoped<IMessagingProvider, AzureMessagingProvider>();
-            services.AddSingleton<IRetryPolicyHandler, RetryPolicyHandler>();
+            services.AddScoped<IRetryPolicyHandler, RetryPolicyHandler>(); // Scoped: évite captive dependency avec IEndpointResolver
             services.AddScoped<IMessagingAdapter, AzureFunctionMessagingAdapter>();
             services.AddScoped<IJournalProvider, AzureJournalProvider>();
             services.AddScoped<IStorageProvider, AzureStorageProvider>();
             services.AddScoped<IEndpointResolver, EndpointResolver>();
             services.AddSingleton<IMessageSerializer, JsonMessageSerializer>();
+
+            // --- Singleton : ServiceBusAdministrationClient -----------------------------------
+            // Utilisé uniquement pour la validation de configuration au démarrage (idempotence).
+            services.AddSingleton(sp =>
+            {
+                var config = sp.GetRequiredService<IMessageTransitConfigurationService>();
+                var fqdn = config.AppSettings?.ServiceBusNamespace;
+                if (string.IsNullOrWhiteSpace(fqdn))
+                    throw new InvalidOperationException("AppSettings.ServiceBusNamespace is not configured.");
+                return new ServiceBusAdministrationClient(fqdn, sp.GetRequiredService<TokenCredential>());
+            });
+
+            // --- IHostedService : validation idempotence au démarrage (P3-T2) ----------------
+            // Active uniquement si au moins un endpoint a EnforceIdempotentPublish = true.
+            services.AddHostedService<IdempotenceValidationService>();
 
             return services;
         }

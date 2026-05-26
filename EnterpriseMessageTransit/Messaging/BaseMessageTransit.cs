@@ -1,4 +1,4 @@
-﻿using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations;
 using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Exceptions;
@@ -31,32 +31,6 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging
             ValidateConfiguration();
         }
 
-        protected EndpointSettings ResolveAudience(string? explicitTarget = null)
-        {
-            var itin = Config.AppSettings?.Itinerary;
-            if (itin == null || itin.Count == 0)
-            {
-                throw new ConfigurationException("Itinerary vide ou non configurée.");
-            }
-
-            if (itin.Count == 1)
-            {
-                return itin[0];
-            }
-
-            if (!string.IsNullOrWhiteSpace(explicitTarget))
-            {
-                var audience = itin.FirstOrDefault(a => a.Target == explicitTarget);
-                if (audience == null)
-                {
-                    throw new ConfigurationException($"Target '{explicitTarget}' introuvable dans l’itinéraire.");
-                }
-
-                return audience;
-            }
-            throw new ConfigurationException("Target requis : plusieurs audiences configurées, injectez un target.");
-        }
-
         protected void ValidateConfiguration()
         {
             if (Config.AppSettings == null)
@@ -64,17 +38,17 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging
                 throw new ConfigurationException("AppSettings manquant.");
             }
 
-            var itinerary = Config.AppSettings.Itinerary;
-            if (itinerary == null || itinerary.Count == 0)
+            var endpoints = Config.AppSettings.Endpoints;
+            if (endpoints == null || endpoints.Count == 0)
             {
-                throw new ConfigurationException("Itinerary manquant ou vide.");
+                throw new ConfigurationException("Endpoints manquant ou vide.");
             }
 
-            foreach (var aud in itinerary)
+            foreach (var aud in endpoints)
             {
                 if (aud == null)
                 {
-                    throw new ConfigurationException("EndpointSettings null dans Itinerary.");
+                    throw new ConfigurationException("EndpointSettings null dans Endpoints.");
                 }
 
                 Validator.ValidateObject(aud, new ValidationContext(aud), true);
@@ -87,7 +61,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging
             }
 
             // Validation des doublons de target (une seule fois au démarrage)
-            EndpointResolver.ValidateDuplicateTargets(itinerary);
+            EndpointResolver.ValidateDuplicateTargets(endpoints);
         }
 
         protected bool RequiresClaimCheck(int sizeInBytes, bool forceClaimcheck)

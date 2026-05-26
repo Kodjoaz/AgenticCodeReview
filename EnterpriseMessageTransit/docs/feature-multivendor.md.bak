@@ -1,0 +1,207 @@
+```markdown
+**Step Breakdown**
+
+- **Step 1 — Audit repository**: Find all Azure-specific code and public APIs (4h).
+- **Step 2 — Plan surface extraction**: Decide files, enums, and APIs to move into a new multi-vendor (common) layer (2h).
+- **Step 3 — Create multi-vendor package**: Scaffold a new project/assembly for common abstractions (3h).
+- **Step 4 — Move enums & options**: Relocate enums and options into the new package and update references (3h).
+- **Step 5 — Refactor BindContext**: Replace direct casts with small adapter interfaces and safe helpers (4h).
+- **Step 6 — Extract DI + extension**: Add `IServiceCollection` extension(s) and remove direct Azure registrations from core (3h).
+- **Step 7 — Update Azure provider project**: Keep Azure implementation in its own project, reference new multi-vendor package, and add Azure-only packages (3h).
+- **Step 8 — Tests & verification**: Run unit + integration tests and update CI (6h).
+- **Contingency & polishing**: Documentation, code review fixes (4h).
+
+Estimated total: ~32 hours.
+
+**Detailed Findings (where Azure appears)**
+
+- **Azure provider folder**: The repository contains an Azure provider area: [Providers/Azure](Providers/Azure). This is the primary place Azure-specific code lives.
+- **Binaries referencing Azure**: Build artifacts show Azure-targeted output in `bin/Debug/net8.0` like `RAMQ.COM.AzureMessageTransit.deps.json`.
+- **Configuration classes already present**: Several configuration types are in [Configuration](Configuration) and are reused by transports (examples):
+  - [Configuration/BlobStorageSetting.cs](Configuration/BlobStorageSetting.cs)
+  - [Configuration/TransportSettings.cs](Configuration/TransportSettings.cs)
+  - [Configuration/EndpointSettings.cs](Configuration/EndpointSettings.cs)
+- **Examples of Azure-specific patterns**:
+  - Direct casts from a general context to an Azure-specific context (example pattern):
+    - Before: `var az = (AzureMessageTransitContext)context;`
+  - DI registrations scattered in core or provider startup code:
+    - Example pattern: `services.AddSingleton<IAzureClient>(_ => new AzureClient(...));`
+  - Project-level Azure package references in csproj (observed in build outputs).
+
+**Enums To Move to Multi-Vendor Core**
+
+- **`TokenKind`**: Used across producers/consumers; belongs in core enums.
+- **`ProcessingEvent`**: Cross-cutting processing lifecycle; move to core.
+- **`OperationMode`**: Transport-agnostic operation mode; move to core.
+
+Move these files from `Enum/` into the new multi-vendor package (or to `Messaging/Enums` in the core project) and update using namespaces.
+
+**BindContext Implementations That Cast To Azure**
+
+- Current pattern to remove:
+  - `var azure = (AzureMessageTransitContext)context;` — brittle, throws on non-Azure contexts.
+- Replace with:
+  - A small cross-vendor interface like `IPlatformBindContext` or `IAzureBindContext` and a safe adapter:
+    - `IAzureBindContext azure = context.AsAzure();` where `AsAzure()` returns a typed wrapper or throws a controlled, descriptive exception.
+  - Prefer `TryAsAzure(out IAzureBindContext azure)` when optional.
+
+**DI Registrations & csproj Azure Package References**
+
+- Typical DI registrations to centralize into the Azure provider project:
+  - `services.AddSingleton<IAzureQueueClient, AzureQueueClient>();`
+  - `services.AddSingleton<IStorageProvider, AzureBlobStorageProvider>();`
+  - `services.AddTransient<IMessagingProvider, AzureMessagingProvider>();`
+- Example csproj package references the Azure provider project will need (add under the Azure provider csproj):
+  - `<PackageReference Include="Azure.Messaging.ServiceBus" Version="x.y.z" />`
+  - `<PackageReference Include="Azure.Storage.Blobs" Version="x.y.z" />`
+  - `<PackageReference Include="Azure.Identity" Version="x.y.z" />`
+- Keep core project free of Azure package references; only the Azure provider project should reference these packages.
+
+**Public Azure API Exposures (surface to keep in Azure project only)**
+
+- Types that should remain in the Azure implementation project (not in core):
+  - `AzureMessageTransit` (concrete transport)
+  - `AzureMessagingProvider` (provider implementation)
+  - `AzureBlobStorageProvider` (storage provider)
+  - Concrete client wrappers like `AzureServiceBusClient` or `AzureQueueClient`
+- Core should expose only interfaces/abstractions:
+  - `IMessageTransit`, `IMessagingProvider`, `IStorageProvider`, `IMessageSerializer`, `IJournalProvider`, etc.
+
+**Azure Options (configuration model to document and move/normalize)**
+
+- Use existing configuration types where appropriate:
+  - `TransportSettings` and `EndpointSettings` in [Configuration](Configuration)
+  - `BlobStorageSetting` in [Configuration/BlobStorageSetting.cs](Configuration/BlobStorageSetting.cs)
+- Add a dedicated `AzureOptions` or `AzureTransportOptions` type in the Azure provider project for Azure-specific settings if needed (connection strings, fully qualified namespace, client options).
+- Ensure appsettings structure is clear:
+  - `Azure:ServiceBus:ConnectionString`
+  - `Azure:Storage:ConnectionString`
+  - `Transports:Default:Type = "Azure"`
+
+**Blockers / Risks**
+
+- **Binary/API incompatibilities**: Moving enums/types requires updating all references — risky if not done atomically.
+- **Hidden Azure casts**: If direct casts exist in many places, migration is error-prone.
+- **CI / Build breakage**: Core project must compile without Azure packages; ensure project references are updated.
+- **Integration test infra**: Real Azure resources may be required for integration tests; consider recorded playback or emulator strategies.
+- **Secrets leakage**: Config migration might expose connection strings if not using secure stores.
+- **Breaking public API**: If external consumers use `Providers.Azure.*` types, they must reference the Azure project directly after migration.
+
+**Detailed Migration Steps**
+
+1. Project scaffolding
+   - Create a new multi-vendor core package/project (e.g., `EnterpriseMessageTransit.Common` or `EnterpriseMessageTransit.Abstractions`).
+   - Move cross-cutting types (enums, platform-agnostic options, small helper interfaces) into that project.
+   - Update solution: add the project to the `.sln` and make core projects reference the new project.
+
+2. Move enums & options
+   - Files to relocate (examples):
+     - Move `Enum/TokenKind.cs` → `EnterpriseMessageTransit.Abstractions/Enums/TokenKind.cs`
+     - Move `Enum/ProcessingEvent.cs` → `EnterpriseMessageTransit.Abstractions/Enums/ProcessingEvent.cs`
+     - Move `Enum/OperationMode.cs` → `EnterpriseMessageTransit.Abstractions/Enums/OperationMode.cs`
+   - Update namespaces and all `using` references.
+
+3. Extract interfaces for BindContext
+   - Add in the abstractions project:
+     - `public interface IBindContext { /* minimal surface used by core */ }`
+     - `public interface IAzureBindContext : IBindContext { /* Azure-specific helpers */ }`
+   - Implement extension helpers in core:
+     - `public static IAzureBindContext AsAzure(this IBindContext ctx) { return ctx as IAzureBindContext ?? throw new InvalidOperationException("Not an Azure context"); }`
+     - Or safe `TryAsAzure`.
+
+4. Refactor BindContext usages
+   - Example change (before):
+     - `var azure = (AzureMessageTransitContext)context; azure.SomeAzureOnlyCall(...);`
+   - After:
+     - `var azure = context.AsAzure(); azure.SomeAzureOnlyCall(...);`
+   - Or if optional:
+     - `if (context.TryAsAzure(out var azure)) { azure.SomeAzureOnlyCall(...); }`
+
+5. Move Azure implementations to a separate project
+   - Create `EnterpriseMessageTransit.Azure` project and move the folder [Providers/Azure](Providers/Azure) into it.
+   - In that project:
+     - Add `PackageReference` for Azure packages (see earlier list).
+     - Implement concrete `IAzureBindContext` and concrete `AzureMessageTransitContext`.
+     - Reference the `EnterpriseMessageTransit.Abstractions` project.
+
+6. Centralize DI registration via extension method
+   - In the Azure project, provide an `IServiceCollection` extension:
+     - Example (simplified):
+       - Register `AzureTransportOptions`
+       - Register `AzureMessagingProvider`, `AzureBlobStorageProvider`, and Azure client factory
+   - Remove direct `new` registrations from core; only call `AddAzureMessaging()` from app startup when Azure is desired.
+
+7. Update csproj references
+   - Core project: remove any Azure `PackageReference` items.
+   - Azure project csproj: add the Azure packages and a ProjectReference to `EnterpriseMessageTransit.Abstractions`.
+
+8. Update namespaces and build
+   - Run a repo-wide find/replace for moved types (prefer IDE refactor to keep correctness).
+   - Fix compile errors and run unit tests.
+
+9. Testing & CI
+   - Add new test runs to verify:
+     - Core builds standalone without Azure packages.
+     - Azure project builds and integration tests pass (using mocked or recorded Azure services).
+   - Update CI pipeline to build the new projects.
+
+**DI Extension Example (full snippet)**
+
+- In the Azure project add an `AddAzureMessaging` extension that:
+  - Configures `AzureTransportOptions`
+  - Registers `IMessagingProvider` → `AzureMessagingProvider`
+  - Registers `IStorageProvider` → `AzureBlobStorageProvider`
+  - Registers any Azure client factories
+
+Usage in application startup:
+
+- Call `services.AddAzureMessaging(Configuration.GetSection("Azure"));` from the host app when Azure transport is desired.
+
+**BindContext Refactor Sample**
+
+- Add in abstractions:
+
+- `public interface IBindContext { /* minimal members used by core */ }`
+
+- `public interface IAzureBindContext : IBindContext { string AzureNamespace { get; } }`
+
+- Add `AsAzure()` and `TryAsAzure()` extension helpers.
+
+- Azure provider implements `IAzureBindContext` in its `AzureMessageTransitContext`. Core code replaces direct casts with `AsAzure()` or `TryAsAzure()`.
+
+**Testing Checklist**
+
+- **Build**: Core project builds with no Azure `PackageReference`.
+- **Azure project build**: Azure project builds and references abstractions successfully.
+- **Unit tests**: All existing unit tests pass after refactor.
+- **Integration tests**:
+  - Run Azure integration tests using either real resources or recorded test fixtures.
+  - Verify message send/receive paths through `AzureMessagingProvider`.
+- **Backward compatibility**:
+  - If there are public APIs used by external consumers, validate they can reference the Azure project and the new abstractions without compile errors.
+- **Configuration**:
+  - Verify `appsettings.json` mapping to `AzureTransportOptions` and older settings still works or update docs.
+- **Runtime smoke**:
+  - End-to-end smoke test: create and consume a message using default app startup configuration.
+- **CI**:
+  - Ensure pipeline builds both the core and Azure projects separately and runs the correct test matrix.
+
+**Estimated Hours Per Step (granular)**
+
+- **Audit repository**: 4h
+- **Plan surface extraction**: 2h
+- **Scaffold new abstractions project**: 1h
+- **Move enums & options**: 3h
+- **Add BindContext interfaces/adapters**: 4h
+- **Refactor context usages**: 3h
+- **Create Azure provider project and move code**: 3h
+- **Add DI extensions and update csproj**: 3h
+- **Unit + integration testing**: 6h
+- **Buffer/cleanup/docs**: 3h
+
+Total recommended estimate: 32h
+
+**Next actions (pick one)**
+- I will write the file into `docs/feature-multivendor.md` (uncommitted) now.
+- I will write and commit it directly.
+- I will create a branch and open a PR with the file.

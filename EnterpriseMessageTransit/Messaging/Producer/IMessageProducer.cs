@@ -6,20 +6,11 @@
     public interface IMessageProducer<TPayload> where TPayload : class
     {
         /// <summary>
-        /// Publie un message. Le target est résolu via IMessageTargetMap ou mono-audience.
-        /// </summary>
-        Task<MessageTransitContext<MessageTransitResponse>> PublishAsync(
-            MessageTransitContext<TPayload> context,
-            Dictionary<string, object>? properties = null,
-            ClaimCheckOptions? claimCheckOptions = null,
-            CancellationToken cancellationToken = default);
-
-        /// <summary>
         /// Publie un message avec PublishOptions (target, propriétés, claim check).
         /// </summary>
         Task<MessageTransitContext<MessageTransitResponse>> PublishAsync(
             MessageTransitContext<TPayload> context,
-            PublishOptions? publishOptions,
+            PublishOptions? publishOptions = null,
             CancellationToken cancellationToken = default);
 
         /// <summary>
@@ -28,8 +19,7 @@
         /// </summary>
         Task<IReadOnlyList<string>> PublishBatchAsync(
             IEnumerable<MessageTransitContext<TPayload>> contexts,
-            Dictionary<string, object>? properties = null,
-            ClaimCheckOptions? claimCheckOptions = null,
+            PublishOptions? publishOptions = null,
             CancellationToken cancellationToken = default);
 
         /// <summary>

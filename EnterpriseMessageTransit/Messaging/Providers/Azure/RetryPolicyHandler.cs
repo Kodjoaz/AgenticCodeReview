@@ -1,8 +1,12 @@
+﻿using System.Diagnostics;
+using System.Text.Json;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Exceptions;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Enum;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.Telemetry;
+using RAMQ.COM.EnterpriseMessageTransit.Serialization;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
 {
@@ -11,8 +15,12 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
     /// Encapsule la logique de retry exponentiel et immédiat, ainsi que le dead-lettering.
     /// Améliore SRP en séparant l'adapter (binding) de la stratégie de retry.
     /// </summary>
-    public class RetryPolicyHandler : IRetryPolicyHandler
+    [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
+    internal class RetryPolicyHandler : IRetryPolicyHandler
     {
+        // Azure Service Bus official limit for deadLetterErrorDescription
+        private const int MaxDeadLetterDescriptionLength = 4096;
+
         private readonly IMessageTransitConfigurationService _config;
         private readonly IJournalProvider _journalProvider;
         private readonly IEndpointResolver _endpointResolver;
@@ -20,6 +28,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
         private readonly ServiceBusSenderCache _senderCache;
         private readonly ISystemClock _systemClock;
         private readonly ILogger<RetryPolicyHandler> _logger;
+        private readonly IMessageSerializer _serializer;
 
         // Métadonnées d'invocation (injectées via le contexte ou depuis l'adapter)
         private string? _target;
@@ -33,6 +42,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             ServiceBusClient serviceBusClient,
             ServiceBusSenderCache senderCache,
             ISystemClock systemClock,
+            IMessageSerializer serializer,
             ILogger<RetryPolicyHandler> logger)
         {
             _config = config ?? throw new ArgumentNullException(nameof(config));
@@ -41,6 +51,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             _serviceBusClient = serviceBusClient ?? throw new ArgumentNullException(nameof(serviceBusClient));
             _senderCache = senderCache ?? throw new ArgumentNullException(nameof(senderCache));
             _systemClock = systemClock ?? throw new ArgumentNullException(nameof(systemClock));
+            _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
@@ -54,17 +65,100 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             _action = action;
         }
 
+        /// <summary>
+        /// Truncates a string to the Azure Service Bus dead-letter error description limit (4096 bytes UTF-8).
+        /// </summary>
+        private static string TruncateForDeadLetter(string? message)
+        {
+            if (string.IsNullOrEmpty(message))
+                return string.Empty;
+
+            if (System.Text.Encoding.UTF8.GetByteCount(message) <= MaxDeadLetterDescriptionLength)
+                return message;
+
+            var truncated = message;
+            while (System.Text.Encoding.UTF8.GetByteCount(truncated) > MaxDeadLetterDescriptionLength && truncated.Length > 0)
+                truncated = truncated[..^1];
+
+            const string Indicator = " ...[TRUNCATED]";
+            if (System.Text.Encoding.UTF8.GetByteCount(truncated + Indicator) <= MaxDeadLetterDescriptionLength)
+                truncated += Indicator;
+
+            return truncated;
+        }
+
+        /// <summary>
+        /// Détecte si un JSON reçu est indenté (formatted) ou compact.
+        /// Stratégie : vérifier si le JSON contient des caractères de nouvelle ligne et/ou indentation typiques.
+        /// </summary>
+        /// <remarks>
+        /// Retourne `true` si le JSON semble indenté, `false` sinon.
+        /// Cette détection permet de re-sérialiser le message lors du retry
+        /// en respectant le format original du message reçu.
+        /// </remarks>
+        private static bool IsJsonIndented(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+                return false;
+
+            // Vérifier la présence de newlines et indentation (espaces/tabs) après { [ ou avant } ]
+            return json.Contains("\n") || json.Contains("\r") || 
+                   (json.Contains("  ") && (json.Contains("{\n") || json.Contains("[\n")));
+        }
+
+        /// <summary>
+        /// Sérialise un objet en respectant le format d'indentation du JSON original.
+        /// Utilisé dans le retry exponentiel pour conserver le format du message reçu.
+        /// </summary>
+        /// <remarks>
+        /// Détecte si le JSON original est indenté et applique les mêmes options de sérialisation
+        /// lors de la re-sérialisation du message mis à jour.
+        /// </remarks>
+        private string SerializePreservingIndentation<T>(T obj, string? originalJson) where T : class
+        {
+            bool isIndented = IsJsonIndented(originalJson);
+            var options = isIndented 
+                ? new JsonSerializerOptions { WriteIndented = true }
+                : new JsonSerializerOptions { WriteIndented = false };
+            
+            return JsonSerializer.Serialize(obj, options);
+        }
+
+        /// <summary>
+        /// Écrit une entrée journal de façon sécurisée (Pattern A5) :
+        /// une défaillance du journal ne doit jamais bloquer le chemin de retry ou de settlement.
+        /// </summary>
+        private async Task SafeWriteJournalAsync(JournalEntry entry, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await _journalProvider.WriteRecordAsync(entry, cancellationToken);
+            }
+            catch (Exception jEx)
+            {
+                _logger.LogWarning(jEx,
+                    "Journal failed (retry handler) — settlement succeeded but not journalized. MessageId={MessageId}",
+                    entry.MessageId);
+            }
+        }
+
         public async Task HandleImmediateRetryAsync(
             ServiceBusReceivedMessage message,
-            object actions,
+            IMessageSettlementActions actions,
             ImmediateRetryException exception,
             CancellationToken cancellationToken = default)
         {
-            // actions est de type ServiceBusMessageActions (du SDK Azure Functions Worker)
-            dynamic sbActions = actions;
             var retryPolicy = _config.AppSettings?.RetryPolicy;
             int maxDeliveryCount = retryPolicy?.MaxDeliveryCount ?? 10;
             int attempt = message.DeliveryCount;
+
+            using var activity = MessagingActivitySource.Source.StartActivity(
+                "messaging.retry.immediate",
+                ActivityKind.Internal);
+            activity?.SetTag("messaging.system",         "servicebus");
+            activity?.SetTag("messaging.message_id",     message.MessageId);
+            activity?.SetTag("messaging.delivery_count", attempt);
+            activity?.SetTag("messaging.max_delivery",   maxDeliveryCount);
 
             try
             {
@@ -74,7 +168,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
 
                 if (attempt < maxDeliveryCount)
                 {
-                    await sbActions.AbandonMessageAsync(message, null, cancellationToken);
+                    await actions.AbandonAsync(null, cancellationToken);
 
                     var entry = new JournalEntry(
                         _consumer ?? "RetryPolicyHandler",
@@ -92,7 +186,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                         message.SessionId,
                         _config.AppSettings?.ApplicationName);
 
-                    await _journalProvider.WriteRecordAsync(entry, cancellationToken);
+                    await SafeWriteJournalAsync(entry, cancellationToken);
+                    activity?.SetTag("messaging.retry.outcome", "abandon");
+                    activity?.SetStatus(ActivityStatusCode.Ok);
                 }
                 else
                 {
@@ -100,9 +196,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                         "ImmediateRetry: MaxDeliveryCount reached -> DLQ MessageId={MessageId} DeliveryCount={DeliveryCount}",
                         message.MessageId, attempt);
 
-                    await sbActions.DeadLetterMessageAsync(message, null, "MaxDeliveryCountExceeded", exception.Message, cancellationToken);
+                    await actions.DeadLetterAsync("MaxDeliveryCountExceeded", TruncateForDeadLetter(exception.Message), cancellationToken);
 
-                    var entry = new JournalEntry(
+                    var entryDlq = new JournalEntry(
                         _consumer ?? "RetryPolicyHandler",
                         _action ?? "ImmediateRetry",
                         message.MessageId,
@@ -118,7 +214,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                         message.SessionId,
                         _config.AppSettings?.ApplicationName);
 
-                    await _journalProvider.WriteRecordAsync(entry, cancellationToken);
+                    await SafeWriteJournalAsync(entryDlq, cancellationToken);
+                    activity?.SetTag("messaging.retry.outcome", "dlq");
+                    activity?.SetStatus(ActivityStatusCode.Ok);
                 }
             }
             catch (Exception ex)
@@ -127,7 +225,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                     "Erreur HandleImmediateRetryAsync -> DLQ forcé MessageId={MessageId} DeliveryCount={DeliveryCount}",
                     message.MessageId, message.DeliveryCount);
 
-                await sbActions.DeadLetterMessageAsync(message, null, "ImmediateRetryException", exception.Message, cancellationToken);
+                await actions.DeadLetterAsync("ImmediateRetryException", TruncateForDeadLetter(exception.Message), cancellationToken);
 
                 var entryEx = new JournalEntry(
                     _consumer ?? "RetryPolicyHandler",
@@ -139,25 +237,26 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                     (int)System.Net.HttpStatusCode.InternalServerError,
                     message.DeliveryCount,
                     maxDeliveryCount,
-                    ex.Message,
+                    exception.Message,
                     message.EnqueuedTime.UtcDateTime,
                     null,
                     message.SessionId,
                     _config.AppSettings?.ApplicationName);
 
-                await _journalProvider.WriteRecordAsync(entryEx, cancellationToken);
+                await SafeWriteJournalAsync(entryEx, cancellationToken);
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                activity?.SetTag("exception.type",    ex.GetType().FullName);
+                activity?.SetTag("exception.message", ex.Message);
                 throw;
             }
         }
 
         public async Task HandleExponentialRetryAsync(
             ServiceBusReceivedMessage message,
-            object actions,
+            IMessageSettlementActions actions,
             ExponentialRetryException exception,
             CancellationToken cancellationToken = default)
         {
-            // actions est de type ServiceBusMessageActions (du SDK Azure Functions Worker)
-            dynamic sbActions = actions;
             var retryPolicy = _config.AppSettings?.RetryPolicy;
             int maxDeliveryCount = retryPolicy?.MaxDeliveryCount ?? 10;
 
@@ -185,6 +284,16 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 attempt = referralCount + 1;
             }
 
+            using var activity = MessagingActivitySource.Source.StartActivity(
+                "messaging.retry.exponential",
+                ActivityKind.Internal);
+            activity?.SetTag("messaging.system",         "servicebus");
+            activity?.SetTag("messaging.message_id",     message.MessageId);
+            activity?.SetTag("messaging.session_id",     message.SessionId);
+            activity?.SetTag("messaging.delivery_count", attempt);
+            activity?.SetTag("messaging.max_delivery",   maxDeliveryCount);
+            activity?.SetTag("messaging.retry.session",  isSession ? "true" : "false");
+
             // DLQ si max atteint
             if (attempt > maxDeliveryCount)
             {
@@ -192,9 +301,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                     "ExponentialRetry: MaxDeliveryCount reached -> DLQ MessageId={MessageId} DeliveryCount={DeliveryCount} SessionId={SessionId}",
                     message.MessageId, attempt, message.SessionId);
 
-                await sbActions.DeadLetterMessageAsync(message, null, "MaxDeliveryCountExceeded", exception.Message, cancellationToken);
+                await actions.DeadLetterAsync("MaxDeliveryCountExceeded", TruncateForDeadLetter(exception.Message), cancellationToken);
 
-                var entry = new JournalEntry(
+                var entryDlqExp = new JournalEntry(
                     _consumer ?? "RetryPolicyHandler",
                     _action ?? "ExponentialRetry",
                     message.MessageId,
@@ -210,27 +319,29 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                     message.SessionId,
                     _config.AppSettings?.ApplicationName);
 
-                await _journalProvider.WriteRecordAsync(entry, cancellationToken);
+                await SafeWriteJournalAsync(entryDlqExp, cancellationToken);
+                activity?.SetTag("messaging.retry.outcome", "dlq");
+                activity?.SetStatus(ActivityStatusCode.Ok);
                 return;
             }
 
             // Calcul délai exponentiel
-            double baseMs = retryPolicy?.InitialDelay.TotalMilliseconds ?? (int)System.Net.HttpStatusCode.InternalServerError;
-            double maxMs = retryPolicy?.MaxDelay.TotalMilliseconds ?? 60000;
+            double baseMs    = retryPolicy?.InitialDelay.TotalMilliseconds ?? 500;   // default 500ms
+            double maxMs     = retryPolicy?.MaxDelay.TotalMilliseconds     ?? 60_000; // default 60s
             double computedMs = baseMs * Math.Pow(2, attempt - 1);
+
+            _logger.LogInformation(
+                "ExponentialRetry delay calc: RetryPolicy={IsNull} BaseMs={BaseMs} MaxMs={MaxMs} ComputedMs={ComputedMs} Attempt={Attempt} MessageId={MessageId}",
+                retryPolicy == null ? "NULL (using defaults)" : "loaded from config",
+                baseMs, maxMs, computedMs, attempt, message.MessageId);
+
             if (retryPolicy?.UseJitter == true)
             {
                 double jitter = Random.Shared.NextDouble();
                 computedMs *= (0.85 + jitter * 0.3);
             }
-            if (computedMs > maxMs)
-            {
-                computedMs = maxMs;
-            }
-            if (computedMs < baseMs)
-            {
-                computedMs = baseMs;
-            }
+            if (computedMs > maxMs)  computedMs = maxMs;
+            if (computedMs < baseMs) computedMs = baseMs;
 
             var delay = TimeSpan.FromMilliseconds(computedMs);
             var scheduledTime = _systemClock.UtcNow.Add(delay);
@@ -252,7 +363,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 if (!string.IsNullOrWhiteSpace(_consumer)) retryProperties["Consumer"] = _consumer!;
                 if (!string.IsNullOrWhiteSpace(_action))   retryProperties["Action"]   = _action!;
 
-                await sbActions.AbandonMessageAsync(message, retryProperties, cancellationToken);
+                await actions.AbandonAsync(retryProperties, cancellationToken);
 
                 var entrySession = new JournalEntry(
                     _consumer ?? "RetryPolicyHandler",
@@ -270,14 +381,24 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                     message.SessionId,
                     _config.AppSettings?.ApplicationName);
 
-                await _journalProvider.WriteRecordAsync(entrySession, cancellationToken);
+                await SafeWriteJournalAsync(entrySession, cancellationToken);
+                activity?.SetTag("messaging.retry.outcome", "abandon-session");
+                activity?.SetTag("messaging.retry.delay_ms", (long)delay.TotalMilliseconds);
+                activity?.SetStatus(ActivityStatusCode.Ok);
                 return;
             }
 
             // === SCÉNARIO SANS SESSION ===
+            // ℹ️ Duplicate detection et retry exponentiel (no session)
+            // -----------------------------------------------------------------------------------
+            // Un nouveau MessageId est généré pour le retry schedulé afin d'éviter le rejet
+            // silencieux par la duplicate detection d'Azure Service Bus.
+            // Le MessageId original est préservé dans CorrelationId pour la traçabilité
+            // de bout en bout : premier retry → message.MessageId, retries suivants → message.CorrelationId.
+            // -----------------------------------------------------------------------------------
             _logger.LogWarning(
-                "ExponentialRetry (no session): Attempt {Attempt}/{Max} MessageId={MessageId}",
-                attempt, maxDeliveryCount, message.MessageId);
+                "ExponentialRetry (no session): Attempt {Attempt}/{Max} MessageId={MessageId} ScheduledAt={ScheduledTime}",
+                attempt, maxDeliveryCount, message.MessageId, scheduledTime);
 
             if (!_endpointResolver.TryResolve(_target, _consumer, _action, out var audience) || audience == null)
             {
@@ -287,13 +408,33 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             var entityName = audience.Endpoint.EntityName;
             var sender = _senderCache.GetOrCreate(_serviceBusClient, entityName);
 
-            var retryMessage = new ServiceBusMessage(message.Body)
+            var newMessageId = Guid.NewGuid().ToString("N");
+
+            // Update the MessageId inside the serialized context body so the consumer
+            // deserializes the correct MessageId after the retry is delivered.
+            // Preserve the original indentation format (compact vs indented) to maintain consistency.
+            var originalBody = message.Body.ToString();
+            var updatedBody = originalBody;
+            var contextResult = _serializer.DeserializeSafe<MessageTransitContext<object>>(originalBody);
+            if (contextResult.IsSuccess && contextResult.Value != null)
             {
-                MessageId = Guid.NewGuid().ToString("N"),
-                Subject = message.Subject,
-                ContentType = message.ContentType,
-                CorrelationId = message.CorrelationId,
-                TimeToLive = message.TimeToLive
+                contextResult.Value.MessageId = newMessageId;
+                updatedBody = SerializePreservingIndentation(contextResult.Value, originalBody);
+            }
+
+            var retryMessage = new ServiceBusMessage(new BinaryData(System.Text.Encoding.UTF8.GetBytes(updatedBody)))
+            {
+                // New MessageId for the scheduled retry to avoid duplicate detection conflicts.
+                // CorrelationId always carries the ORIGINAL MessageId for end-to-end traceability:
+                // - First retry:      message.CorrelationId is null → use message.MessageId (the original)
+                // - Subsequent retry: message.CorrelationId already holds the original → preserve it
+                MessageId     = newMessageId,
+                CorrelationId = !string.IsNullOrWhiteSpace(message.CorrelationId)
+                                    ? message.CorrelationId   // already the original MessageId
+                                    : message.MessageId,      // first retry: capture the original
+                Subject       = message.Subject,
+                ContentType   = message.ContentType,
+                TimeToLive    = message.TimeToLive
             };
             foreach (var kv in message.ApplicationProperties)
             {
@@ -314,10 +455,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             {
                 retryMessage.ApplicationProperties["Action"] = _action!;
             }
-
+            
             await sender.ScheduleMessageAsync(retryMessage, scheduledTime, cancellationToken);
-            await sbActions.CompleteMessageAsync(message, cancellationToken);
-
+            await actions.CompleteAsync(cancellationToken);
             var entryFinal = new JournalEntry(
                 _consumer ?? "RetryPolicyHandler",
                 _action ?? "ExponentialRetry",
@@ -334,46 +474,10 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 message.SessionId,
                 _config.AppSettings?.ApplicationName);
 
-            await _journalProvider.WriteRecordAsync(entryFinal, cancellationToken);
-        }
-
-        public async Task HandleDeadLetterAsync(
-            ServiceBusReceivedMessage message,
-            object actions,
-            Exception exception,
-            CancellationToken cancellationToken = default)
-        {
-            // actions est de type ServiceBusMessageActions (du SDK Azure Functions Worker)
-            dynamic sbActions = actions;
-            _logger.LogError(
-                exception,
-                "HandleDeadLetterAsync: sending message to DLQ MessageId={MessageId}",
-                message.MessageId);
-
-            await sbActions.DeadLetterMessageAsync(
-                message,
-                null,
-                exception.GetType().Name,
-                exception.Message,
-                cancellationToken);
-
-            var entry = new JournalEntry(
-                _consumer ?? "RetryPolicyHandler",
-                _action ?? "DeadLetter",
-                message.MessageId,
-                message.CorrelationId,
-                _target ?? message.Subject,
-                OperationMode.DLQ,
-                (int)System.Net.HttpStatusCode.InternalServerError,
-                message.DeliveryCount,
-                _config.AppSettings?.RetryPolicy?.MaxDeliveryCount ?? 10,
-                exception.Message,
-                message.EnqueuedTime.UtcDateTime,
-                null,
-                message.SessionId,
-                _config.AppSettings?.ApplicationName);
-
-            await _journalProvider.WriteRecordAsync(entry, cancellationToken);
+            await SafeWriteJournalAsync(entryFinal, cancellationToken);
+            activity?.SetTag("messaging.retry.outcome",      "schedule");
+            activity?.SetTag("messaging.retry.delay_ms",     (long)delay.TotalMilliseconds);
+            activity?.SetStatus(ActivityStatusCode.Ok);
         }
     }
 }

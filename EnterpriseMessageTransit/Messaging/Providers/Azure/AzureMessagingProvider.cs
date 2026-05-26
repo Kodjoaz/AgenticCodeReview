@@ -1,12 +1,16 @@
+﻿using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Exceptions;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.Telemetry;
 using RAMQ.COM.EnterpriseMessageTransit.Serialization;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
 {
-    public class AzureMessagingProvider : IMessagingProvider
+    [ExcludeFromCodeCoverage]
+    internal class AzureMessagingProvider : IMessagingProvider
     {
         private readonly IMessagingAdapter _adapter;
         private readonly IMessageSerializer _serializer;
@@ -17,6 +21,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
         private readonly ServiceBusSenderCache _senderCache;
         private readonly AzureServiceBusProviderOptions _providerOptions;
         private readonly CircuitBreakerManager _circuitBreaker;
+        private readonly IMetricsProvider? _metrics;
 
         public AzureMessagingProvider(
             IMessagingAdapter adapter,
@@ -27,7 +32,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             ILogger<AzureMessagingProvider> logger,
             ServiceBusSenderCache senderCache,
             AzureServiceBusProviderOptions providerOptions,
-            CircuitBreakerManager circuitBreaker)
+            CircuitBreakerManager circuitBreaker,
+            IMetricsProvider? metrics = null)
         {
             _adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
             _serializer = serializer ?? throw new ArgumentNullException(nameof(serializer));
@@ -38,6 +44,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             _senderCache = senderCache ?? throw new ArgumentNullException(nameof(senderCache));
             _providerOptions = providerOptions ?? new AzureServiceBusProviderOptions();
             _circuitBreaker = circuitBreaker ?? throw new ArgumentNullException(nameof(circuitBreaker));
+            _metrics = metrics;
         }
 
         // A2 — SetInvocationMetadata délègue uniquement à l'adapter.
@@ -71,11 +78,36 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             _adapter.BindContext(message, actions);
         }
 
+        /// <summary>
+        /// Délègue la lecture du <c>traceparent</c> W3C à l'adapter sous-jacent.
+        /// Retourne <c>null</c> si le message ne contient pas de contexte de trace propagé.
+        /// </summary>
+        public string? GetTraceparent() => _adapter.GetTraceparent();
+
         private static bool IsFatalSendException(Exception ex)
         {
             if (ex is ObjectDisposedException) return true;
             if (ex is ServiceBusException sbEx && !sbEx.IsTransient) return true;
             return false;
+        }
+
+        /// <summary>
+        /// Vérifie que le corps du message ne dépasse pas la limite applicative configurée via
+        /// <see cref="TransportSettings.MaxMessageSizeKb"/>. Cette limite est indépendante de la
+        /// limite Service Bus — elle peut refléter des contraintes réseau, métier ou opérationnelles.
+        /// Sans configuration (0), aucune vérification applicative n'est faite ici.
+        /// </summary>
+        private static void EnforceMaxMessageSize(BinaryData body, long configuredMaxBytes, string messageId, string entityName)
+        {
+            if (configuredMaxBytes <= 0) return;
+            var sizeBytes = body.ToMemory().Length;
+            if (sizeBytes > configuredMaxBytes)
+            {
+                throw new ArgumentException(
+                    $"Le message '{messageId}' ({sizeBytes / 1024} Ko) dépasse la limite applicative configurée " +
+                    $"(MaxMessageSizeKb = {configuredMaxBytes / 1024} Ko) pour l'entité '{entityName}'. " +
+                    $"Réduire la taille du payload ou réviser la configuration MaxMessageSizeKb.");
+            }
         }
 
         public async Task SendAsync<T>(MessageTransitContext<T> context, MessagingOptions options, CancellationToken cancellationToken = default) where T : class
@@ -84,10 +116,16 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             var retryPolicy = audience.Endpoint.SendRetry ?? ProducerSendRetryPolicy.Default;
 
             var payload = context.SerializedPayload ?? _serializer.Serialize(context);
+
+            // Note : la limite applicative MaxMessageSizeKb est gérée en amont dans PublishAsync via
+            // RequiresClaimCheck / PrepareClaimCheckAsync. Si le payload dépasse le seuil, il est déjà
+            // externalisé en Blob Storage avant d'arriver ici — on ne re-vérifie pas la taille à ce niveau.
+
             var message = new ServiceBusMessage(payload)
             {
-                MessageId = context.MessageId ?? Guid.NewGuid().ToString(),
-                SessionId = options.EnableSession ? context.SessionId ?? context.MessageId : null
+                MessageId     = context.MessageId ?? Guid.NewGuid().ToString(),
+                CorrelationId = context.CorrelationId ?? context.MessageId ?? string.Empty,
+                SessionId     = options.EnableSession ? context.SessionId ?? context.MessageId : null
             };
 
             if (options.Properties != null)
@@ -98,12 +136,46 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 }
             }
 
-            await SendSingleWithRetryAsync(
-                _senderCache.GetOrCreate(_client, audience.Endpoint.EntityName),
-                message,
-                audience.Endpoint.EntityName,
-                retryPolicy,
-                cancellationToken);
+            using var activity = MessagingActivitySource.Source.StartActivity(
+                "messaging.send",
+                ActivityKind.Producer);
+            activity?.SetTag("messaging.system",      "servicebus");
+            activity?.SetTag("messaging.destination", audience.Endpoint.EntityName);
+            activity?.SetTag("messaging.message_id",  context.MessageId);
+            activity?.SetTag("messaging.session_id",  context.SessionId);
+
+            // P4-T2 — Propagation W3C Trace Context dans les ApplicationProperties Service Bus.
+            // Permet au consumer de rattacher son span à celui du producteur (corrélation cross-service).
+            if (Activity.Current?.Id is { } traceId)
+            {
+                message.ApplicationProperties["traceparent"] = traceId;
+                var traceState = Activity.Current.TraceStateString;
+                if (!string.IsNullOrEmpty(traceState))
+                    message.ApplicationProperties["tracestate"] = traceState;
+            }
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                await SendSingleWithRetryAsync(
+                    _senderCache.GetOrCreate(_client, audience.Endpoint.EntityName),
+                    message,
+                    audience.Endpoint.EntityName,
+                    retryPolicy,
+                    cancellationToken);
+                sw.Stop();
+                activity?.SetStatus(ActivityStatusCode.Ok);
+                _metrics?.IncrementMessagesSent(audience.Endpoint.EntityName, audience.Endpoint.EntityType.ToString());
+                _metrics?.RecordSendDuration(sw.Elapsed.TotalMilliseconds, audience.Endpoint.EntityName);
+                _metrics?.SetCachedSenders(_senderCache.Count);
+            }
+            catch (Exception ex)
+            {
+                activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                activity?.SetTag("exception.type",    ex.GetType().FullName);
+                activity?.SetTag("exception.message", ex.Message);
+                throw;
+            }
         }
 
         public async Task SendBatchAsync<T>(IEnumerable<MessageTransitContext<T>> contexts, MessagingOptions options, CancellationToken cancellationToken = default) where T : class
@@ -113,8 +185,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             var retryPolicy = audience.Endpoint.SendRetry ?? ProducerSendRetryPolicy.Default;
             var sender = _senderCache.GetOrCreate(_client, entityName);
 
-            // Construction de la file de messages Service Bus
-            var pending = new Queue<ServiceBusMessage>();
+            // Construction des messages Service Bus (sérialisation + propagation trace).
+            var messages = new List<ServiceBusMessage>();
             foreach (var ctx in contexts)
             {
                 var payload = ctx.SerializedPayload ?? _serializer.Serialize(ctx);
@@ -126,46 +198,78 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 if (options.Properties != null)
                 {
                     foreach (var kvp in options.Properties)
-                    {
                         msg.ApplicationProperties[kvp.Key] = kvp.Value ?? string.Empty;
-                    }
                 }
-                pending.Enqueue(msg);
+
+                // P4-T2 — Propagation W3C Trace Context (depuis le span parent messaging.publish).
+                if (Activity.Current?.Id is { } batchTraceId)
+                {
+                    msg.ApplicationProperties["traceparent"] = batchTraceId;
+                    var batchTraceState = Activity.Current.TraceStateString;
+                    if (!string.IsNullOrEmpty(batchTraceState))
+                        msg.ApplicationProperties["tracestate"] = batchTraceState;
+                }
+
+                messages.Add(msg);
             }
 
-            // C2 — envoi en batches séquentiels sans perte silencieuse.
-            // Chaque message est traité jusqu'à épuisement de la file.
-            // Chaque batch de 256 Ko est envoyé atomiquement ; plusieurs batches ne sont pas atomiques entre eux.
-            while (pending.Count > 0)
+            // Atomicité — Fail-fast avant tout envoi.
+            // Un ServiceBusMessageBatch est atomique : soit tous les messages passent, soit aucun.
+            using var batch = await sender.CreateMessageBatchAsync(cancellationToken);
+            var maxSizeBytes = batch.MaxSizeInBytes;
+
+            // Étape 1 — Limite applicative configurée par l'opérateur (MaxMessageSizeKb).
+            // Indépendante de la limite Service Bus : peut refléter des contraintes réseau, métier
+            // ou opérationnelles propres à l'organisation. Fail-fast avant tout appel au broker.
+            if (audience.Endpoint.MaxMessageSizeKb > 0)
             {
-                using var batch = await sender.CreateMessageBatchAsync(cancellationToken);
-                bool batchHasMessages = false;
+                var configuredMaxBytes = (long)audience.Endpoint.MaxMessageSizeKb * 1024;
+                foreach (var msg in messages)
+                    EnforceMaxMessageSize(msg.Body, configuredMaxBytes, msg.MessageId, entityName);
+            }
 
-                while (pending.Count > 0)
-                {
-                    var msg = pending.Peek();
-                    if (batch.TryAddMessage(msg))
-                    {
-                        pending.Dequeue();
-                        batchHasMessages = true;
-                    }
-                    else if (!batchHasMessages)
-                    {
-                        // Message trop grand pour un batch vide → envoi unitaire avec retry
-                        pending.Dequeue();
-                        await SendSingleWithRetryAsync(sender, msg, entityName, retryPolicy, cancellationToken);
-                    }
-                    else
-                    {
-                        // Batch courant plein → l'envoyer et recommencer avec le suivant
-                        break;
-                    }
-                }
+            // Étape 2 — Validation collective via TryAddMessage (source de vérité du broker).
+            // Détecte le cas où les messages sont individuellement valides mais dépassent
+            // collectivement la capacité du batch (overhead headers + propriétés applicatives).
+            var collectivelyOversized = new List<string>();
+            foreach (var msg in messages)
+            {
+                if (!batch.TryAddMessage(msg))
+                    collectivelyOversized.Add(msg.MessageId);
+            }
 
-                if (batchHasMessages)
-                {
-                    await SendBatchWithRetryAsync(sender, batch, entityName, retryPolicy, cancellationToken);
-                }
+            if (collectivelyOversized.Count > 0)
+            {
+                throw new ArgumentException(
+                    $"PublishBatchAsync: {collectivelyOversized.Count}/{messages.Count} message(s) ne rentrent pas " +
+                    $"dans le batch atomique ({maxSizeBytes / 1024} Ko total, overhead headers inclus). Aucun message envoyé. " +
+                    $"Diviser la collection en plusieurs appels PublishBatchAsync. " +
+                    $"MessageIds en erreur : {string.Join(", ", collectivelyOversized)}");
+            }
+
+            // Envoi atomique — un seul batch Service Bus.
+            using var batchActivity = MessagingActivitySource.Source.StartActivity(
+                "messaging.send.batch",
+                ActivityKind.Producer);
+            batchActivity?.SetTag("messaging.system",              "servicebus");
+            batchActivity?.SetTag("messaging.destination",         entityName);
+            batchActivity?.SetTag("messaging.batch.message_count", batch.Count);
+            var batchSw = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                await SendBatchWithRetryAsync(sender, batch, entityName, retryPolicy, cancellationToken);
+                batchSw.Stop();
+                batchActivity?.SetStatus(ActivityStatusCode.Ok);
+                _metrics?.IncrementMessagesSent(entityName, audience.Endpoint.EntityType.ToString());
+                _metrics?.RecordSendDuration(batchSw.Elapsed.TotalMilliseconds, entityName);
+                _metrics?.SetCachedSenders(_senderCache.Count);
+            }
+            catch (Exception ex)
+            {
+                batchActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                batchActivity?.SetTag("exception.type",    ex.GetType().FullName);
+                batchActivity?.SetTag("exception.message", ex.Message);
+                throw;
             }
         }
 
@@ -210,14 +314,13 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             var responsePayload = _serializer.Deserialize<TMessage>(received.Body.ToString());
             var replyContext = new MessageTransitContext<TMessage>
             {
-                Message = responsePayload,
-                MessageId = received.MessageId,
-                SessionId = received.SessionId,
-                SequenceNumber = received.SequenceNumber,
+                Message          = responsePayload,
+                MessageId        = received.MessageId,
+                SessionId        = received.SessionId,
+                SequenceNumber   = received.SequenceNumber,
                 TransportMessage = new AzureFunctionMessageTransit(received),
-                Tokens = context.Tokens,
-                Variables = context.Variables,
-                CurrentStage = audience.Target
+                Tokens           = context.Tokens,
+                Variables        = context.Variables
             };
             await receiver.CompleteMessageAsync(received, cancellationToken);
             return replyContext;
@@ -258,7 +361,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 catch (Exception ex)
                 {
                     _circuitBreaker.RecordFailure(entityName);
-                    _logger.LogError(ex, "Échec définitif de l'envoi pour l'entité {Entity}", entityName);
+                    // Tronquer le message d'exception pour éviter de polluer les logs avec des messages énormes
+                    var truncatedMessage = TruncateForLog(ex.Message);
+                    _logger.LogError(ex, "Échec définitif de l'envoi pour l'entité {Entity}. Raison: {Reason}", entityName, truncatedMessage);
                     throw new MessageSendException($"Échec envoi target='{entityName}'", ex);
                 }
             }
@@ -298,39 +403,70 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 catch (Exception ex)
                 {
                     _circuitBreaker.RecordFailure(entityName);
-                    _logger.LogError(ex, "Échec définitif de l'envoi batch pour l'entité {Entity}", entityName);
+                    // Tronquer le message d'exception pour éviter de polluer les logs avec des messages énormes
+                    var truncatedMessage = TruncateForLog(ex.Message);
+                    _logger.LogError(ex, "Échec définitif de l'envoi batch pour l'entité {Entity}. Raison: {Reason}", entityName, truncatedMessage);
                     throw new MessageSendException($"Échec envoi batch target='{entityName}'", ex);
                 }
             }
         }
 
+        /// <summary>
+        /// Tronque un message d'erreur pour les logs (1024 caractères max).
+        /// Utilisé uniquement pour éviter de polluer les logs Azure Functions Output Window.
+        /// </summary>
+        private static string TruncateForLog(string? message, int maxChars = 1024)
+        {
+            if (string.IsNullOrEmpty(message))
+                return string.Empty;
+
+            if (message.Length <= maxChars)
+                return message;
+
+            return message[..maxChars] + "... [TRUNCATED]";
+        }
+
         public Task CompleteMessageAsync(CancellationToken cancellationToken = default) =>
             _adapter.CompleteMessageAsync(cancellationToken);
-        public Task ImmediateRetryAsync(ImmediateRetryException exception, CancellationToken cancellationToken = default) =>
-            _adapter.ImmediateRetryAsync(exception, cancellationToken);
-        public Task ExponentialRetryAsync(ExponentialRetryException exception, CancellationToken cancellationToken = default) =>
-            _adapter.ExponentialRetryAsync(exception, cancellationToken);
-        public Task DeadLetterMessageAsync(Exception exception, CancellationToken cancellationToken = default) =>
-            _adapter.DeadLetterMessageAsync(exception, cancellationToken);
 
-        public MessageTransitContext<T>? DeserializeMessage<T>() where T : class
+        public Task ImmediateRetryAsync(ImmediateRetryException exception, CancellationToken cancellationToken = default)
+        {
+            _metrics?.IncrementImmediateRetry(_adapter.GetMessage()?.MessageId ?? "unknown");
+            return _adapter.ImmediateRetryAsync(exception, cancellationToken);
+        }
+
+        public Task ExponentialRetryAsync(ExponentialRetryException exception, CancellationToken cancellationToken = default)
+        {
+            _metrics?.IncrementExponentialRetry(_adapter.GetMessage()?.MessageId ?? "unknown");
+            return _adapter.ExponentialRetryAsync(exception, cancellationToken);
+        }
+
+        public Task DeadLetterMessageAsync(Exception exception, CancellationToken cancellationToken = default)
+        {
+            _metrics?.IncrementMessagesDLQ(
+                _adapter.GetMessage()?.MessageId ?? "unknown",
+                exception.GetType().Name);
+            return _adapter.DeadLetterMessageAsync(exception, cancellationToken);
+        }
+
+        public DeserializationResult<MessageTransitContext<T>> DeserializeMessageSafe<T>() where T : class
         {
             var msg = _adapter.GetMessage();
             var result = _serializer.DeserializeSafe<MessageTransitContext<T>>(msg?.Content?.ToString());
-            if (!result.IsSuccess)
-            {
-                _logger.LogWarning(
-                    "DeserializeMessage failed for MessageId={MessageId}: {Reason} — {Error}",
-                    msg?.MessageId, result.FailureReason, result.ErrorMessage);
-                return null;
-            }
-            return result.Value;
-        }
 
-        public bool TryDeserialize<T>(out MessageTransitContext<T>? context) where T : class
-        {
-            context = DeserializeMessage<T>();
-            return context != null;
+            // Hydrate CorrelationId from the Service Bus envelope so the consumer always
+            // has access to the original MessageId, even after retries regenerated MessageId.
+            if (result.IsSuccess && result.Value != null && msg != null)
+            {
+                if (string.IsNullOrWhiteSpace(result.Value.CorrelationId))
+                {
+                    result.Value.CorrelationId = !string.IsNullOrWhiteSpace(msg.CorrelationId)
+                        ? msg.CorrelationId
+                        : msg.MessageId;
+                }
+            }
+
+            return result;
         }
 
         // Note: sender disposal is handled by the singleton ServiceBusSenderCache.

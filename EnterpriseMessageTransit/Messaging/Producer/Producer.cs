@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -9,6 +10,7 @@ using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Exceptions;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Enum;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.Telemetry;
 using RAMQ.COM.EnterpriseMessageTransit.Serialization;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
@@ -23,6 +25,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
         private readonly IJournalProvider _journal;
         private readonly ISystemClock _systemClock;
         private readonly IMessageTargetMap? _targetMap;
+        private readonly IMetricsProvider? _metrics;
 
         public Producer(
             IMessagingProvider messagingProvider,
@@ -32,13 +35,15 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             IMessageSerializer serializer,
             IStorageProvider storageProvider,
             ISystemClock systemClock,
-            IMessageTargetMap? targetMap = null)
+            IMessageTargetMap? targetMap = null,
+            IMetricsProvider? metrics = null)
             : base(logger, config, serializer, storageProvider)
         {
             _messagingProvider = messagingProvider ?? throw new ArgumentNullException(nameof(messagingProvider));
             _journal = journal ?? throw new ArgumentNullException(nameof(journal));
             _systemClock = systemClock ?? throw new ArgumentNullException(nameof(systemClock));
             _targetMap = targetMap;
+            _metrics = metrics;
         }
 
         public async Task PrepareClaimCheckAsync<TAnyMessage>(
@@ -54,7 +59,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
 
         /// <summary>
         /// Publie un message avec résolution automatique du target.
-        /// Chaîne de résolution : PublishOptions.Target → IMessageTargetMap → Target (constructeur) → mono-audience.
+        /// Chaîne de résolution : PublishOptions.Target → IMessageTargetMap → mono-audience.
         /// </summary>
         public virtual async Task<MessageTransitContext<MessageTransitResponse>> PublishAsync(
             MessageTransitContext<TMessage> context,
@@ -68,15 +73,6 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                 cancellationToken);
         }
 
-        public virtual async Task<MessageTransitContext<MessageTransitResponse>> PublishAsync(
-            MessageTransitContext<TMessage> context,
-            Dictionary<string, object>? properties = null,
-            ClaimCheckOptions? claimCheckOptions = null,
-            CancellationToken cancellationToken = default)
-        {
-            return await PublishCoreAsync(context, properties, claimCheckOptions, cancellationToken);
-        }
-
         private async Task<MessageTransitContext<MessageTransitResponse>> PublishCoreAsync(
             MessageTransitContext<TMessage> context,
             Dictionary<string, object>? properties,
@@ -87,59 +83,82 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             ValidateRoutingProperties(properties);
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Valeur par défaut si non fourni
             claimCheckOptions ??= ClaimCheckOptions.None;
 
             if (string.IsNullOrWhiteSpace(context.MessageId))
-            {
                 context.MessageId = Guid.NewGuid().ToString("N");
-            }
 
-            // Résolution automatique du target :
-            // 1. Liaison DI via IMessageTargetMap (services.AddProducer<T>("target"))
-            // 2. null = fallback mono-audience
+            // CorrelationId is immutable: set once at publish time to the original MessageId.
+            if (string.IsNullOrWhiteSpace(context.CorrelationId))
+                context.CorrelationId = context.MessageId;
+
+            // Résolution du target : IMessageTargetMap (DI) → fallback mono-audience.
             string? effectiveTarget = _targetMap?.ResolveTarget<TMessage>();
-
             EndpointSettings audience = _messagingProvider.Resolve(effectiveTarget);
             string? resolvedTarget = audience.Target;
-
             bool enableSession = audience.Endpoint.EnableSession;
 
-            // Sessions activées au niveau du producer
+            // P3-T3 — Timeout borné.
+            var publishTimeout = audience.Endpoint.PublishTimeout;
+            using var timeoutCts = publishTimeout > TimeSpan.Zero
+                ? new CancellationTokenSource(publishTimeout)
+                : null;
+            using var linkedCts = timeoutCts is not null
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token)
+                : null;
+            var effectiveCt = linkedCts?.Token ?? cancellationToken;
+
             if (enableSession && string.IsNullOrWhiteSpace(context.SessionId))
             {
                 throw new ArgumentNullException(
                     $"Le paramètre <{nameof(context.SessionId)}> est obligatoire lorsque {nameof(enableSession)} est à true.");
             }
 
-            // Alignement traçabilité (CurrentStage)
-            if (string.IsNullOrWhiteSpace(context.CurrentStage))
-            {
-                context.SetCurrentStage(resolvedTarget);
-            }
+            // Architecture cible : le Producer ne renseigne plus Consumer/Action.
+            // Les propriétés doivent déjà être présentes dans le contexte (préparées par le RoutingSlipBuilder/Executor).
 
             await PrepareClaimCheckAsync(
                 context,
                 claimCheckOptions.FileStream,
                 claimCheckOptions.OriginalFileName,
                 claimCheckOptions.ForceClaimCheck,
-                cancellationToken);
+                effectiveCt);
 
             var options = new MessagingOptions
             {
-                Properties = properties,
+                Properties    = properties,
                 EnableSession = enableSession,
-                FileStream = claimCheckOptions.FileStream,
+                FileStream    = claimCheckOptions.FileStream,
                 OriginalFileName = claimCheckOptions.OriginalFileName,
-                ForceClaimCheck = claimCheckOptions.ForceClaimCheck,
-                Target = resolvedTarget
+                ForceClaimCheck  = claimCheckOptions.ForceClaimCheck,
+                Target        = resolvedTarget
             };
 
             (string? consumer, string? action) = ExtractMessageProperties(properties);
 
             try
             {
-                await _messagingProvider.SendAsync(context, options, cancellationToken);
+                using var activity = MessagingActivitySource.Source.StartActivity(
+                    "messaging.publish",
+                    ActivityKind.Producer);
+
+                activity?.SetTag("messaging.system",      "servicebus");
+                activity?.SetTag("messaging.destination", resolvedTarget);
+                activity?.SetTag("messaging.message_id",  context.MessageId);
+                activity?.SetTag("messaging.session_id",  context.SessionId);
+
+                try
+                {
+                    await _messagingProvider.SendAsync(context, options, effectiveCt);
+                    activity?.SetStatus(ActivityStatusCode.Ok);
+                }
+                catch (Exception sendEx)
+                {
+                    activity?.SetStatus(ActivityStatusCode.Error, sendEx.Message);
+                    activity?.SetTag("exception.type",    sendEx.GetType().FullName);
+                    activity?.SetTag("exception.message", sendEx.Message);
+                    throw;
+                }
 
                 var journalEntry = JournalEntry.ForPublish(
                     consumer ?? "(none)",
@@ -151,12 +170,18 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                     Config.AppSettings?.ApplicationName,
                     _systemClock.UtcNow.UtcDateTime);
 
-                // A5 — Journal découplé du chemin critique : un échec de journalisation
-                // ne doit pas faire échouer un envoi réussi sur Service Bus.
-                try { await _journal.WriteRecordAsync(journalEntry, cancellationToken); }
+                var journalSw = System.Diagnostics.Stopwatch.StartNew();
+                try { await _journal.WriteRecordAsync(journalEntry, effectiveCt); journalSw.Stop(); _metrics?.RecordJournalWriteDuration(journalSw.Elapsed.TotalMilliseconds); }
                 catch (Exception jEx) { Logger.LogWarning(jEx, "Journal failed (publish) — message sent but not journalized. MessageId={MessageId}", context.MessageId); }
 
                 return MapToResponseContext(context, null);
+            }
+            catch (OperationCanceledException) when (timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
+            {
+                // P3-T3 — Timeout interne déclenché : convertir en MessageSendException
+                throw new MessageSendException(
+                    $"PublishAsync timed out after {publishTimeout.TotalSeconds:F0}s for target='{resolvedTarget}'.",
+                    new TimeoutException($"Operation exceeded {publishTimeout.TotalSeconds:F0}s timeout."));
             }
             catch (OperationCanceledException)
             {
@@ -164,21 +189,57 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             }
             catch (Exception ex)
             {
+                if (context.IsClaimCheckApplied)
+                {
+                    var blobRef = context.GetMessageToken()?.Reference;
+                    if (!string.IsNullOrWhiteSpace(blobRef))
+                    {
+                        try
+                        {
+                            await StorageProvider.DeleteAsync(blobRef, CancellationToken.None);
+                            Logger.LogInformation(
+                                "Claim-check orphan compensated: blob '{BlobRef}' deleted after send failure. MessageId={MessageId}",
+                                blobRef, context.MessageId);
+                        }
+                        catch (Exception cleanupEx)
+                        {
+                            Logger.LogWarning(cleanupEx,
+                                "Claim-check orphan: blob '{BlobRef}' could not be cleaned up. MessageId={MessageId}",
+                                blobRef, context.MessageId);
+                        }
+                    }
+                }
                 throw new MessageSendException($"Send failed for target='{resolvedTarget}': {ex.Message}", ex);
             }
         }
 
         public virtual async Task<IReadOnlyList<string>> PublishBatchAsync(
             IEnumerable<MessageTransitContext<TMessage>> contexts,
-            Dictionary<string, object>? properties = null,
-            ClaimCheckOptions? claimCheckOptions = null,
+            PublishOptions? publishOptions = null,
             CancellationToken cancellationToken = default)
         {
             if (contexts == null) throw new ArgumentNullException(nameof(contexts));
+
+            var properties        = publishOptions?.Properties;
+            var claimCheckOptions = publishOptions?.ClaimCheck;
+
             ValidateRoutingProperties(properties);
             cancellationToken.ThrowIfCancellationRequested();
 
-            claimCheckOptions ??= ClaimCheckOptions.None;
+            // Claim-Check interdit en batch : incompatible avec l'atomicité.
+            // PublishBatchAsync garantit que soit tous les messages sont envoyés, soit aucun.
+            // Si un upload Blob réussit et que l'envoi Service Bus échoue ensuite, les blobs
+            // deviennent orphelins — et la compensation N-blobs n'est pas fiable.
+            // Solution : utiliser PublishAsync en boucle si le Claim-Check est requis par message.
+            if (claimCheckOptions != null
+                && (claimCheckOptions.ForceClaimCheck || claimCheckOptions.FileStream != null))
+            {
+                throw new NotSupportedException(
+                    "PublishBatchAsync ne supporte pas le pattern Claim-Check. " +
+                    "Le Claim-Check est incompatible avec l'atomicité du batch : un upload Blob réussi " +
+                    "suivi d'un échec Service Bus produirait des blobs orphelins non compensables. " +
+                    "Utiliser PublishAsync en boucle pour les messages nécessitant le Claim-Check.");
+            }
 
             var contextsList = contexts.ToList();
 
@@ -194,18 +255,28 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             foreach (var ctx in contextsList)
             {
                 if (string.IsNullOrWhiteSpace(ctx.MessageId))
-                {
                     ctx.MessageId = Guid.NewGuid().ToString("N");
-                }
 
-                // Prepare claim-check / tokens per context
-                await PrepareClaimCheckAsync(ctx, claimCheckOptions.FileStream, claimCheckOptions.OriginalFileName, claimCheckOptions.ForceClaimCheck, cancellationToken);
+                // CorrelationId is immutable: set once at publish time.
+                if (string.IsNullOrWhiteSpace(ctx.CorrelationId))
+                    ctx.CorrelationId = ctx.MessageId;
             }
 
             // Résolution du target et activation des sessions (identique à PublishCoreAsync)
             string? effectiveTarget = _targetMap?.ResolveTarget<TMessage>();
             EndpointSettings audience = _messagingProvider.Resolve(effectiveTarget);
+            string? resolvedTarget = audience.Target;
             bool enableSession = audience.Endpoint.EnableSession;
+
+            // P3-T3 — Timeout borné sur le batch complet
+            var publishTimeout = audience.Endpoint.PublishTimeout;
+            using var timeoutCts = publishTimeout > TimeSpan.Zero
+                ? new CancellationTokenSource(publishTimeout)
+                : null;
+            using var linkedCts = timeoutCts is not null
+                ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token)
+                : null;
+            var effectiveCt = linkedCts?.Token ?? cancellationToken;
 
             // Validation SessionId si sessions activées sur l'entité
             if (enableSession)
@@ -219,53 +290,32 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                 }
             }
 
-            // Alignement CurrentStage pour la traçabilité
-            foreach (var ctx in contextsList)
-            {
-                if (string.IsNullOrWhiteSpace(ctx.CurrentStage))
-                {
-                    ctx.SetCurrentStage(audience.Target);
-                }
-            }
-
             var options = new MessagingOptions
             {
-                Properties = properties,
+                Properties    = properties,
                 EnableSession = enableSession,
-                FileStream = claimCheckOptions.FileStream,
-                OriginalFileName = claimCheckOptions.OriginalFileName,
-                ForceClaimCheck = claimCheckOptions.ForceClaimCheck,
-                Target = audience.Target
+                Target        = resolvedTarget
             };
 
             try
             {
-                await _messagingProvider.SendBatchAsync(contextsList, options, cancellationToken);
+                await _messagingProvider.SendBatchAsync(contextsList, options, effectiveCt);
 
-                // C1 — extraction une seule fois avant la boucle (DRY)
+                // P3-T5 — Journal parallélisé : remplace le séquentiel O(n) (O14 DE Review).
+                // Pattern A5 maintenu : les erreurs de journal ne propagent jamais vers le caller.
                 (string? consumer, string? action) = ExtractMessageProperties(properties);
-
-                foreach (var ctx in contextsList)
-                {
-                    var journalEntry = JournalEntry.ForPublish(
-                        consumer ?? "(none)",
-                        action ?? "(none)",
-                        ctx.MessageId ?? string.Empty,
-                        ctx.SessionId ?? string.Empty,
-                        ctx.CurrentStage ?? string.Empty,
-                        ctx.SessionId,
-                        Config.AppSettings?.ApplicationName,
-                        _systemClock.UtcNow.UtcDateTime);
-
-                    // A5 — Journal découplé du chemin critique
-                    try { await _journal.WriteRecordAsync(journalEntry, cancellationToken); }
-                    catch (Exception jEx) { Logger.LogWarning(jEx, "Journal failed (batch) — message sent but not journalized. MessageId={MessageId}", ctx.MessageId); }
-                }
+                await Task.WhenAll(contextsList.Select(ctx =>
+                    WriteJournalEntrySafeAsync(ctx, consumer, action, resolvedTarget, effectiveCt)));
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
             {
-                throw;
+                // P3-T3 — Timeout batch interne
+                throw new MessageSendException(
+                    $"PublishBatchAsync timed out after {publishTimeout.TotalSeconds:F0}s for target='{resolvedTarget}'.",
+                    new TimeoutException($"Batch operation exceeded {publishTimeout.TotalSeconds:F0}s timeout."));
             }
+            catch (OperationCanceledException) { throw; }
+            catch (ArgumentException) { throw; }
             catch (Exception ex)
             {
                 throw new MessageSendException($"Batch publish failed: {ex.Message}", ex);
@@ -276,74 +326,79 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
         }
 
         /// <summary>
-        /// Request/Reply avec résolution automatique du target.
-        /// Le target est résolu via IMessageTargetMap (DI) ou en fallback mono-audience.
+        /// P3-T5 — Écriture journal atomique et isolée pour un seul message du batch.
+        /// Pattern A5 : une erreur de journal ne remonte jamais vers le caller.
         /// </summary>
-        public virtual Task<MessageTransitContext<MessageTransitResponse>?> GetResponseAsync(
+        private async Task WriteJournalEntrySafeAsync(
+            MessageTransitContext<TMessage> ctx,
+            string? consumer,
+            string? action,
+            string? entityName,
+            CancellationToken cancellationToken)
+        {
+            var journalEntry = JournalEntry.ForPublish(
+                consumer ?? "(none)",
+                action ?? "(none)",
+                ctx.MessageId ?? string.Empty,
+                ctx.SessionId ?? string.Empty,
+                entityName ?? string.Empty,
+                ctx.SessionId,
+                Config.AppSettings?.ApplicationName,
+                _systemClock.UtcNow.UtcDateTime);
+
+            try
+            {
+                await _journal.WriteRecordAsync(journalEntry, cancellationToken);
+            }
+            catch (Exception jEx)
+            {
+                Logger.LogWarning(jEx,
+                    "Journal failed (batch) — message sent but not journalized. MessageId={MessageId}",
+                    ctx.MessageId);
+            }
+        }
+
+        /// <summary>
+        /// Request/Reply avec résolution automatique du target.
+        /// </summary>
+        public virtual async Task<MessageTransitContext<MessageTransitResponse>?> GetResponseAsync(
             MessageTransitContext<TMessage> context,
             RequestReplyOptions? replyOptions,
             CancellationToken cancellationToken = default)
         {
-            return GetResponseCoreAsync(
-                context,
-                replyOptions?.Properties,
-                replyOptions?.ClaimCheck?.FileStream,
-                replyOptions?.ClaimCheck?.OriginalFileName,
-                replyOptions?.ClaimCheck?.ForceClaimCheck ?? false,
-                replyOptions?.EnableOffline ?? false,
-                cancellationToken);
-        }
-
-        private async Task<MessageTransitContext<MessageTransitResponse>?> GetResponseCoreAsync(
-            MessageTransitContext<TMessage> context,
-            Dictionary<string, object>? properties,
-            Stream? fileStream,
-            string? originalFileName,
-            bool forceClaimcheck,
-            bool enableOffline,
-            CancellationToken cancellationToken)
-        {
             ArgumentNullException.ThrowIfNull(context);
             cancellationToken.ThrowIfCancellationRequested();
 
+            var claimCheck    = replyOptions?.ClaimCheck ?? ClaimCheckOptions.None;
+            var properties    = replyOptions?.Properties;
+            var enableOffline = replyOptions?.EnableOffline ?? false;
+
             if (string.IsNullOrWhiteSpace(context.MessageId))
-            {
                 context.MessageId = Guid.NewGuid().ToString("N");
-            }
 
             if (string.IsNullOrWhiteSpace(context.SessionId))
-            {
                 context.SessionId = context.MessageId;
-            }
 
-            // Résolution automatique du target :
-            // 1. Liaison DI via IMessageTargetMap (services.AddProducer<T>("target"))
-            // 2. null = fallback mono-audience
+            if (string.IsNullOrWhiteSpace(context.CorrelationId))
+                context.CorrelationId = context.MessageId;
+
             string? effectiveTarget = _targetMap?.ResolveTarget<TMessage>();
-
             EndpointSettings audience = _messagingProvider.Resolve(effectiveTarget);
-
-            // CurrentStage pour la trace
-            if (string.IsNullOrWhiteSpace(context.CurrentStage))
-            {
-                context.SetCurrentStage(audience.Target);
-            }
 
             var options = new MessagingOptions
             {
-                Properties = properties,
-                FileStream = fileStream,
-                OriginalFileName = originalFileName,
-                ForceClaimCheck = forceClaimcheck,
-                Target = audience.Target,
-                EnableOffline = enableOffline
+                Properties       = properties,
+                FileStream       = claimCheck.FileStream,
+                OriginalFileName = claimCheck.OriginalFileName,
+                ForceClaimCheck  = claimCheck.ForceClaimCheck,
+                Target           = audience.Target,
+                EnableOffline    = enableOffline
             };
 
             (string? consumer, string? action) = ExtractMessageProperties(properties);
 
-            // P7 — appel direct sans indirection ExecuteRequestReplyAsync (aligné sur PublishCoreAsync)
             var rawResult = await _messagingProvider.RequestReplyAsync(context, options, cancellationToken);
-            MessageTransitContext<MessageTransitResponse>? result = rawResult == null
+            var result = rawResult == null
                 ? null
                 : context.CopyWithResponse(rawResult.Message as MessageTransitResponse);
 
@@ -351,18 +406,17 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             {
                 var journalEntry = JournalEntry.ForRequestReply(
                     consumer ?? "(none)",
-                    action ?? "(none)",
-                    context.MessageId ?? string.Empty,
-                    context.SessionId ?? string.Empty,
-                    audience.Target ?? string.Empty,
+                    action   ?? "(none)",
+                    context.MessageId  ?? string.Empty,
+                    context.SessionId  ?? string.Empty,
+                    audience.Target    ?? string.Empty,
                     result.Message is MessageTransitResponse resp ? resp.StatusCode : 0,
                     context.SessionId,
                     Config.AppSettings?.ApplicationName,
                     _systemClock.UtcNow.UtcDateTime);
 
-                // A5 — Journal découplé du chemin critique
                 try { await _journal.WriteRecordAsync(journalEntry, cancellationToken); }
-                catch (Exception jEx) { Logger.LogWarning(jEx, "Journal failed (request-reply) — response received but not journalized. MessageId={MessageId}", context.MessageId); }
+                catch (Exception jEx) { Logger.LogWarning(jEx, "Journal failed (request-reply) MessageId={MessageId}", context.MessageId); }
 
                 return result;
             }
@@ -374,32 +428,22 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             MessageTransitResponse? response)
             where TAnyMessage : class
         {
-            // P4 — délègue à CopyWithResponse pour garantir qu'aucune propriété
-            // future de MessageTransitContext ne soit oubliée dans ce mapping.
             return source.CopyWithResponse(response);
         }
 
         public string GetTargetEntityName(string? target = null)
         {
-            string? effectiveTarget = target
-                ?? _targetMap?.ResolveTarget<TMessage>();
+            string? effectiveTarget = target ?? _targetMap?.ResolveTarget<TMessage>();
             var aud = _messagingProvider.Resolve(effectiveTarget);
             if (aud.Endpoint?.EntityName == null)
-            {
                 throw new InvalidOperationException("EntityName not resolved.");
-            }
-
             return aud.Endpoint.EntityName;
         }
 
         private static void ValidateRoutingProperties(Dictionary<string, object>? properties)
         {
-            if (properties == null || properties.Count == 0)
-            {
-                return;
-            }
+            if (properties == null || properties.Count == 0) return;
 
-            // P5 — noms de clés via MessagePropertyKeys (plus de magic strings)
             var invalidKeys = properties.Keys
                 .Where(k => !string.Equals(k, MessagePropertyKeys.Consumer, StringComparison.OrdinalIgnoreCase)
                          && !string.Equals(k, MessagePropertyKeys.Action,   StringComparison.OrdinalIgnoreCase))
@@ -419,15 +463,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             string? action   = null;
             if (properties != null)
             {
-                if (properties.TryGetValue(MessagePropertyKeys.Consumer, out var consumerObj) && consumerObj is string consumerStr)
-                {
-                    consumer = consumerStr;
-                }
-
-                if (properties.TryGetValue(MessagePropertyKeys.Action, out var actionObj) && actionObj is string actionStr)
-                {
-                    action = actionStr;
-                }
+                if (properties.TryGetValue(MessagePropertyKeys.Consumer, out var c) && c is string cs) consumer = cs;
+                if (properties.TryGetValue(MessagePropertyKeys.Action,   out var a) && a is string ac) action   = ac;
             }
             return (consumer, action);
         }
@@ -451,14 +488,39 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                 string? fileName = string.IsNullOrWhiteSpace(context.MessageId)
                     ? $"{Guid.NewGuid():N}.json"
                     : $"{context.MessageId}.json";
-                string? url = await StorageProvider.UploadAsync(serialized, fileName, cancellationToken);
+
+                using var uploadActivity = MessagingActivitySource.Source.StartActivity(
+                    "messaging.claimcheck.upload",
+                    ActivityKind.Internal);
+                uploadActivity?.SetTag("messaging.message_id",            context.MessageId);
+                uploadActivity?.SetTag("messaging.claimcheck.blob",       fileName);
+                uploadActivity?.SetTag("messaging.claimcheck.size_bytes", size);
+
+                string? url;
+                var uploadSw = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    url = await StorageProvider.UploadAsync(serialized, fileName, cancellationToken);
+                    uploadSw.Stop();
+                    uploadActivity?.SetStatus(ActivityStatusCode.Ok);
+                    _metrics?.RecordClaimCheckUploadDuration(uploadSw.Elapsed.TotalMilliseconds, fileName);
+                }
+                catch (Exception ex)
+                {
+                    uploadActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                    uploadActivity?.SetTag("exception.type",    ex.GetType().FullName);
+                    uploadActivity?.SetTag("exception.message", ex.Message);
+                    throw;
+                }
+
                 var reference = NormalizeBlobReference(url) ?? url ?? string.Empty;
+                uploadActivity?.SetTag("messaging.claimcheck.reference", reference);
                 context.Tokens.Add(new TokenMessage
                 {
-                    Kind = TokenKind.Message,
+                    Kind        = TokenKind.Message,
                     ContentType = "application/json",
-                    Reference = reference,
-                    SizeBytes = size
+                    Reference   = reference,
+                    SizeBytes   = size
                 });
                 // Remove message payload to keep the in-flight context light.
                 context.Message = default;
@@ -479,11 +541,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                 var reference = NormalizeBlobReference(url) ?? url ?? string.Empty;
 
                 long sizeBytes;
-                try
-                {
-                    // certains streams (non seekable) peuvent throw NotSupportedException
-                    sizeBytes = fileStream.Length;
-                }
+                try { sizeBytes = fileStream.Length; }
                 catch (Exception ex)
                 {
                     Logger.LogWarning(ex, "PrepareContextWithTokensAsync: unable to determine fileStream.Length; using -1 as fallback.");
@@ -492,23 +550,21 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
 
                 context.Tokens.Add(new TokenMessage
                 {
-                    Kind = TokenKind.File,
+                    Kind        = TokenKind.File,
                     ContentType = "application/octet-stream",
-                    Reference = reference,
-                    SizeBytes = sizeBytes
+                    Reference   = reference,
+                    SizeBytes   = sizeBytes
                 });
             }
         }
 
         private static string? NormalizeBlobReference(string? raw)
         {
-            // Return a relative container/blob path and strip any query (SAS) or host information
             if (string.IsNullOrWhiteSpace(raw)) return raw;
             raw = raw.Trim();
 
             if (Uri.TryCreate(raw, UriKind.Absolute, out var uri))
             {
-                // Use the absolute path to build a container/blob reference and ignore host/query
                 var path = uri.AbsolutePath.TrimStart('/');
                 var segments = path.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
                 if (segments.Length >= 2)
@@ -517,12 +573,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                     var blobName = string.Join("/", segments.Skip(1));
                     return $"{container}/{blobName}";
                 }
-
-                // If path doesn't include container + blob, return the path without leading slash
                 return path;
             }
-
-            // If not an absolute URI, assume it's already a relative reference and return as-is
             return raw;
         }
     }
