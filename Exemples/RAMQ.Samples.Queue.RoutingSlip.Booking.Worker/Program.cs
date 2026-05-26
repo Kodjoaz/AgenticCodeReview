@@ -1,5 +1,5 @@
+#pragma warning disable
 extern alias AzureIdentity;
-using RAMQ.Samples.Topic.RoutingSlip.Booking.Worker;
 using Azure.Identity;
 using Azure.Monitor.OpenTelemetry.Exporter;
 using Microsoft.Azure.Functions.Worker;
@@ -12,9 +12,9 @@ using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Telemetry;
 using RAMQ.Samples.ConfigurationService;
+using RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities;
+using RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Services;
 using RAMQ.Samples.RoutingSlip.Booking.Message;
-using RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Activities;
-using RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Services;
 
 var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
@@ -28,7 +28,11 @@ var builder = new HostBuilder()
         services.ConfigureFunctionsApplicationInsights();
 
         // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
-        // Sources : EMT (routing_slip.step, messaging.*) + Booking (booking.*.reserve, booking.compensate)
+        // Enregistre deux sources :
+        //   • EMTInstrumentation.SourceName ("RAMQ.COM.EnterpriseMessageTransit") :
+        //     spans messaging.send, messaging.consume, routing_slip.step émis par la librairie EMT
+        //   • BookingTelemetry.SourceName ("RAMQ.Samples.RoutingSlip.Booking") :
+        //     spans métier booking.car.reserve, booking.hotel.reserve, booking.flight.reserve, booking.compensate
         //
         // Exporteurs configurés selon l'environnement :
         //   • OTLP → Jaeger en développement local (docker-compose, port 4317)
@@ -41,12 +45,13 @@ var builder = new HostBuilder()
             {
                 t.AddSource(EMTInstrumentation.SourceName);   // spans EMT (routing_slip.step, messaging.*)
                 t.AddSource(BookingTelemetry.SourceName);     // spans métier (booking.*.reserve)
-                t.AddHttpClientInstrumentation();
+                t.AddHttpClientInstrumentation();             // spans sortants HTTP (appels API externes)
 
+                // Exporteur OTLP (Jaeger local - dev)
                 if (!string.IsNullOrWhiteSpace(otlpEndpoint))
                     t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
             })
-            .UseFunctionsWorkerDefaults();    // Configure Azure Functions + capte Application Insights automatiquement
+            .UseFunctionsWorkerDefaults();   // Configure Azure Functions + capte Application Insights automatiquement
 
         // Export vers Azure Monitor (prod - seulement si APPLICATIONINSIGHTS_CONNECTION_STRING est configurée)
         if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
@@ -57,6 +62,7 @@ var builder = new HostBuilder()
         services.Configure<AppSettings>(ctx.Configuration.GetSection("AppSettings"));
         services.Configure<BlobStorageSetting>(ctx.Configuration.GetSection("BlobStorageSetting"));
 
+        // Configuration consumer (utilisée par IRoutingSlipExecutor pour setter + compléter)
         services.AddSingleton<ConsumerConfigurationService>();
         services.AddSingleton<IMessageTransitConfigurationService>(
             sp => sp.GetRequiredService<ConsumerConfigurationService>());
@@ -64,17 +70,16 @@ var builder = new HostBuilder()
             sp => sp.GetRequiredService<ConsumerConfigurationService>());
 
         // ── Service de compensation ────────────────────────────────────────────────────────────────
+        // Scoped : une instance par invocation Function (même durée de vie que les activités).
         services.AddScoped<IBookingCompensationService, BookingCompensationService>();
 
-        // ── Activités Routing Slip Topic ──────────────────────────────────────────────────────────
-        // AddRoutingSlipActivityForTopic : utilise ExecuteAsync (Topic) au lieu de ProcessAsync (Queue).
-        // stepName == Target dans AppSettings.Endpoints ET dans le filtre SQL de l'abonnement.
-        services.AddRoutingSlipActivityForTopic<BookCarActivity,    BookCarArgs>  ("ReserverVoiture");
-        services.AddRoutingSlipActivityForTopic<BookHotelActivity,  BookHotelArgs>("ReserverHotel");
-        services.AddRoutingSlipActivityForTopic<BookFlightActivity, BookFlightArgs>("ReserverVol");
+        // ── Activités Routing Slip ──────────────────────────────────────────────────────────────────
+        // stepName == Target dans AppSettings.Endpoints (doit correspondre aux noms
+        // de l'activateur et aux noms des triggers Service Bus ci-dessous).
+        services.AddRoutingSlipActivity<BookCarActivity,    BookCarArgs>  ("ReserverVoiture");
+        services.AddRoutingSlipActivity<BookHotelActivity,  BookHotelArgs>("ReserverHotel");
+        services.AddRoutingSlipActivity<BookFlightActivity, BookFlightArgs>("ReserverVol");
 
-        // Enregistrement centralisé des providers Azure.
-        // VisualStudioCredential pour le développement local (conforme à l'activateur).
         services.ConfigureAzureProviders(new AzureIdentity::Azure.Identity.VisualStudioCredential());
     });
 

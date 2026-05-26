@@ -1,5 +1,5 @@
+#pragma warning disable
 extern alias AzureIdentity;
-using RAMQ.Samples.Topic.RoutingSlip.Booking.Worker;
 using Azure.Identity;
 using Azure.Monitor.OpenTelemetry.Exporter;
 using Microsoft.Azure.Functions.Worker;
@@ -10,15 +10,15 @@ using Microsoft.Extensions.Hosting;
 using OpenTelemetry.Trace;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Telemetry;
 using RAMQ.Samples.ConfigurationService;
 using RAMQ.Samples.RoutingSlip.Booking.Message;
-using RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Activities;
-using RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Services;
 
 var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
-    .ConfigureAppConfiguration((_, config) =>
+    .ConfigureAppConfiguration((context, config) =>
     {
         config.AddJsonFile("local.settings.json", optional: false, reloadOnChange: true);
     })
@@ -28,7 +28,8 @@ var builder = new HostBuilder()
         services.ConfigureFunctionsApplicationInsights();
 
         // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
-        // Sources : EMT (routing_slip.step, messaging.*) + Booking (booking.*.reserve, booking.compensate)
+        // L'activateur publie le SlipEnvelope via EMT Producer → span messaging.send propagé.
+        // La trace complète (messaging.send + routing_slip.step × 3) est visible dans Jaeger.
         //
         // Exporteurs configurés selon l'environnement :
         //   • OTLP → Jaeger en développement local (docker-compose, port 4317)
@@ -39,12 +40,14 @@ var builder = new HostBuilder()
         var telemetryBuilder = services.AddOpenTelemetry()
             .WithTracing(t =>
             {
-                t.AddSource(EMTInstrumentation.SourceName);   // spans EMT (routing_slip.step, messaging.*)
-                t.AddSource(BookingTelemetry.SourceName);     // spans métier (booking.*.reserve)
+                t.AddSource(EMTInstrumentation.SourceName);
+                t.AddSource(BookingTelemetry.SourceName);
                 t.AddHttpClientInstrumentation();
 
                 if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+                {
                     t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+                }
             })
             .UseFunctionsWorkerDefaults();    // Configure Azure Functions + capte Application Insights automatiquement
 
@@ -57,24 +60,34 @@ var builder = new HostBuilder()
         services.Configure<AppSettings>(ctx.Configuration.GetSection("AppSettings"));
         services.Configure<BlobStorageSetting>(ctx.Configuration.GetSection("BlobStorageSetting"));
 
-        services.AddSingleton<ConsumerConfigurationService>();
+        // Configuration du producer (publie le SlipEnvelope vers la 1re étape)
+        services.AddSingleton<ProducerConfigurationService>();
         services.AddSingleton<IMessageTransitConfigurationService>(
-            sp => sp.GetRequiredService<ConsumerConfigurationService>());
-        services.AddSingleton<IConsumerConfigurationService>(
-            sp => sp.GetRequiredService<ConsumerConfigurationService>());
+            sp => sp.GetRequiredService<ProducerConfigurationService>());
+        services.AddSingleton<IProducerConfigurationService>(
+            sp => sp.GetRequiredService<ProducerConfigurationService>());
 
-        // ── Service de compensation ────────────────────────────────────────────────────────────────
-        services.AddScoped<IBookingCompensationService, BookingCompensationService>();
+        // Producer qui publie le slip vers la 1re étape (ReserverVoiture)
+        // IMPORTANT : le target "ReserverVoiture" doit correspondre à :
+        //   1. stepName dans AddRoutingSlipActivity (Worker)
+        //   2. Target dans AppSettings.Endpoints (Worker local.settings.json)
+        //   3. Queue Service Bus du [ServiceBusTrigger] ReserverVoiture (Worker BookingFunctions)
+        // Cette coherence garantit que le slip routing fonctionne correctement.
+        services.AddProducer<SlipEnvelope>("ReserverVoiture");
 
-        // ── Activités Routing Slip Topic ──────────────────────────────────────────────────────────
-        // AddRoutingSlipActivityForTopic : utilise ExecuteAsync (Topic) au lieu de ProcessAsync (Queue).
-        // stepName == Target dans AppSettings.Endpoints ET dans le filtre SQL de l'abonnement.
-        services.AddRoutingSlipActivityForTopic<BookCarActivity,    BookCarArgs>  ("ReserverVoiture");
-        services.AddRoutingSlipActivityForTopic<BookHotelActivity,  BookHotelArgs>("ReserverHotel");
-        services.AddRoutingSlipActivityForTopic<BookFlightActivity, BookFlightArgs>("ReserverVol");
+        // Résolveur d'endpoints pour RoutingSlipBuilder
+        services.AddSingleton<IEndpointResolver, EndpointResolver>();
+
+        // RoutingSlipBuilder — construit un slip "Booking" avec 3 étapes
+        services.AddTransient<RoutingSlipBuilder>(sp =>
+            new RoutingSlipBuilder("Booking", sp.GetRequiredService<IEndpointResolver>()));
 
         // Enregistrement centralisé des providers Azure.
-        // VisualStudioCredential pour le développement local (conforme à l'activateur).
+        // Remarque : contrairement à MultiTarget.Activator qui utilise new VisualStudioCredential(),
+        // nous utilisons ConfigureAzureProviders() sans argument pour éviter le conflit de namespace
+        // entre Azure.Core 1.54.0 et Azure.Identity 1.13.0 (due aux dépendances transitives d'OpenTelemetry).
+        // ConfigureAzureProviders() utilise DefaultAzureCredential qui résout automatiquement
+        // les Visual Studio credentials en développement local et Managed Identity en production.
         services.ConfigureAzureProviders(new AzureIdentity::Azure.Identity.VisualStudioCredential());
     });
 
