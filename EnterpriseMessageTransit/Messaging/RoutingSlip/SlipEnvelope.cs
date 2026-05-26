@@ -50,6 +50,6 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
 
         /// <summary>True si l'étape courante est la dernière du slip.</summary>
         [JsonIgnore]
-        public bool IsLastStep => Cursor == Steps.Length - 1;
+        public bool IsLastStep => Cursor == Steps.Count - 1;
     }
 }

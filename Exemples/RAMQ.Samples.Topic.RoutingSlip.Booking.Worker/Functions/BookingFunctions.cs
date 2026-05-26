@@ -31,25 +31,15 @@ namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Functions
         private readonly ILogger<BookingFunctions> _logger;
         private readonly IMessagingProvider _messagingProvider;
         private readonly IServiceScopeFactory _scopeFactory;
-        private readonly IRoutingSlipExecutor _carExecutor;
-        private readonly IRoutingSlipExecutor _hotelExecutor;
-        private readonly IRoutingSlipExecutor _flightExecutor;
 
-        // (Suppression du constructeur fautif)
         public BookingFunctions(
             ILogger<BookingFunctions> logger,
             IMessagingProvider messagingProvider,
-            IServiceScopeFactory scopeFactory,
-            IRoutingSlipExecutor carExecutor,
-            IRoutingSlipExecutor hotelExecutor,
-            IRoutingSlipExecutor flightExecutor)
+            IServiceScopeFactory scopeFactory)
         {
             _logger            = logger            ?? throw new ArgumentNullException(nameof(logger));
             _messagingProvider = messagingProvider ?? throw new ArgumentNullException(nameof(messagingProvider));
             _scopeFactory      = scopeFactory      ?? throw new ArgumentNullException(nameof(scopeFactory));
-            _carExecutor       = carExecutor       ?? throw new ArgumentNullException(nameof(carExecutor));
-            _hotelExecutor     = hotelExecutor     ?? throw new ArgumentNullException(nameof(hotelExecutor));
-            _flightExecutor    = flightExecutor    ?? throw new ArgumentNullException(nameof(flightExecutor));
         }
 
         // ── Étape 1 : Réserver la voiture (Topic → abonnement voiture) ───────────
@@ -71,7 +61,7 @@ namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Functions
 
             using (var scope = _scopeFactory.CreateScope())
             {
-                var executor = scope.ServiceProvider.GetRequiredService<IRoutingSlipExecutor>();
+                var executor = scope.ServiceProvider.GetRequiredKeyedService<IRoutingSlipExecutor>(typeof(BookCarArgs));
                 _messagingProvider.BindContext(message, actions);
                 await executor.ExecuteAsync(_messagingProvider, cancellationToken);
             }
@@ -96,7 +86,7 @@ namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Functions
 
             using (var scope = _scopeFactory.CreateScope())
             {
-                var executor = scope.ServiceProvider.GetRequiredService<IRoutingSlipExecutor>();
+                var executor = scope.ServiceProvider.GetRequiredKeyedService<IRoutingSlipExecutor>(typeof(BookHotelArgs));
                 _messagingProvider.BindContext(message, actions);
                 await executor.ExecuteAsync(_messagingProvider, cancellationToken);
             }
@@ -121,7 +111,7 @@ namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Functions
 
             using (var scope = _scopeFactory.CreateScope())
             {
-                var executor = scope.ServiceProvider.GetRequiredService<IRoutingSlipExecutor>();
+                var executor = scope.ServiceProvider.GetRequiredKeyedService<IRoutingSlipExecutor>(typeof(BookFlightArgs));
                 _messagingProvider.BindContext(message, actions);
                 await executor.ExecuteAsync(_messagingProvider, cancellationToken);
             }
