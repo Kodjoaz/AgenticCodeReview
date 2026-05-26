@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "RAMQ.Samples.Queue.MultiTarget.Worker": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7221",
+      "launchBrowser": false
+    }
+  }
+}

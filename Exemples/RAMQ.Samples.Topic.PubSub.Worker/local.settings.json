@@ -1,0 +1,36 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated"
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "https://stxalpum.blob.core.windows.net/",
+    "ContainerName": "messagetransit",
+    "FolderName": "claimcheck",
+    "ClaimCheckThresholdBytes": 262144
+  },
+  "AppSettings": {
+    "ServiceBusNamespace": "sb-mfccrs.servicebus.windows.net",
+    "ApplicationName": "PubSub Worker",
+    "MessageTransitJournalName": "COMJournalAISUnit",
+    "MessageTransitJournalStoreUri": "https://stxalpum.table.core.windows.net/",
+    "ConnectorUrl": "https://localhost/connector",
+    "EnableJsonIndentation": true,
+    "RetryPolicy": {
+      "InitialDelay": "00:00:05",
+      "MaxDelay": "00:01:00",
+      "UseJitter": true,
+      "MaxDeliveryCount": 10
+    },
+    "Itinerary": [
+      {
+        "Endpoint": {
+          "EntityName": "com-poc-rubrique-auto-forward-source-fonct",
+          "EntityType": "Topic",
+          "TTL": null
+        }
+      }
+    ]
+  }
+}

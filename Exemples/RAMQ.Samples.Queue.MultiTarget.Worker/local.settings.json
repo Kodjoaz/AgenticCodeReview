@@ -1,0 +1,36 @@
+{
+  "AppSettings": {
+    "ServiceBusNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net",
+    "Endpoints": [
+      {
+        "Endpoint": {
+          "EntityName": "sbq-rcp-routingslipcarreservation-unit",
+          "EntityType": "Queue"
+        },
+        "Target": "Car"
+      },
+      {
+        "Endpoint": {
+          "EntityName": "sbq-rcp-routingsliphotelreservation-unit",
+          "EntityType": "Queue"
+        },
+        "Target": "Hotel"
+      },
+      {
+        "Endpoint": {
+          "EntityName": "sbq-rcp-routingslipflightreservation-unit",
+          "EntityType": "Queue"
+        },
+        "Target": "Flight"
+      }
+    ],
+    "MessageTransitJournalStoreUri": "https://stxalpum.table.core.windows.net",
+    "MessageTransitJournalName": "COMJournalAISUnit"
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "https://stxalpum.blob.core.windows.net",
+    "ContainerName": "claimcheck",
+    "FolderName": "messages",
+    "ClaimCheckThresholdBytes": 262144
+  }
+}

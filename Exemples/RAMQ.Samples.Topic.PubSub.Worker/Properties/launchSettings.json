@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "RAMQ.AIS.Sample.PubSub.Publish": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7082",
+      "launchBrowser": false
+    }
+  }
+}

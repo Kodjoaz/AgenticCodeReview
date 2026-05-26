@@ -1,71 +1,79 @@
-using Microsoft.Extensions.Logging;
+﻿using Microsoft.Extensions.Logging;
+using RAMQ.COM.EnterpriseMessageTransit.Configuration;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers;
-using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Serialization;
-using RAMQ.COM.EnterpriseMessageTransit.Messaging;
 using RAMQ.COM.EnterpriseMessageTransit.Exceptions;
-using RAMQ.Samples.Queue.Simple.Message;
+using RAMQ.Samples.Queue.MultiTarget.Message;
 using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RAMQ.Samples.Queue.Simple.Consumer
+namespace RAMQ.Samples.Queue.MultiTarget.Consumer
 {
-    public class PublishConsumer : BaseConsumer<SimpleMessage>
+    public class CarConsumer : BaseConsumer<CarMessage>
     {
-        public PublishConsumer(
+        public CarConsumer(
             IMessagingProvider messagingProvider,
-            ILogger<PublishConsumer> logger,
+            ILogger<CarConsumer> logger,
             IConsumerConfigurationService config,
             IMessageSerializer serializer,
             IStorageProvider storageProvider,
             string? targetName = null,
             string? consumerName = null,
             string? actionName = null)
-            : base(messagingProvider, logger, config, serializer, storageProvider, targetName, consumerName, actionName)
-        {
-        }
+            : base(messagingProvider, logger, config, serializer, storageProvider, targetName, consumerName, actionName) { }
 
         public override async Task<MessageTransitContext<MessageTransitResponse>> ConsumeAsync(
-            MessageTransitContext<SimpleMessage> context,
+            MessageTransitContext<CarMessage> context,
             CancellationToken cancellationToken)
         {
             ArgumentNullException.ThrowIfNull(context);
-            using var scope = Logger.BeginScope(new Dictionary<string, object?> { ["MessageId"] = context.MessageId, ["SessionId"] = context.SessionId });
+            using var scope = Logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["MessageId"] = context.MessageId,
+                ["SessionId"] = context.SessionId
+            });
 
-            var reply = new MessageTransitResponse { StatusCode = (int)System.Net.HttpStatusCode.OK, Content = "OK" };
+            var reply = new MessageTransitResponse
+            {
+                StatusCode = (int)System.Net.HttpStatusCode.OK,
+                Content = "Car OK"
+            };
 
             try
             {
-                Logger.LogInformation("Traitement du message {MessageId}", context.MessageId);
                 await CompleteMessageAsync(cancellationToken);
             }
             catch (ImmediateDLQException exDLQ)
             {
+                // ✅ Gère directement DLQ immédiate
                 reply.StatusCode = exDLQ.StatusCode ?? (int)System.Net.HttpStatusCode.InternalServerError;
                 reply.Content = exDLQ.Message;
                 reply.IsPermanentFailure = true;
                 await DeadLetterMessageAsync(exDLQ, cancellationToken);
             }
-            catch (ImmediateRetryException exImmediateRetry)
+            catch (ImmediateRetryException ex)
             {
-                reply.StatusCode = exImmediateRetry.StatusCode ?? (int)System.Net.HttpStatusCode.Conflict;
-                reply.Content = exImmediateRetry.Message;
+                // ✅ Gère directement le retry immédiat
+                reply.StatusCode = ex.StatusCode ?? (int)System.Net.HttpStatusCode.Conflict;
+                reply.Content = ex.Message;
                 reply.IsTransient = true;
-                await ImmediateRetryAsync(exImmediateRetry, cancellationToken);
+                await ImmediateRetryAsync(ex, cancellationToken);
             }
-            catch (ExponentialRetryException exExponential)
+            catch (ExponentialRetryException ex)
             {
-                reply.StatusCode = exExponential.StatusCode ?? (int)System.Net.HttpStatusCode.TooManyRequests;
-                reply.Content = exExponential.Message;
+                // ✅ Gère directement le retry exponentiel
+                reply.StatusCode = ex.StatusCode ?? (int)System.Net.HttpStatusCode.TooManyRequests;
+                reply.Content = ex.Message;
                 reply.IsTransient = true;
-                await ExponentialRetryAsync(exExponential, cancellationToken);
+                await ExponentialRetryAsync(ex, cancellationToken);
             }
             catch (OperationCanceledException)
             {
-                Logger.LogWarning("Annulation en cours PublishConsumer MessageId={MessageId}", context.MessageId);
+                Logger.LogWarning("Annulation en cours CarConsumer MessageId={MessageId}", context.MessageId);
                 throw;
             }
             catch (Exception ex)
@@ -73,7 +81,7 @@ namespace RAMQ.Samples.Queue.Simple.Consumer
                 reply.StatusCode = (int)System.Net.HttpStatusCode.InternalServerError;
                 reply.Content = ex.Message;
                 reply.IsTransient = true;
-                Logger.LogError(ex, "Erreur générale pour MessageId={MessageId}", context.MessageId);
+                Logger.LogError(ex, "Erreur CarConsumer MessageId={MessageId}", context.MessageId);
                 await DeadLetterMessageAsync(ex, cancellationToken);
             }
 

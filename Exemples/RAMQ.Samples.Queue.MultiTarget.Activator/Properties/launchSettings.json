@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "RAMQ.Samples.Queue.MultiTarget.Activator": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7187",
+      "launchBrowser": false
+    }
+  }
+}

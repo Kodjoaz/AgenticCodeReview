@@ -1,0 +1,15 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\RAMQ.Samples.ConfigurationService\RAMQ.Samples.ConfigurationService.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.MessageTransitHelper\RAMQ.Samples.MessageTransitHelper.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.Queue.MultiTarget.Message\RAMQ.Samples.Queue.MultiTarget.Message.csproj" />
+  </ItemGroup>
+
+</Project>

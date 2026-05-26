@@ -47,6 +47,13 @@ namespace RAMQ.Samples.Queue.Simple.Consumer
                 //throw new ExponentialRetryException("fake exponential retry");
                 await CompleteMessageAsync(cancellationToken);
             }
+            catch (ImmediateDLQException exDLQ)
+            {
+                reply.StatusCode = exDLQ.StatusCode ?? (int)System.Net.HttpStatusCode.InternalServerError;
+                reply.Content = exDLQ.Message;
+                reply.IsPermanentFailure = true;
+                await DeadLetterMessageAsync(exDLQ, cancellationToken);
+            }
             catch (ImmediateRetryException exImmediateRetry)
             {
                 reply.StatusCode = exImmediateRetry.StatusCode ?? (int)System.Net.HttpStatusCode.Conflict;
@@ -60,13 +67,6 @@ namespace RAMQ.Samples.Queue.Simple.Consumer
                 reply.Content = exExponential.Message;
                 reply.IsTransient = true;
                 await ExponentialRetryAsync(exExponential, cancellationToken);
-            }
-            catch (ImmediateDLQException exDLQ)
-            {
-                reply.StatusCode = exDLQ.StatusCode ?? (int)System.Net.HttpStatusCode.InternalServerError;
-                reply.Content = exDLQ.Message;
-                reply.IsPermanentFailure = true;
-                await DeadLetterMessageAsync(exDLQ, cancellationToken);
             }
             catch (OperationCanceledException)
             {
@@ -82,16 +82,7 @@ namespace RAMQ.Samples.Queue.Simple.Consumer
                 await DeadLetterMessageAsync(ex, cancellationToken);
             }
 
-            return BuildResponseContext(context, reply);
+            return context.CopyWithResponse(reply);
         }
-
-        private MessageTransitContext<MessageTransitResponse> BuildResponseContext(MessageTransitContext<SimpleMessage> source, MessageTransitResponse reply) =>
-            new()
-            {
-                MessageId = source.MessageId,
-                SessionId = source.SessionId,
-                SequenceNumber = source.SequenceNumber,
-                Message = reply
-            };
     }
 }

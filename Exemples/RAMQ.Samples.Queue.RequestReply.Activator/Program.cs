@@ -4,9 +4,9 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
-using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
 using RAMQ.Samples.ConfigurationService;
-using RAMQ.Samples.Queue.Simple.Message;
+using RAMQ.Samples.Queue.RequestReply.Consumer;
+using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
 
 var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
@@ -20,20 +20,24 @@ var builder = new HostBuilder()
         services.ConfigureFunctionsApplicationInsights();
 
         var configuration = hostContext.Configuration;
-
-        services.Configure<BlobStorageSetting>(configuration.GetSection("BlobStorageSetting"));
         services.Configure<AppSettings>(configuration.GetSection("AppSettings"));
+        services.Configure<BlobStorageSetting>(configuration.GetSection("BlobStorageSetting"));
 
-        // ProducerConfigurationService — singleton car stateless et partagé
+        // Config consumer
+        services.AddSingleton<ConsumerConfigurationService>();
+        services.AddSingleton<IMessageTransitConfigurationService>(sp => sp.GetRequiredService<ConsumerConfigurationService>());
+        services.AddSingleton<IConsumerConfigurationService>(sp => sp.GetRequiredService<ConsumerConfigurationService>());
+
+        // Config producer (pour IMessageProducer<ReplyMessage> utilisé par RequestReplyConsumer)
         services.AddSingleton<ProducerConfigurationService>();
-        services.AddSingleton<IMessageTransitConfigurationService>(sp => sp.GetRequiredService<ProducerConfigurationService>());
         services.AddSingleton<IProducerConfigurationService>(sp => sp.GetRequiredService<ProducerConfigurationService>());
 
-        // Producer Scoped
-        services.AddProducer<SimpleMessage>();
+        // Producer de réponses — cible configurée dans local.settings.json sous AppSettings:Endpoints:reply-queue
+        services.AddProducer<RAMQ.Samples.Queue.RequestReply.Message.ReplyMessage>("reply-queue");
 
-        // Enregistrement centralisé des providers Azure.
-        // VisualStudioCredential pour le développement local.
+        // Consumer RequestReply — mono-endpoint (ConsumerConfigurationService = 1 endpoint) : aucun paramètre requis.
+        services.AddConsumer<RequestReplyConsumer>();
+
         services.ConfigureAzureProviders(new VisualStudioCredential());
     });
 

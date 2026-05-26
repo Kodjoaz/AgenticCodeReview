@@ -1,0 +1,88 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "ServiceBusConnection__fullyQualifiedNamespace": "sb-wrapca.servicebus.windows.net"
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "https://stxalpum.blob.core.windows.net/",
+    "ContainerName": "messagetransit",
+    "FolderName": "claimcheck",
+    "ClaimCheckThresholdBytes": 262144
+  },
+  "AppSettings": {
+    "ServiceBusNamespace": "sb-wrapca.servicebus.windows.net",
+    "Itinerary": [
+      {
+        "Endpoint": {
+          "EntityName": "notification-topic",
+          "EntityType": "Topic",
+          "Subscription": {
+            "Consumer": "CarBookingConsumer",
+            "Action": "CarBooking"
+          },
+          "Target": "CarBookingConsumer"
+        }
+      },
+      {
+        "Endpoint": {
+          "EntityName": "notification-topic",
+          "EntityType": "Topic",
+          "Subscription": {
+            "Consumer": "CarCancellationConsumer",
+            "Action": "CarCancellation"
+          },
+          "Target": "CarCancellationConsumer"
+        }
+      },
+      {
+        "Endpoint": {
+          "EntityName": "notification-topic",
+          "EntityType": "Topic",
+          "Subscription": {
+            "Consumer": "HotelBookingConsumer",
+            "Action": "HotelBooking"
+          },
+          "Target": "HotelBookingConsumer"
+        }
+      },
+      {
+        "Endpoint": {
+          "EntityName": "notification-topic",
+          "EntityType": "Topic",
+          "Subscription": {
+            "Consumer": "HotelCancellationConsumer",
+            "Action": "HotelCancellation"
+          },
+          "Target": "HotelCancellationConsumer"
+        }
+      },
+      {
+        "Endpoint": {
+          "EntityName": "notification-topic",
+          "EntityType": "Topic",
+          "Subscription": {
+            "Consumer": "FlightBookingConsumer",
+            "Action": "FlightBooking"
+          },
+          "Target": "FlightBookingConsumer"
+        }
+      },
+      {
+        "Endpoint": {
+          "EntityName": "notification-topic",
+          "EntityType": "Topic",
+          "Subscription": {
+            "Consumer": "FlightCancellationConsumer",
+            "Action": "FlightCancellation"
+          },
+          "Target": "FlightCancellationConsumer"
+        }
+      }
+    ],
+    "ApplicationName": "PubSub",
+    "MessageTransitJournalName": "COMJournalAISUnit",
+    "MessageTransitJournalStoreUri": "https://stxalpum.table.core.windows.net/"
+  }
+}
