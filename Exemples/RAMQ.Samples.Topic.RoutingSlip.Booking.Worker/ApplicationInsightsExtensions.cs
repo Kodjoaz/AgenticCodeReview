@@ -1,14 +1,6 @@
-using Microsoft.Extensions.DependencyInjection;
-
+// This file was intentionally left empty.
+// ConfigureFunctionsApplicationInsights() is provided by Microsoft.Azure.Functions.Worker
+// and is called directly in Program.cs.
 namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker
 {
-    public static class ApplicationInsightsExtensions
-    {
-        public static IServiceCollection ConfigureFunctionsApplicationInsights(this IServiceCollection services)
-        {
-            // Extension factice pour alignement avec l'activateur.
-            // Si une logique spécifique est requise, l'ajouter ici.
-            return services;
-        }
-    }
 }

@@ -1,43 +1,38 @@
 ﻿using RAMQ.COM.EnterpriseMessageTransit.Configuration;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace RAMQ.Samples.ConfigurationService
 {
-    public class ConsumerConfigurationService : IConsumerConfigurationService
+    public abstract class BaseConfigurationService
     {
         public BlobStorageSetting? BlobStorageSetting { get; }
         public AppSettings? AppSettings { get; }
 
-        private readonly ILogger<ConsumerConfigurationService> _logger;
-
-        public ConsumerConfigurationService(
+        protected BaseConfigurationService(
             IOptions<BlobStorageSetting> blobStorageOptions,
-            IOptions<AppSettings> appSettingOptions,
-            ILogger<ConsumerConfigurationService> logger)
+            IOptions<AppSettings> appSettingOptions)
         {
+            ArgumentNullException.ThrowIfNull(blobStorageOptions);
+            ArgumentNullException.ThrowIfNull(appSettingOptions);
             BlobStorageSetting = blobStorageOptions.Value;
             AppSettings = appSettingOptions.Value;
-            _logger = logger;
         }
     }
 
-    public class ProducerConfigurationService : IProducerConfigurationService
+    public class ConsumerConfigurationService : BaseConfigurationService, IConsumerConfigurationService
     {
-        public BlobStorageSetting? BlobStorageSetting { get; }
-        public AppSettings? AppSettings { get; }
+        public ConsumerConfigurationService(
+            IOptions<BlobStorageSetting> blobStorageOptions,
+            IOptions<AppSettings> appSettingOptions)
+            : base(blobStorageOptions, appSettingOptions) { }
+    }
 
-        private readonly ILogger<ProducerConfigurationService> _logger;
-
+    public class ProducerConfigurationService : BaseConfigurationService, IProducerConfigurationService
+    {
         public ProducerConfigurationService(
             IOptions<BlobStorageSetting> blobStorageOptions,
-            IOptions<AppSettings> appSettingOptions,
-            ILogger<ProducerConfigurationService> logger)
-        {
-            BlobStorageSetting = blobStorageOptions.Value;
-            AppSettings = appSettingOptions.Value;
-            _logger = logger;
-        }
+            IOptions<AppSettings> appSettingOptions)
+            : base(blobStorageOptions, appSettingOptions) { }
     }
 }
 

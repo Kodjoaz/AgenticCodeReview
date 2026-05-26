@@ -1,4 +1,3 @@
-#pragma warning disable
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit;
@@ -25,8 +24,8 @@ namespace RAMQ.Samples.Queue.RequestReply.Worker
         public DoWork(ILogger<DoWork> logger,
                       IMessageProducer<RequestMessage> producer)
         {
-            _logger = logger;
-            _producer = producer;
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _producer = producer ?? throw new ArgumentNullException(nameof(producer));
             _userFileDirectory = Path.Combine(AppContext.BaseDirectory, "userfiles");
             Directory.CreateDirectory(_userFileDirectory);
         }

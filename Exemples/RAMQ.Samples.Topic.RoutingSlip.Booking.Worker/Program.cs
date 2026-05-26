@@ -1,5 +1,4 @@
 extern alias AzureIdentity;
-using RAMQ.Samples.Topic.RoutingSlip.Booking.Worker;
 using Azure.Identity;
 using Azure.Monitor.OpenTelemetry.Exporter;
 using Microsoft.Azure.Functions.Worker;

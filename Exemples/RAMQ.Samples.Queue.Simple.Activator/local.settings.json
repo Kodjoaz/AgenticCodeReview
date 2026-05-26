@@ -1,0 +1,36 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "ServiceBusConnection__fullyQualifiedNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net"
+  },
+
+  "AppSettings": {
+    "ApplicationName": "SimpleActivator",
+    "ServiceBusNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net",
+    "RetryPolicy": {
+      "InitialDelay": "00:00:05",
+      "MaxDelay": "00:00:30",
+      "UseJitter": true,
+      "MaxDeliveryCount": 10
+    },
+
+    "Endpoints": [
+      {
+        "Endpoint": {
+          "EntityName": "sbq-RCP-FileSession-unit",
+          "EntityType": "Queue"
+        }
+      }
+    ],
+    "MessageTransitJournalStoreUri": "https://stxalpum.table.core.windows.net",
+    "MessageTransitJournalName": "COMJournalAISUnit"
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "https://stxalpum.blob.core.windows.net",
+    "ContainerName": "claimcheck",
+    "FolderName": "messages",
+    "ClaimCheckThresholdBytes": 262144
+  }
+}

@@ -45,7 +45,7 @@ var builder = new HostBuilder()
 
 
         // Enregistrement centralisé
-        services.ConfigureAzureProviders();
+        services.ConfigureAzureProviders(new VisualStudioCredential());
 
         // Producteur refonte
         services.AddProducer<RequestMessage>();

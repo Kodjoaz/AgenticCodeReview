@@ -1,4 +1,3 @@
-#pragma warning disable
 extern alias AzureIdentity;
 using Azure.Identity;
 using Azure.Monitor.OpenTelemetry.Exporter;
