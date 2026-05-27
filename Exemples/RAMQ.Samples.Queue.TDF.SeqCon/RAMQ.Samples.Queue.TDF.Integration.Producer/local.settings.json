@@ -1,0 +1,21 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated"
+  },
+  "AppSettings": {
+    "ServiceBusNamespace": "sb-tdf-integration.servicebus.windows.net",
+    "ApplicationName": "TDF Integration Producer",
+    "Endpoints": [
+      {
+        "Endpoint": {
+          "EntityName": "sbq-tdf-integration-session",
+          "EntityType": "Queue",
+          "EnableSession": true,
+          "PublishTimeout": "00:01:00"
+        }
+      }
+    ]
+  }
+}

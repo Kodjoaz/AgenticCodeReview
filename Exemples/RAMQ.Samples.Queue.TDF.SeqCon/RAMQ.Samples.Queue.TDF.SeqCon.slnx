@@ -7,4 +7,5 @@
   <Project Path="RAMQ.Samples.Queue.TDF.SeqCon.StateFul/RAMQ.Samples.Queue.TDF.SeqCon.StateFul.csproj" />
   <Project Path="RAMQ.Samples.Queue.TDF.SeqCon.Subscriber/RAMQ.Samples.Queue.TDF.SeqCon.Subscriber.csproj" />
   <Project Path="RAMQ.Samples.Queue.TDF.SeqCon.Worker/RAMQ.Samples.Queue.TDF.SeqCon.Worker.csproj" />
+  <Project Path="RAMQ.Samples.Queue.TDF.Integration.Producer/RAMQ.Samples.Queue.TDF.Integration.Producer.csproj" />
 </Solution>
