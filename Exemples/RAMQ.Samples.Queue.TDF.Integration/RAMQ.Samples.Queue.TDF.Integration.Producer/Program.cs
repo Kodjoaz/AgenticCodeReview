@@ -1,0 +1,41 @@
+using Azure.Identity;
+using Microsoft.ApplicationInsights.Extensibility;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using RAMQ.COM.EnterpriseMessageTransit.Configuration;
+using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
+using RAMQ.Samples.ConfigurationService;
+using RAMQ.Samples.Queue.TDF.Integration.Producer.Services;
+using RAMQ.Samples.Queue.TDF.Integration.Consumer.Messages;
+using RAMQ.Samples.Queue.TDF.Integration.Producer.Telemetry;
+
+var host = new HostBuilder()
+    .ConfigureFunctionsWorkerDefaults()
+    .ConfigureAppConfiguration((_, cfg) =>
+    {
+        cfg.AddJsonFile("local.settings.json", optional: true, reloadOnChange: true);
+    })
+    .ConfigureServices((ctx, services) =>
+    {
+        services.AddSingleton<ITelemetryInitializer, ProducerTelemetryInitializer>();
+        services.AddApplicationInsightsTelemetryWorkerService();
+        services.ConfigureFunctionsApplicationInsights();
+
+        services.Configure<AppSettings>(ctx.Configuration.GetSection("AppSettings"));
+
+        services.AddSingleton<ProducerConfigurationService>();
+        services.AddSingleton<IMessageTransitConfigurationService>(sp => sp.GetRequiredService<ProducerConfigurationService>());
+        services.AddSingleton<IProducerConfigurationService>(sp => sp.GetRequiredService<ProducerConfigurationService>());
+
+        services.AddProducer<TdfTransactionCommand>();
+
+        services.AddSingleton<ITdfProducerService, TdfProducerService>();
+
+        services.ConfigureAzureProviders(new VisualStudioCredential());
+    })
+    .Build();
+
+await host.RunAsync();
+
