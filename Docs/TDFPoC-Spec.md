@@ -1,4 +1,4 @@
-# TDF PoC — Spécification du Proof of Concept
+﻿# TDF PoC — Spécification du Proof of Concept
 
 **Projet :** Remplacement de BizTalk HOA5/TDF par Azure Functions + EMT
 **Version :** 3.0 — Architecture avec TDF.Integration.Producer, observabilité complète, nomenclature alignée
@@ -75,7 +75,7 @@ plutôt que de publier directement dans `tdf-queue`. Cela centralise :
 ### 3.1 Record de domaine partagé
 
 ```csharp
-// Projet : RAMQ.Samples.Queue.TDF.SeqCon.Consumer / Messages/TdfTransactionCommand.cs
+// Projet : RAMQ.Samples.Queue.TDF.Integration.Consumer / Messages/TdfTransactionCommand.cs
 public sealed record TdfTransactionCommand(
     string  AuthorizationToken,
     string  NumeroEchange,
@@ -150,7 +150,7 @@ public sealed record TdfTransactionCommand(
 
 ```mermaid
 flowchart TD
-    subgraph WORKER["RAMQ.Samples.Queue.TDF.SeqCon.Worker (Timer Trigger)"]
+    subgraph WORKER["RAMQ.Samples.Queue.TDF.Integration.Frontend (Timer Trigger)"]
         W1["Étape 1 — local\nSessionId + AuthToken"]
         W2["Étape 2\nTelechargerPieceJointe\nConstruireMessage\nPublier → TDF.Queue"]
         W3["Étape 3\nConstruireMessage\nPublier → TDF.Queue"]
@@ -159,7 +159,7 @@ flowchart TD
 
     QUEUE[("TDF.Queue\nSessions")]
 
-    subgraph SUB["RAMQ.Samples.Queue.TDF.SeqCon.Subscriber (ServiceBus Trigger)"]
+    subgraph SUB["RAMQ.Samples.Queue.TDF.Integration.Subscriber (ServiceBus Trigger)"]
         S_BIND["BindContext + TryDeserialize"]
         S_ROUTE{"Variables['step']"}
         S_STEP2["HandleEnvoyerLotFichier\nConsumeAsync → ScheduleOrchestration\nCompleteMessageAsync"]
@@ -171,11 +171,11 @@ flowchart TD
         S_ROUTE -->|"inconnu"| S_DLQ
     end
 
-    subgraph DURABLE["RAMQ.Samples.Queue.TDF.SeqCon.StateFul (Durable)"]
+    subgraph DURABLE["RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator (Durable)"]
         SF["FileSent\n↓ CorrellerEnvoyer event\n↓ Valide AuthToken\nCompleted | Failed_Token | Failed_Timeout"]
     end
 
-    subgraph CONS["RAMQ.Samples.Queue.TDF.SeqCon.Consumer (BaseConsumer)"]
+    subgraph CONS["RAMQ.Samples.Queue.TDF.Integration.Consumer (BaseConsumer)"]
         C2["EnvoyerLotFichier\nV + E"]
         C3["CorrellerEnvoyer\nV + T + E\nRetourne IndExecOrcSpec"]
     end
@@ -236,7 +236,7 @@ flowchart TD
 
 ### 5.1 TDF.Integration.Producer — HTTP Trigger + VE + Publication
 
-**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Producer`
+**Projet :** `RAMQ.Samples.Queue.TDF.Integration.Producer`
 **Type :** Azure Function — **HTTP Trigger**
 **Rôle :** Reçoit les requêtes HTTP du TDF Frontend. Effectue la validation et l'enrichissement (VE) des messages TDF avant publication dans `tdf-queue` via EMT. **Point d'entrée unique pour tous les messages TDF.**
 
@@ -411,7 +411,7 @@ builder.Build().Run();
 
 ### 5.1bis TDF Worker — Simulateur du TDF Frontend (PoC uniquement)
 
-**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Worker`
+**Projet :** `RAMQ.Samples.Queue.TDF.Integration.Frontend`
 **Type :** Azure Function — **Timer Trigger** (PoC uniquement, non en production)
 **Déclenchement :** `"0 */2 * * * *"` (toutes les 2 minutes — configurable)
 **Rôle :** Simule le TDF Frontend pour le PoC. Génère les 3 étapes d'une transaction TDF, effectue le Claim Check (upload Blob), puis appelle le TDF Producer via `HttpClient`.
@@ -421,18 +421,18 @@ builder.Build().Run();
 #### 5.1bis.1 Orchestration des 3 étapes
 
 ```csharp
-public class TdfSeqConWorkerFunction
+public class TdfFrontendFunction
 {
     private readonly HttpClient _httpClient;
     private readonly BlobContainerClient _blobContainer;
     private readonly WorkerOptions _options;
-    private readonly ILogger<TdfSeqConWorkerFunction> _logger;
+    private readonly ILogger<TdfFrontendFunction> _logger;
 
-    public TdfSeqConWorkerFunction(
+    public TdfFrontendFunction(
         HttpClient httpClient,
         BlobContainerClient blobContainer,
         IOptions<WorkerOptions> options,
-        ILogger<TdfSeqConWorkerFunction> logger)
+        ILogger<TdfFrontendFunction> logger)
     {
         _httpClient    = httpClient;
         _blobContainer = blobContainer;
@@ -590,7 +590,7 @@ public class TdfSeqConWorkerFunction
 
 ```csharp
 builder.Services
-    .AddHttpClient<TdfSeqConWorkerFunction>()
+    .AddHttpClient<TdfFrontendFunction>()
     .AddSingleton(_ =>
         new BlobServiceClient(builder.Configuration["BlobStorage:ConnectionString"])
             .GetBlobContainerClient("inter-ppp"))
@@ -629,7 +629,7 @@ public sealed class WorkerOptions
 
 ### 5.2 TDF Subscriber — Orchestration légère + Routage par `Variables["step"]`
 
-**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Subscriber`
+**Projet :** `RAMQ.Samples.Queue.TDF.Integration.Subscriber`
 **Type :** Azure Function — ServiceBus Trigger
 **Rôle :** Couche d'orchestration mince sur `tdf-queue`. **Aucune logique métier.**
 Route par `Variables["step"]` vers les Consumers appropriés. Coordonne le Durable Orchestrator. Seul responsable du `PublishAsync` vers `tdf-topic`.
@@ -648,16 +648,16 @@ Route par `Variables["step"]` vers les Consumers appropriés. Coordonne le Durab
 #### Structure de classe
 
 ```csharp
-public class TdfSeqConSubscriberFunction
+public class TdfSubscriberFunction
 {
-    private readonly TdfSeqConConsumer _consumer;
+    private readonly TdfConsumer _consumer;
     private readonly IMessageProducer<TdfTransactionCommand> _topicProducer;
-    private readonly ILogger<TdfSeqConSubscriberFunction> _logger;
+    private readonly ILogger<TdfSubscriberFunction> _logger;
 
-    public TdfSeqConSubscriberFunction(
-        TdfSeqConConsumer consumer,
+    public TdfSubscriberFunction(
+        TdfConsumer consumer,
         IMessageProducer<TdfTransactionCommand> topicProducer,
-        ILogger<TdfSeqConSubscriberFunction> logger)
+        ILogger<TdfSubscriberFunction> logger)
     { /* ... */ }
 
     [Function("TdfSeqConSubscriber")]
@@ -823,7 +823,7 @@ public class TdfSeqConSubscriberFunction
 
 ```csharp
 builder.Services
-    .AddConsumer<TdfTransactionCommand, TdfSeqConConsumer>()
+    .AddConsumer<TdfTransactionCommand, TdfConsumer>()
     .AddProducer<TdfTransactionCommand>(name: "queue", opts =>
     {
         opts.Endpoint.EntityName    = config["AppSettings:Queue:EntityName"];  // TDF.Queue
@@ -860,16 +860,16 @@ builder.Services
 
 ### 5.3 TDF Consumers — VTE (Validation, Transform, Enrich)
 
-**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Consumer`
+**Projet :** `RAMQ.Samples.Queue.TDF.Integration.Consumer`
 **Type :** Librairie .NET 8 — `BaseConsumer<TdfTransactionCommand>` (EMT)
 **Rôle :** Logique métier des Étapes 2 et 3. Deux consommateurs spécifiques aux étapes : `EnvoyerLotFichierConsumer` (Étape 2 — V+E) et `CorrellerEnvoyerConsumer` (Étape 3 — V+T+E).
 **Contraintes :** Aucune référence à Service Bus. Pas de `IMessageProducer`. Pas de `CompleteMessageAsync`.
 
 ```csharp
-public class TdfSeqConConsumer : BaseConsumer<TdfTransactionCommand>
+public class TdfConsumer : BaseConsumer<TdfTransactionCommand>
 {
     private readonly IHoa5BackendApi _api;    // Refit — appelé à l'Étape 3 uniquement
-    private readonly ILogger<TdfSeqConConsumer> _logger;
+    private readonly ILogger<TdfConsumer> _logger;
 
     protected override async Task<ConsumeResult> ConsumeAsync(
         MessageTransitContext<TdfTransactionCommand> context,
@@ -1005,7 +1005,7 @@ public record ConsumeResult
 
 ### 5.4 TDF Durable Orchestrator — Corrélation d'état
 
-**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.StateFul`
+**Projet :** `RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator`
 **Type :** Azure Durable Function
 **Rôle :** Machine à états inter-étapes. Valide le `AuthorizationToken`. Aucun appel API. Aucune logique métier.
 
@@ -1374,30 +1374,30 @@ TDF.Integration.Frontend [Timer Trigger]
 ## 7. Topologie de la solution — Répertoires et projets
 
 ```
-RAMQ.Samples.Queue.TDF.SeqCon/
+RAMQ.Samples.Queue.TDF.Integration/
 │
-├── RAMQ.Samples.Queue.TDF.SeqCon.sln
+├── RAMQ.Samples.Queue.TDF.Integration.sln
 │
-├── RAMQ.Samples.Queue.TDF.SeqCon.Worker/
+├── RAMQ.Samples.Queue.TDF.Integration.Frontend/
 │   ├── *.csproj                           # net8.0, Functions.Worker, Storage.Blobs
 │   ├── Program.cs                         # AddProducer<TdfTransactionCommand>
 │   ├── host.json
 │   ├── appsettings.json
 │   ├── Options/WorkerOptions.cs
 │   └── Functions/
-│       └── TdfSeqConWorkerFunction.cs     # TimerTrigger + 4 méthodes
+│       └── TdfFrontendFunction.cs     # TimerTrigger + 4 méthodes
 │
-├── RAMQ.Samples.Queue.TDF.SeqCon.Subscriber/
+├── RAMQ.Samples.Queue.TDF.Integration.Subscriber/
 │   ├── *.csproj                           # net8.0, Functions.Worker, DurableTask.Client
 │   ├── Program.cs                         # AddConsumer + AddProducer (queue + topic)
 │   ├── host.json                          # autoComplete: false, maxConcurrentCalls: 2
 │   ├── appsettings.json
 │   └── Functions/
-│       └── TdfSeqConSubscriberFunction.cs # ServiceBusTrigger + DurableClient
+│       └── TdfSubscriberFunction.cs # ServiceBusTrigger + DurableClient
 │
-├── RAMQ.Samples.Queue.TDF.SeqCon.Consumer/
+├── RAMQ.Samples.Queue.TDF.Integration.Consumer/
 │   ├── *.csproj                           # net8.0, classlib, Refit
-│   ├── TdfSeqConConsumer.cs               # BaseConsumer<TdfTransactionCommand>
+│   ├── TdfConsumer.cs               # BaseConsumer<TdfTransactionCommand>
 │   ├── Api/
 │   │   ├── IHoa5BackendApi.cs             # Refit interface
 │   │   └── InscrireSuiviFichCorln*.cs
@@ -1405,7 +1405,7 @@ RAMQ.Samples.Queue.TDF.SeqCon/
 │       ├── TdfTransactionCommand.cs
 │       └── ConsumeResult.cs
 │
-├── RAMQ.Samples.Queue.TDF.SeqCon.StateFul/
+├── RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator/
 │   ├── *.csproj                           # net8.0, Functions.Worker, DurableTask.Worker
 │   ├── Program.cs
 │   ├── host.json
