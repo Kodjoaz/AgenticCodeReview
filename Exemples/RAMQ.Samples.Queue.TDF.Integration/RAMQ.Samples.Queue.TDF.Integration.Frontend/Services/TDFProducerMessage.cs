@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 
 /// <summary>
-/// Implementation of EMT messaging orchestration via clean HTTP abstraction.
+/// Implementation of producer messaging orchestration via clean HTTP abstraction.
 ///
 /// Coordinates the sequence of EMT protocol steps with the Producer HTTP endpoint:
 /// 1. Calls Producer.PublishInitialTransactionAsync() for tdf.envoi (file transfer)
@@ -17,13 +17,13 @@ namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 /// All EMT protocol details are delegated to the Producer.
 /// Frontend is decoupled from Service Bus infrastructure.
 /// </summary>
-public sealed class EEMTMessaging : IEMTMessaging
+public sealed class TDFProducerMessage : IProducerMessage
 {
-    private readonly ILogger<EEMTMessaging> _logger;
+    private readonly ILogger<TDFProducerMessage> _logger;
     private readonly ITdfProducerHttpClient _producerClient;
 
-    public EEMTMessaging(
-        ILogger<EEMTMessaging> logger,
+    public TDFProducerMessage(
+        ILogger<TDFProducerMessage> logger,
         ITdfProducerHttpClient producerClient)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -50,7 +50,7 @@ public sealed class EEMTMessaging : IEMTMessaging
         var sw = Stopwatch.StartNew();
 
         _logger.LogInformation(
-            "EMT messaging orchestration started. SessionId={SessionId}, NumeroEchange={NumeroEchange}",
+            "Producer messaging orchestration started. SessionId={SessionId}, NumeroEchange={NumeroEchange}",
             sessionId, numeroEchange);
 
         try
@@ -103,7 +103,7 @@ public sealed class EEMTMessaging : IEMTMessaging
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "EMT messaging orchestration failed. SessionId={SessionId}, Duration={Duration}ms",
+                "Producer messaging orchestration failed. SessionId={SessionId}, Duration={Duration}ms",
                 sessionId, sw.ElapsedMilliseconds);
             throw;
         }

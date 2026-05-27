@@ -15,7 +15,7 @@ namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 /// - Producer endpoint selection
 /// - Error handling and retry policies
 /// </summary>
-public interface IEMTMessaging
+public interface IProducerMessage
 {
     /// <summary>
     /// Orchestrates the complete TDF transaction flow (both steps).

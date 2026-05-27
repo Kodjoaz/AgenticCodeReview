@@ -12,14 +12,14 @@ namespace RAMQ.Samples.Queue.TDF.Integration.Frontend;
 public sealed class TdfBackgroundService : BackgroundService
 {
     private readonly ILogger<TdfBackgroundService> _logger;
-    private readonly IEMTMessaging _producerOrchestration;
+    private readonly IProducerMessage _producerOrchestration;
     private readonly BlobServiceClient _blobServiceClient;
     private readonly IOptions<BlobStorageSetting> _blobSettings;
     private readonly TimeSpan _interval = TimeSpan.FromMinutes(5);
 
     public TdfBackgroundService(
         ILogger<TdfBackgroundService> logger,
-        IEMTMessaging producerOrchestration,
+        IProducerMessage producerOrchestration,
         BlobServiceClient blobServiceClient,
         IOptions<BlobStorageSetting> blobSettings)
     {
