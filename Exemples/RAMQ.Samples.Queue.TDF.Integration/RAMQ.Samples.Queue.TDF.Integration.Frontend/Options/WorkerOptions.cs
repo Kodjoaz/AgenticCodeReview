@@ -1,4 +1,4 @@
-namespace RAMQ.Samples.Queue.TDF.Integration.Worker.Options;
+namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Options;
 
 /// <summary>
 /// Options externalisées pour l'Activateur TDF.

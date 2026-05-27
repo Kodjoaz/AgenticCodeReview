@@ -9,9 +9,9 @@ using Microsoft.Extensions.Options;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.Samples.ConfigurationService;
 using RAMQ.Samples.Queue.TDF.Integration.Producer.Services;
-using RAMQ.Samples.Queue.TDF.Integration.Worker.Options;
-using RAMQ.Samples.Queue.TDF.Integration.Worker.Services;
-using RAMQ.Samples.Queue.TDF.Integration.Worker.Telemetry;
+using RAMQ.Samples.Queue.TDF.Integration.Frontend.Options;
+using RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
+using RAMQ.Samples.Queue.TDF.Integration.Frontend.Telemetry;
 using Refit;
 
 var host = new HostBuilder()
@@ -48,8 +48,6 @@ var host = new HostBuilder()
 
         // Clean abstraction for EMT protocol via Producer
         services.AddSingleton<ITdfProducerOrchestration, TdfProducerOrchestration>();
-
-        services.ConfigureAzureProviders(new VisualStudioCredential());
     })
     .Build();
 

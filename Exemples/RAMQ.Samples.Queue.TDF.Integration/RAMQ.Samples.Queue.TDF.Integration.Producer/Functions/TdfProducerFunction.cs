@@ -27,7 +27,7 @@ public sealed class TdfProducerFunction
     {
         try
         {
-            var requestBody = await req.Body.ReadAsStringAsync();
+            var requestBody = await req.ReadAsStringAsync();
             var payload = JsonSerializer.Deserialize<TdfTransactionRequest>(requestBody, JsonOptions);
 
             if (payload is null)
@@ -57,7 +57,7 @@ public sealed class TdfProducerFunction
     {
         try
         {
-            var requestBody = await req.Body.ReadAsStringAsync();
+            var requestBody = await req.ReadAsStringAsync();
             var payload = JsonSerializer.Deserialize<TdfCorrelationRequest>(requestBody, JsonOptions);
 
             if (payload is null)

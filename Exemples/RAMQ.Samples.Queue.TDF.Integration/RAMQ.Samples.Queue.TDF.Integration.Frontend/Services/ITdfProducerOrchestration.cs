@@ -1,4 +1,4 @@
-namespace RAMQ.Samples.Queue.TDF.Integration.Worker.Services;
+namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 
 /// <summary>
 /// Abstraction for Frontend (Worker) to orchestrate TDF transaction flow via Producer.
@@ -44,4 +44,5 @@ public sealed record TdfTransactionResult(
     string CorrelationMessageId,
     DateTime CompletedAt,
     TimeSpan Duration);
+
 

@@ -5,7 +5,7 @@ using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RAMQ.Samples.Queue.TDF.Integration.Worker.Services;
+namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 
 /// <summary>
 /// Implementation of TDF producer orchestration via clean HTTP abstraction.
@@ -128,4 +128,5 @@ public sealed class TdfProducerOrchestration : ITdfProducerOrchestration
             throw new ArgumentException("BlobReference is required", nameof(blobReference));
     }
 }
+
 

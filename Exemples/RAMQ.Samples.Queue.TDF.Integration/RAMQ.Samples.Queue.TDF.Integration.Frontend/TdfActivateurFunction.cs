@@ -3,11 +3,11 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
-using RAMQ.Samples.Queue.TDF.Integration.Worker.Services;
+using RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 using System.Diagnostics;
 using System.Text;
 
-namespace RAMQ.Samples.Queue.TDF.Integration.Worker;
+namespace RAMQ.Samples.Queue.TDF.Integration.Frontend;
 
 /// <summary>
 /// TDF Frontend Function — Orchestrates file transfer and transaction flow.
@@ -124,4 +124,5 @@ public sealed class TdfActivateurFunction
         return blobName;
     }
 }
+
 

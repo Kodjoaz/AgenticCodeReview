@@ -1,7 +1,7 @@
 using Microsoft.ApplicationInsights.Channel;
 using Microsoft.ApplicationInsights.Extensibility;
 
-namespace RAMQ.Samples.Queue.TDF.Integration.Worker.Telemetry;
+namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Telemetry;
 
 /// <summary>
 /// Initialise les propriétés cloud de télémétrie Application Insights pour ce service.
@@ -19,4 +19,5 @@ public sealed class WorkerTelemetryInitializer : ITelemetryInitializer
         telemetry.Context.Component.Version  = "1.0.0-poc";
     }
 }
+
 
