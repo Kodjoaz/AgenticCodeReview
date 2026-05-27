@@ -38,7 +38,7 @@ var host = Host.CreateDefaultBuilder(args)
             .ConfigureHttpClient(c => c.BaseAddress = new Uri(producerBaseUrl))
             .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(30));
 
-        services.AddSingleton<ITdfProducerOrchestration, TdfProducerOrchestration>();
+        services.AddSingleton<IEMTMessaging, EEMTMessaging>();
         services.AddHostedService<TdfBackgroundService>();
     })
     .ConfigureLogging(logging =>

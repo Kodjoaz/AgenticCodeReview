@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 
 /// <summary>
-/// Implementation of TDF producer orchestration via clean HTTP abstraction.
+/// Implementation of EMT messaging orchestration via clean HTTP abstraction.
 ///
 /// Coordinates the sequence of EMT protocol steps with the Producer HTTP endpoint:
 /// 1. Calls Producer.PublishInitialTransactionAsync() for tdf.envoi (file transfer)
@@ -17,13 +17,13 @@ namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 /// All EMT protocol details are delegated to the Producer.
 /// Frontend is decoupled from Service Bus infrastructure.
 /// </summary>
-public sealed class TdfProducerOrchestration : ITdfProducerOrchestration
+public sealed class EEMTMessaging : IEMTMessaging
 {
-    private readonly ILogger<TdfProducerOrchestration> _logger;
+    private readonly ILogger<EEMTMessaging> _logger;
     private readonly ITdfProducerHttpClient _producerClient;
 
-    public TdfProducerOrchestration(
-        ILogger<TdfProducerOrchestration> logger,
+    public EEMTMessaging(
+        ILogger<EEMTMessaging> logger,
         ITdfProducerHttpClient producerClient)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -50,7 +50,7 @@ public sealed class TdfProducerOrchestration : ITdfProducerOrchestration
         var sw = Stopwatch.StartNew();
 
         _logger.LogInformation(
-            "TDF Producer orchestration started. SessionId={SessionId}, NumeroEchange={NumeroEchange}",
+            "EMT messaging orchestration started. SessionId={SessionId}, NumeroEchange={NumeroEchange}",
             sessionId, numeroEchange);
 
         try
@@ -103,7 +103,7 @@ public sealed class TdfProducerOrchestration : ITdfProducerOrchestration
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "TDF Producer orchestration failed. SessionId={SessionId}, Duration={Duration}ms",
+                "EMT messaging orchestration failed. SessionId={SessionId}, Duration={Duration}ms",
                 sessionId, sw.ElapsedMilliseconds);
             throw;
         }
@@ -128,5 +128,4 @@ public sealed class TdfProducerOrchestration : ITdfProducerOrchestration
             throw new ArgumentException("BlobReference is required", nameof(blobReference));
     }
 }
-
 

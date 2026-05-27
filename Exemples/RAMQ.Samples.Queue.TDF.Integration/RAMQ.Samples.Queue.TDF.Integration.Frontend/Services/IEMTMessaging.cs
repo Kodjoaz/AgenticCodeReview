@@ -1,7 +1,7 @@
 namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 
 /// <summary>
-/// Abstraction for Frontend (Worker) to orchestrate TDF transaction flow via Producer.
+/// Abstraction for Frontend (BackgroundService) to orchestrate TDF transaction flow via Producer.
 /// Encapsulates all EMT protocol details and Producer HTTP communication.
 ///
 /// The Frontend is responsible for:
@@ -15,7 +15,7 @@ namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 /// - Producer endpoint selection
 /// - Error handling and retry policies
 /// </summary>
-public interface ITdfProducerOrchestration
+public interface IEMTMessaging
 {
     /// <summary>
     /// Orchestrates the complete TDF transaction flow (both steps).
@@ -44,5 +44,4 @@ public sealed record TdfTransactionResult(
     string CorrelationMessageId,
     DateTime CompletedAt,
     TimeSpan Duration);
-
 
