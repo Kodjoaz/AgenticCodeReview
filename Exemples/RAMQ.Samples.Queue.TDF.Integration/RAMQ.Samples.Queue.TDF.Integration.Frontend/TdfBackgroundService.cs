@@ -1,5 +1,5 @@
 using Azure.Storage.Blobs;
-using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
@@ -9,35 +9,16 @@ using System.Text;
 
 namespace RAMQ.Samples.Queue.TDF.Integration.Frontend;
 
-/// <summary>
-/// TDF Frontend Function — Orchestrates file transfer and transaction flow.
-///
-/// ════════════════════════════════════════════════════════════════════════
-/// Architecture: Frontend → Producer → Service Bus
-/// ════════════════════════════════════════════════════════════════════════
-///
-/// Responsibilities:
-/// 1. Generate session identifiers and authentication tokens (InitierEnvoi — local)
-/// 2. Upload file to Blob Storage (Claim Check pattern)
-/// 3. Orchestrate calls to Producer via clean abstraction (ITdfProducerOrchestration)
-///
-/// The Producer handles:
-/// - Validation and Enrichment (VE)
-/// - Publishing to Service Bus with EMT protocol
-/// - Message Transit Journal and Application Insights integration
-///
-/// This separation allows Frontend to focus on business logic without knowledge
-/// of Service Bus or EMT protocol details.
-/// </summary>
-public sealed class TdfActivateurFunction
+public sealed class TdfBackgroundService : BackgroundService
 {
-    private readonly ILogger<TdfActivateurFunction> _logger;
+    private readonly ILogger<TdfBackgroundService> _logger;
     private readonly ITdfProducerOrchestration _producerOrchestration;
     private readonly BlobServiceClient _blobServiceClient;
     private readonly IOptions<BlobStorageSetting> _blobSettings;
+    private readonly TimeSpan _interval = TimeSpan.FromMinutes(5);
 
-    public TdfActivateurFunction(
-        ILogger<TdfActivateurFunction> logger,
+    public TdfBackgroundService(
+        ILogger<TdfBackgroundService> logger,
         ITdfProducerOrchestration producerOrchestration,
         BlobServiceClient blobServiceClient,
         IOptions<BlobStorageSetting> blobSettings)
@@ -48,10 +29,29 @@ public sealed class TdfActivateurFunction
         _blobSettings = blobSettings ?? throw new ArgumentNullException(nameof(blobSettings));
     }
 
-    [Function(nameof(TdfActivateurFunction))]
-    public async Task Run(
-        [TimerTrigger("0 */5 * * * *")] TimerInfo myTimer,
-        CancellationToken ct)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        _logger.LogInformation("TDF Background Service started");
+
+        using var timer = new PeriodicTimer(_interval);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(stoppingToken))
+            {
+                await ExecuteCycleAsync(stoppingToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogInformation("TDF Background Service stopped");
+        }
+        finally
+        {
+            timer.Dispose();
+        }
+    }
+
+    private async Task ExecuteCycleAsync(CancellationToken ct)
     {
         var sessionId = Guid.NewGuid().ToString("N");
         var numeroEchange = $"ECHANGE-{DateTime.UtcNow:yyyyMMddHHmmss}-{sessionId[..8].ToUpper()}";
@@ -68,21 +68,18 @@ public sealed class TdfActivateurFunction
         });
 
         _logger.LogInformation(
-            "Frontend TDF cycle démarré. SessionId={SessionId}, NumeroEchange={NumeroEchange}",
+            "Frontend TDF cycle started. SessionId={SessionId}, NumeroEchange={NumeroEchange}",
             sessionId, numeroEchange);
 
         try
         {
-            // ── Étape 0 : InitierEnvoi — Générer les identifiants (local) ────────────────
             _logger.LogDebug(
                 "Step 0 (InitierEnvoi) — identifiers generated locally. SessionId={SessionId}, AuthToken={Token}",
                 sessionId, authToken[..8]);
 
-            // ── Étape 1-2 : Téléverser le fichier et orchestrer via Producer ───────────────
             var blobRef = await UploadTestBlobAsync(sessionId, ct);
             _logger.LogDebug("File uploaded to Blob Storage: {BlobRef}", blobRef);
 
-            // ── Via abstraction : appeler Producer pour Steps 1 & 2 ─────────────────────────
             var result = await _producerOrchestration.ExecuteTransactionFlowAsync(
                 sessionId: sessionId,
                 numeroEchange: numeroEchange,
@@ -100,11 +97,7 @@ public sealed class TdfActivateurFunction
             _logger.LogError(ex,
                 "Frontend TDF cycle error. SessionId={SessionId}, Duration={Duration}ms",
                 sessionId, sw.ElapsedMilliseconds);
-            throw;
         }
-
-        if (myTimer.ScheduleStatus is not null)
-            _logger.LogInformation("Next trigger: {Next}", myTimer.ScheduleStatus.Next);
     }
 
     private async Task<string> UploadTestBlobAsync(string sessionId, CancellationToken ct)
