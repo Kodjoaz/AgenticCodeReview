@@ -1,12 +1,12 @@
 namespace RAMQ.Samples.Queue.TDF.Integration.Frontend.Options;
 
 /// <summary>
-/// Options externalisées pour l'Activateur TDF.
-/// Section de configuration : "Worker".
+/// Options externalisées pour le Frontend TDF.
+/// Section de configuration : "Frontend".
 /// </summary>
-public sealed class TdfActivateurOptions
+public sealed class TdfFrontendOptions
 {
-    public const string SectionName = "Worker";
+    public const string SectionName = "Frontend";
 
     /// <summary>
     /// Planification CRON du TimerTrigger.
