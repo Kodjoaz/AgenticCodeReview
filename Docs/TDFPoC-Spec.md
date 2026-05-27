@@ -184,40 +184,207 @@ flowchart TD
 
 ---
 
-### 5.1 TDF Producer — VE + Publication
+### 5.1 TDF Producer — HTTP Trigger + VE + Publication
 
-**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Worker`
-**Type :** Azure Function — Timer Trigger
-**Déclenchement :** `"0 */2 * * * *"` (toutes les 2 minutes — configurable)
-**Rôle :** Simuler le TDF Frontend. Effectue la validation et l'enrichissement (VE) des messages avant publication. Exécute un cycle TDF complet (3 étapes) à chaque déclenchement.
+**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Producer`
+**Type :** Azure Function — **HTTP Trigger**
+**Rôle :** Reçoit les requêtes HTTP du TDF Frontend. Effectue la validation et l'enrichissement (VE) des messages TDF avant publication dans `tdf-queue` via EMT. **Point d'entrée unique pour tous les messages TDF.**
 
-Le Worker expose **quatre méthodes** correspondant aux quatre responsabilités distinctes :
+#### 5.1.1 Responsabilités du TDF Producer
+
+Le Producer expose **trois responsabilités distinctes** :
 
 | Méthode | Responsabilité |
 |---------|----------------|
-| `Run` | Point d'entrée Timer Trigger — délègue à `ExecuterTransactionTroisEtapesAsync` |
-| `ExecuterTransactionTroisEtapesAsync` | Orchestre les 3 étapes TDF dans l'ordre |
-| `TelechargerPieceJointeAsync` | Génère le ZIP de test + upload Claim Check → Blob Storage |
-| `ConstruireMessage` | Construit le `MessageTransitContext<TdfTransactionCommand>` complet |
-| `PublierAsync` | Appelle `IMessageProducer<T>.PublishAsync` + journalise |
+| `RunAsync` (HTTP Trigger) | Point d'entrée HTTP — reçoit JSON `MessageTransitContext`, effectue VE, publie |
+| `ValidateAndEnrichAsync` | Valide l'enveloppe message + `Variables["step"]`, peuple les champs manquants |
+| `PublishAsync` | Appelle `IMessageProducer<T>.PublishAsync` + journalise |
 
-#### 5.1.1 Point d'entrée
+#### 5.1.2 Point d'entrée HTTP
+
+```csharp
+public class TdfProducerFunction
+{
+    private readonly IMessageProducer<TdfTransactionCommand> _producer;
+    private readonly ILogger<TdfProducerFunction> _logger;
+
+    public TdfProducerFunction(
+        IMessageProducer<TdfTransactionCommand> producer,
+        ILogger<TdfProducerFunction> logger)
+    {
+        _producer = producer;
+        _logger   = logger;
+    }
+
+    [Function("TdfProducer")]
+    public async Task<HttpResponseData> RunAsync(
+        [HttpTrigger(AuthorizationLevel.Function, "post", Route = "tdf/produce")]
+        HttpRequestData req,
+        CancellationToken cancellationToken)
+    {
+        var context = await req.ReadFromJsonAsync<MessageTransitContext<TdfTransactionCommand>>(cancellationToken)
+            ?? throw new InvalidOperationException("MessageTransitContext null ou invalide.");
+
+        _logger.LogInformation(
+            "TDF Producer reçu. Step={Step}, SessionId={S}",
+            context.Variables?.GetValueOrDefault("step") ?? "inconnu",
+            context.SessionId);
+
+        // VE : validation et enrichissement
+        await ValidateAndEnrichAsync(context, cancellationToken);
+
+        // Publication dans tdf-queue
+        await PublishAsync(context, cancellationToken);
+
+        var response = req.CreateResponse(HttpStatusCode.OK);
+        await response.WriteAsJsonAsync(
+            new { Status = "OK", MessageId = context.MessageId, SessionId = context.SessionId },
+            cancellationToken);
+        return response;
+    }
+```
+
+#### 5.1.3 Validation et enrichissement (VE)
+
+```csharp
+    // ─────────────────────────────────────────────────────────────────────
+    //  VE : Valide l'enveloppe message et enrichit les champs manquants.
+    //  Aucune logique métier — uniquement préparation à la publication.
+    // ─────────────────────────────────────────────────────────────────────
+    private async Task ValidateAndEnrichAsync(
+        MessageTransitContext<TdfTransactionCommand> context,
+        CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(context.Message);
+
+        // Valide les champs obligatoires
+        if (string.IsNullOrWhiteSpace(context.SessionId))
+            throw new InvalidOperationException("SessionId obligatoire.");
+
+        var step = context.Variables?.GetValueOrDefault("step") as string;
+        if (string.IsNullOrWhiteSpace(step))
+            throw new InvalidOperationException("Variables[\"step\"] obligatoire.");
+
+        if (!new[] { "tdf.envoi", "tdf.correller" }.Contains(step))
+            throw new InvalidOperationException($"Variables[\"step\"] invalide : {step}");
+
+        if (string.IsNullOrWhiteSpace(context.Message.NumeroEchange))
+            throw new InvalidOperationException("NumeroEchange obligatoire.");
+
+        if (string.IsNullOrWhiteSpace(context.Message.AuthorizationToken))
+            throw new InvalidOperationException("AuthorizationToken obligatoire.");
+
+        // Étape 2 : le jeton fichier doit être présent
+        if (step == "tdf.envoi")
+        {
+            var fileToken = context.Tokens?.FirstOrDefault(t => t.Kind == TokenKind.File);
+            if (fileToken == null || string.IsNullOrWhiteSpace(fileToken.Reference))
+                throw new InvalidOperationException("Token fichier (Kind=File) manquant à l'Étape 2.");
+
+            // Vérifie que Reference n'est pas une URL absolue
+            if (fileToken.Reference.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("Token.Reference ne doit pas être une URL absolue.");
+        }
+
+        _logger.LogInformation(
+            "TDF Producer VE OK. Step={Step}, SessionId={S}, NumeroEchange={N}",
+            step, context.SessionId, context.Message.NumeroEchange);
+
+        await Task.CompletedTask;
+    }
+```
+
+#### 5.1.4 Publication EMT
+
+```csharp
+    // ─────────────────────────────────────────────────────────────────────
+    //  PUBLIER : délègue à IMessageProducer<TdfTransactionCommand>.PublishAsync.
+    //  C'est la SEULE voie autorisée pour envoyer un message dans tdf-queue.
+    //  SessionId est propagé automatiquement par EMT dans l'en-tête Service Bus.
+    // ─────────────────────────────────────────────────────────────────────
+    private async Task PublishAsync(
+        MessageTransitContext<TdfTransactionCommand> context,
+        CancellationToken ct)
+    {
+        await _producer.PublishAsync(context, ct);
+
+        _logger.LogInformation(
+            "TDF Producer — Publié. Step={Step}, SessionId={S}, MessageId={Id}",
+            context.Variables?["step"], context.SessionId, context.MessageId);
+    }
+}
+```
+
+#### 5.1.5 Configuration DI (`Program.cs`)
+
+```csharp
+var builder = new HostBuilder().ConfigureFunctionsWorkerDefaults();
+
+builder.Services
+    .AddProducer<TdfTransactionCommand>(opts =>
+    {
+        opts.Endpoint.EntityName    = builder.Configuration["AppSettings:Queue:EntityName"];
+        opts.Endpoint.EnableSession = true;   // TDF.Queue — sessions obligatoires
+    })
+    .AddSingleton(_ =>
+        new BlobServiceClient(builder.Configuration["BlobStorage:ConnectionString"])
+            .GetBlobContainerClient("inter-ppp"))
+    .Configure<WorkerOptions>(builder.Configuration.GetSection("Worker"));
+
+builder.Build().Run();
+```
+
+#### 5.1.5 Configuration `appsettings.json`
+
+```json
+{
+  "ServiceBusConnection": "<connection string ou Managed Identity endpoint>",
+  "AppSettings": {
+    "Queue": { "EntityName": "tdf-queue" }
+  }
+}
+```
+
+**`host.json` :**
+
+```json
+{
+  "version": "2.0",
+  "logging": {
+    "logLevel": { "RAMQ": "Information" }
+  }
+}
+```
+
+---
+
+### 5.1bis TDF Worker — Simulateur du TDF Frontend (PoC uniquement)
+
+**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Worker`
+**Type :** Azure Function — **Timer Trigger** (PoC uniquement, non en production)
+**Déclenchement :** `"0 */2 * * * *"` (toutes les 2 minutes — configurable)
+**Rôle :** Simule le TDF Frontend pour le PoC. Génère les 3 étapes d'une transaction TDF, effectue le Claim Check (upload Blob), puis appelle le TDF Producer via `HttpClient`.
+
+> **Note PoC :** En production, le TDF Frontend est le service WCF .NET 4.8 qui fait cet appel. Le Worker remplace ce rôle uniquement pour les tests.
+
+#### 5.1bis.1 Orchestration des 3 étapes
 
 ```csharp
 public class TdfSeqConWorkerFunction
 {
-    private readonly IMessageProducer<TdfTransactionCommand> _producer;
+    private readonly HttpClient _httpClient;
     private readonly BlobContainerClient _blobContainer;
     private readonly WorkerOptions _options;
     private readonly ILogger<TdfSeqConWorkerFunction> _logger;
 
     public TdfSeqConWorkerFunction(
-        IMessageProducer<TdfTransactionCommand> producer,
+        HttpClient httpClient,
         BlobContainerClient blobContainer,
         IOptions<WorkerOptions> options,
         ILogger<TdfSeqConWorkerFunction> logger)
     {
-        _producer      = producer;
+        _httpClient    = httpClient;
         _blobContainer = blobContainer;
         _options       = options.Value;
         _logger        = logger;
@@ -228,17 +395,13 @@ public class TdfSeqConWorkerFunction
         [TimerTrigger("%Worker:TimerSchedule%")] TimerInfo timer,
         CancellationToken cancellationToken)
     {
-        _logger.LogInformation("Worker TDF démarré. {Timestamp}", DateTimeOffset.UtcNow);
+        _logger.LogInformation("TDF Worker démarré. {Timestamp}", DateTimeOffset.UtcNow);
         await ExecuterTransactionTroisEtapesAsync(cancellationToken);
     }
-```
 
-#### 5.1.2 Transaction 3 étapes
-
-```csharp
     // ─────────────────────────────────────────────────────────────────────
-    //  3 ÉTAPES : Étape 1 (local) → Étape 2 (PièceJointe + Message + Publier)
-    //             → Étape 3 (Message + Publier)
+    //  3 ÉTAPES : Étape 1 (local) → Étape 2 (Claim Check + appel Producer)
+    //             → Étape 3 (appel Producer)
     // ─────────────────────────────────────────────────────────────────────
     private async Task ExecuterTransactionTroisEtapesAsync(CancellationToken ct)
     {
@@ -262,8 +425,8 @@ public class TdfSeqConWorkerFunction
             sizeBytes      : sizeBytes,
             accuseReception: null);
 
-        await PublierAsync(ctxEtape2, ct);
-        _logger.LogInformation("Étape 2 publiée. SessionId={S}, BlobPath={B}", sessionId, blobPath);
+        await AppelerProducerAsync(ctxEtape2, ct);
+        _logger.LogInformation("Étape 2 envoyée au Producer. SessionId={S}, BlobPath={B}", sessionId, blobPath);
 
         // ── ÉTAPE 3 — CorrellerEnvoyer (après délai configurable) ────────────────────
         await Task.Delay(TimeSpan.FromSeconds(_options.Step3DelaySeconds), ct);
@@ -277,16 +440,12 @@ public class TdfSeqConWorkerFunction
             sizeBytes      : 0,
             accuseReception: "ACK-POC-OK");
 
-        await PublierAsync(ctxEtape3, ct);
-        _logger.LogInformation("Étape 3 publiée. SessionId={S}", sessionId);
+        await AppelerProducerAsync(ctxEtape3, ct);
+        _logger.LogInformation("Étape 3 envoyée au Producer. SessionId={S}", sessionId);
     }
-```
 
-#### 5.1.3 Pièce jointe — Téléversement Claim Check
-
-```csharp
     // ─────────────────────────────────────────────────────────────────────
-    //  PIÈCE JOINTE : génère un ZIP de test et l'uploade dans Blob Storage.
+    //  CLAIM CHECK : génère un ZIP de test et l'uploade dans Blob Storage.
     //  Retourne (blobPath, sizeBytes). Ne retourne jamais d'URL absolue.
     // ─────────────────────────────────────────────────────────────────────
     private async Task<(string BlobPath, long SizeBytes)> TelechargerPieceJointeAsync(
@@ -306,21 +465,17 @@ public class TdfSeqConWorkerFunction
             cancellationToken: ct);
 
         _logger.LogInformation(
-            "Pièce jointe téléversée. BlobPath={P}, Size={S} octets", blobPath, zipBytes.Length);
+            "Claim Check téléversé. BlobPath={P}, Size={S} octets", blobPath, zipBytes.Length);
 
         // Retourne le chemin RELATIF — jamais d'URL absolue ni de SAS token
         return (blobPath, zipBytes.Length);
     }
-```
 
-#### 5.1.4 Construction du message EMT
-
-```csharp
     // ─────────────────────────────────────────────────────────────────────
     //  MESSAGE : construit le MessageTransitContext<TdfTransactionCommand>
-    //  complet pour l'étape demandée.
+    //  pour l'étape demandée.
     //  — Étape 2 : ajoute un TokenKind.File avec la référence relative blob.
-    //  — Étape 3 : aucun token (le Subscriber fusionnera les FileTokens Étape 2).
+    //  — Étape 3 : aucun token (le Subscriber fusionnera les FileTokens).
     // ─────────────────────────────────────────────────────────────────────
     private static MessageTransitContext<TdfTransactionCommand> ConstruireMessage(
         string  step,
@@ -359,40 +514,33 @@ public class TdfSeqConWorkerFunction
                 AccuseReception    : accuseReception)
         };
     }
-```
 
-#### 5.1.5 Publication EMT
-
-```csharp
     // ─────────────────────────────────────────────────────────────────────
-    //  PUBLIER : délègue à IMessageProducer<TdfTransactionCommand>.PublishAsync.
-    //  C'est la SEULE voie autorisée pour envoyer un message Service Bus.
-    //  SessionId est propagé automatiquement par EMT dans l'en-tête Service Bus.
+    //  APPEL PRODUCER : envoie le message via HttpClient au TDF Producer.
+    //  C'est le pont vers l'architecture Azure — simule l'appel du TDF Frontend.
     // ─────────────────────────────────────────────────────────────────────
-    private async Task PublierAsync(
+    private async Task AppelerProducerAsync(
         MessageTransitContext<TdfTransactionCommand> context,
         CancellationToken ct)
     {
-        await _producer.PublishAsync(context, ct);
+        var producerUrl = _options.ProducerEndpoint;
+        var content = JsonContent.Create(context);
+
+        var response = await _httpClient.PostAsync(producerUrl, content, ct);
+        response.EnsureSuccessStatusCode();
 
         _logger.LogInformation(
-            "Message publié. Step={Step}, SessionId={S}, MessageId={Id}",
-            context.Variables["step"], context.SessionId, context.MessageId);
+            "TDF Worker → Producer OK. Step={Step}, SessionId={S}",
+            context.Variables["step"], context.SessionId);
     }
 }
 ```
 
-#### 5.1.6 Configuration DI (`Program.cs`)
+#### 5.1bis.2 Configuration DI et Options (`Program.cs`)
 
 ```csharp
-var builder = new HostBuilder().ConfigureFunctionsWorkerDefaults();
-
 builder.Services
-    .AddProducer<TdfTransactionCommand>(opts =>
-    {
-        opts.Endpoint.EntityName    = builder.Configuration["AppSettings:Queue:EntityName"];
-        opts.Endpoint.EnableSession = true;   // TDF.Queue — sessions obligatoires
-    })
+    .AddHttpClient<TdfSeqConWorkerFunction>()
     .AddSingleton(_ =>
         new BlobServiceClient(builder.Configuration["BlobStorage:ConnectionString"])
             .GetBlobContainerClient("inter-ppp"))
@@ -401,48 +549,35 @@ builder.Services
 builder.Build().Run();
 ```
 
-#### 5.1.7 Configuration `appsettings.json`
-
-```json
-{
-  "ServiceBusConnection": "<connection string ou Managed Identity endpoint>",
-  "BlobStorage": {
-    "ConnectionString": "<connection string ou Managed Identity>"
-  },
-  "AppSettings": {
-    "Queue": { "EntityName": "TDF.Queue" }
-  },
-  "Worker": {
-    "TimerSchedule":   "0 */2 * * * *",
-    "Step3DelaySeconds": 5
-  }
-}
-```
-
-**`host.json` :**
-
-```json
-{
-  "version": "2.0",
-  "logging": {
-    "logLevel": { "RAMQ": "Information" }
-  }
-}
-```
-
 **Options :**
 
 ```csharp
 public sealed class WorkerOptions
 {
-    public string TimerSchedule    { get; set; } = "0 */2 * * * *";
-    public int    Step3DelaySeconds { get; set; } = 5;
+    public string TimerSchedule       { get; set; } = "0 */2 * * * *";
+    public int    Step3DelaySeconds   { get; set; } = 5;
+    public string ProducerEndpoint    { get; set; } = "https://<function-app>.azurewebsites.net/api/tdf/produce";
+}
+```
+
+**`appsettings.json` (Worker):**
+
+```json
+{
+  "BlobStorage": {
+    "ConnectionString": "<connection string ou Managed Identity>"
+  },
+  "Worker": {
+    "TimerSchedule":    "0 */2 * * * *",
+    "Step3DelaySeconds": 5,
+    "ProducerEndpoint": "https://<function-app>.azurewebsites.net/api/tdf/produce"
+  }
 }
 ```
 
 ---
 
-### 5.2 TDF Subscriber — Orchestration légère + Routage
+### 5.2 TDF Subscriber — Orchestration légère + Routage par `Variables["step"]`
 
 **Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Subscriber`
 **Type :** Azure Function — ServiceBus Trigger
