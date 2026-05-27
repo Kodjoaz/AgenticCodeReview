@@ -21,9 +21,10 @@
     <ProjectReference Include="..\..\..\EnterpriseMessageTransit\EnterpriseMessageTransit.csproj" />
     <ProjectReference Include="..\..\RAMQ.Samples.ConfigurationService\RAMQ.Samples.ConfigurationService.csproj" />
     <ProjectReference Include="..\RAMQ.Samples.Queue.TDF.Integration.Consumer\RAMQ.Samples.Queue.TDF.Integration.Consumer.csproj" />
-    <ProjectReference Include="..\RAMQ.Samples.Queue.TDF.Integration.Orchestrator\RAMQ.Samples.Queue.TDF.Integration.Orchestrator.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator\RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.csproj" />
   </ItemGroup>
 
 </Project>
+
 
 

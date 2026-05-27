@@ -1,4 +1,4 @@
-namespace RAMQ.Samples.Queue.TDF.Integration.StateFul.Options;
+namespace RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Options;
 
 /// <summary>
 /// DFO — Options du service StateFul externalisées depuis la configuration.
@@ -32,4 +32,5 @@ public sealed class StateFulOptions
     /// </summary>
     public int CorrelationTimeoutSeconds { get; set; } = 30;
 }
+
 

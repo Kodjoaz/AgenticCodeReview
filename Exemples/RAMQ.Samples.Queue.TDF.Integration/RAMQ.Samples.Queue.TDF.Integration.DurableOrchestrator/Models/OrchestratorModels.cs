@@ -1,6 +1,6 @@
 using RAMQ.COM.EnterpriseMessageTransit.Messaging;
 
-namespace RAMQ.Samples.Queue.TDF.Integration.StateFul.Models;
+namespace RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Models;
 
 /// <summary>
 /// Événement initial déclenché par le Subscriber lors de l'Étape 2 (tdf.envoi).
@@ -34,4 +34,5 @@ public record TransactionCorrelationResult
     public required string NumeroEchange     { get; init; }
     public List<TokenMessage>? FileTokens    { get; init; }
 }
+
 

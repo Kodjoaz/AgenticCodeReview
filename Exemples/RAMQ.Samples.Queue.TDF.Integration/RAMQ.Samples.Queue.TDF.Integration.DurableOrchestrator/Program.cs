@@ -2,8 +2,8 @@ using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using RAMQ.Samples.Queue.TDF.Integration.StateFul.Options;
-using RAMQ.Samples.Queue.TDF.Integration.StateFul.Telemetry;
+using RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Options;
+using RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Telemetry;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // DFO — Composition du host StateFul
@@ -48,4 +48,5 @@ var host = new HostBuilder()
     .Build();
 
 await host.RunAsync();
+
 

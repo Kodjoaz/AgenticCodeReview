@@ -1,4 +1,4 @@
-namespace RAMQ.Samples.Queue.TDF.Integration.StateFul.Models;
+namespace RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Models;
 
 /// <summary>
 /// Données d'audit passées à <see cref="Activities.RecordAuditActivity"/>.
@@ -18,4 +18,5 @@ public sealed record CorrelationAuditRecord
     public          string?  ErrorCode        { get; init; }
     public          string?  ErrorMessage     { get; init; }
 }
+
 

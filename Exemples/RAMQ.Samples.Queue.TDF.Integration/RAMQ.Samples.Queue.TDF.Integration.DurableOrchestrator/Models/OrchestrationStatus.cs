@@ -1,4 +1,4 @@
-namespace RAMQ.Samples.Queue.TDF.Integration.StateFul.Models;
+namespace RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Models;
 
 /// <summary>
 /// DFO — Statut structuré de l'orchestration exposé via ctx.SetCustomStatus().
@@ -83,5 +83,6 @@ public static class OrchestrationStage
     /// <summary>Token invalide : corrélation croisée ou message malformé détecté.</summary>
     public const string Failed_Token        = "Failed_Token";
 }
+
 
 

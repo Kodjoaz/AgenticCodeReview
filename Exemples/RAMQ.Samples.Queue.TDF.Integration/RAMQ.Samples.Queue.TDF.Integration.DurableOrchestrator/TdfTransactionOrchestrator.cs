@@ -2,11 +2,11 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.DurableTask;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using RAMQ.Samples.Queue.TDF.Integration.StateFul.Activities;
-using RAMQ.Samples.Queue.TDF.Integration.StateFul.Models;
-using RAMQ.Samples.Queue.TDF.Integration.StateFul.Options;
+using RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Activities;
+using RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Models;
+using RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Options;
 
-namespace RAMQ.Samples.Queue.TDF.Integration.StateFul;
+namespace RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator;
 
 /// <summary>
 /// Orchestrateur Durable Functions — machine à états pour la corrélation TDF.
@@ -317,4 +317,5 @@ public sealed class TdfTransactionOrchestrator
         };
     }
 }
+
 

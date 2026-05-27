@@ -1,7 +1,7 @@
 using Microsoft.ApplicationInsights.Channel;
 using Microsoft.ApplicationInsights.Extensibility;
 
-namespace RAMQ.Samples.Queue.TDF.Integration.StateFul.Telemetry;
+namespace RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Telemetry;
 
 /// <summary>
 /// DFO — Initialiseur de télémétrie Application Insights pour le service StateFul.
@@ -70,4 +70,5 @@ public sealed class StateFulTelemetryInitializer : ITelemetryInitializer
             telemetry.Context.GlobalProperties["service.version"] = ServiceVersion;
     }
 }
+
 

@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
-using RAMQ.Samples.Queue.TDF.Integration.StateFul.Models;
+using RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Models;
 
-namespace RAMQ.Samples.Queue.TDF.Integration.StateFul.Activities;
+namespace RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Activities;
 
 /// <summary>
 /// Activity Function — enregistre l'audit de corrélation TDF (Niveau 3 DFO).
@@ -114,5 +114,6 @@ public sealed class RecordAuditActivity
         return Task.CompletedTask;
     }
 }
+
 
 

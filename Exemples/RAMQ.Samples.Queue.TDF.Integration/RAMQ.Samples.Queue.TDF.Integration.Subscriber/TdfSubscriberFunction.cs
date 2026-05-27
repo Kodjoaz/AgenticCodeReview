@@ -7,8 +7,8 @@ using RAMQ.COM.EnterpriseMessageTransit.Messaging;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Enum;
 using RAMQ.Samples.Queue.TDF.Integration.Consumer;
 using RAMQ.Samples.Queue.TDF.Integration.Consumer.Messages;
-using RAMQ.Samples.Queue.TDF.Integration.StateFul;
-using RAMQ.Samples.Queue.TDF.Integration.StateFul.Models;
+using RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator;
+using RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.Models;
 using System.Diagnostics;
 
 namespace RAMQ.Samples.Queue.TDF.Integration.Subscriber;
@@ -222,4 +222,5 @@ public sealed class TdfSubscriberFunction
             instanceId);
     }
 }
+
 

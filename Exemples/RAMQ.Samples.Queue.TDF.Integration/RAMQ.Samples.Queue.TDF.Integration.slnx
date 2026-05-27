@@ -4,7 +4,7 @@
   <Project Path="RAMQ.Samples.Queue.HOA5.Integration.Backend/RAMQ.Samples.Queue.HOA5.Integration.Backend.csproj" />
   <Project Path="RAMQ.Samples.Queue.HOA5.Consumer/RAMQ.Samples.Queue.HOA5.Consumer.csproj" />
   <Project Path="RAMQ.Samples.Queue.TDF.Integration.Consumer/RAMQ.Samples.Queue.TDF.Integration.Consumer.csproj" />
-  <Project Path="RAMQ.Samples.Queue.TDF.Integration.Orchestrator/RAMQ.Samples.Queue.TDF.Integration.Orchestrator.csproj" />
+  <Project Path="RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator/RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator.csproj" />
   <Project Path="RAMQ.Samples.Queue.TDF.Integration.Subscriber/RAMQ.Samples.Queue.TDF.Integration.Subscriber.csproj" />
   <Project Path="RAMQ.Samples.Queue.TDF.Integration.Frontend/RAMQ.Samples.Queue.TDF.Integration.Frontend.csproj" />
   <Project Path="RAMQ.Samples.Queue.TDF.Integration.Producer/RAMQ.Samples.Queue.TDF.Integration.Producer.csproj" />
