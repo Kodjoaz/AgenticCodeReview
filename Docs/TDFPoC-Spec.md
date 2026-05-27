@@ -2,7 +2,7 @@
 
 **Projet :** Remplacement de BizTalk HOA5/TDF par Azure Functions + EMT
 **Version :** 2.0
-**Référence architecture :** [`target-state-hoa5-fr.md`](../target-state-hoa5-fr.md)
+**Architecture cible :** [`target-state-hoa5-fr.md`](../target-state-hoa5-fr.md) — Voir Section 1 pour le contexte stratégique et Section 3 pour la topologie Service Bus complète.
 **Périmètre :** Proof of Concept — flux entrant TDF complet (3 étapes) jusqu'au HOA5 Backend
 
 ---
@@ -17,33 +17,33 @@ Les six projets de code du PoC :
 
 | # | Projet | Type | Rôle |
 |---|--------|------|------|
-| 1 | `RAMQ.Samples.Queue.TDF.SeqCon.Worker` | Azure Function — **Timer Trigger** | Simule le TDF Frontend : publie 3 étapes dans `TDF.Queue` via EMT |
-| 2 | `RAMQ.Samples.Queue.TDF.SeqCon.Subscriber` | Azure Function — **ServiceBus Trigger** | Orchestrateur mince : route par étape, coordonne StateFul, Consumer, Producer |
-| 3 | `RAMQ.Samples.Queue.TDF.SeqCon.Consumer` | Librairie — **EMT BaseConsumer** | Logique métier des Étapes 2 et 3 (VTE) |
-| 4 | `RAMQ.Samples.Queue.TDF.SeqCon.StateFul` | Azure Function — **Durable** | Corrélation d'état inter-étapes + validation token |
-| 5 | `RAMQ.Samples.Queue.HOA5.Consumer` | Azure Function — **ServiceBus Trigger** | Logique HOA5 : VTE + appel HTTP vers HOA5 Backend |
-| 6 | `RAMQ.Samples.Queue.HOA5.Backend` | Azure Function — **HTTP Trigger** | Backend HOA5 : reçoit requête, résout Claim Check Blob |
+| 1 | `RAMQ.Samples.Queue.TDF.SeqCon.Worker` | Azure Function — **Timer Trigger** (TDF Producer) | Simule le TDF Frontend : publie 3 étapes dans `tdf-queue` via EMT |
+| 2 | `RAMQ.Samples.Queue.TDF.SeqCon.Subscriber` | Azure Function — **ServiceBus Trigger** (TDF Subscriber) | Orchestrateur mince : route par étape, coordonne Durable Orchestrator, Consumers |
+| 3 | `RAMQ.Samples.Queue.TDF.SeqCon.Consumer` | Librairie — **EMT BaseConsumer** (TDF Consumers) | Logique métier des Étapes 2 et 3 — VTE (Validation, Transform, Enrich) |
+| 4 | `RAMQ.Samples.Queue.TDF.SeqCon.StateFul` | Azure Function — **Durable** (TDF Durable Orchestrator) | Corrélation d'état inter-étapes + validation token |
+| 5 | `RAMQ.Samples.Queue.HOA5.Consumer` | Azure Function — **ServiceBus Trigger** (HOA5 Subscriber + Consumer) | Logique HOA5 : VTE + appel HTTP vers HOA5 Backend |
+| 6 | `RAMQ.Samples.Queue.HOA5.Backend` | Azure Function — **HTTP Trigger** (HOA5 Backend) | Backend HOA5 : reçoit requête, résout Claim Check depuis Azure Blob Storage |
 
-> **Infrastructure hors périmètre :** `TDF.Queue`, `TDF.Topic`, `HOA5.Queue`, l'abonnement HOA5,
+> **Infrastructure hors périmètre :** `tdf-queue`, `tdf-topic`, `hoa5-queue`, l'abonnement HOA5,
 > et la règle `ForwardTo` sont gérés par l'équipe infrastructure. Ces ressources sont
 > supposées **pré-provisionnées**. Le code ne crée aucune ressource Service Bus.
 
 ---
 
-## 2. Protocole TDF — Rappel
+## 2. Protocole TDF (3 étapes) — Vue d'ensemble
 
 | Étape | `Variables["step"]` | Pièce jointe | Description |
 |-------|---------------------|--------------|-------------|
 | 1 — InitierEnvoi | *(jamais publié)* | Non | Entièrement local dans le Worker : génère `SessionId` + `AuthorizationToken`. Aucun message Service Bus. |
-| 2 — EnvoyerLotFichier | `"tdf.envoi"` | **Oui (ZIP)** | Upload ZIP → Blob. Publie `TdfTransactionCommand` dans `TDF.Queue`. |
-| 3 — CorrellerEnvoyer | `"tdf.correller"` | Non | Corrélation finale. Retourne `IndExecOrcSpec`. Routage conditionnel → `TDF.Topic` si `"O"`. |
+| 2 — EnvoyerLotFichier | `"tdf.envoi"` | **Oui (ZIP)** | Upload ZIP → Blob. Publie `TdfTransactionCommand` dans `tdf-queue`. |
+| 3 — CorrellerEnvoyer | `"tdf.correller"` | Non | Corrélation finale. Retourne `IndExecOrcSpec`. Routage conditionnel → `tdf-topic` si `"O"`. |
 
 > **Invariant critique :** `Variables["step"]` est le seul discriminateur d'étape.
 > `CurrentStage` n'est pas utilisé (patron **Sequential Convoy**, non Saga EMT).
 
 ---
 
-## 3. Contrat de message
+## 3. Contrat de message — TdfTransactionCommand
 
 ### 3.1 Record de domaine partagé
 
@@ -119,7 +119,7 @@ public sealed record TdfTransactionCommand(
 
 ---
 
-## 4. Architecture du PoC
+## 4. Architecture et flux du PoC — Diagramme de bout en bout
 
 ```mermaid
 flowchart TD
@@ -180,15 +180,16 @@ flowchart TD
 
 ---
 
-## 5. Composants — Design détaillé
+## 5. Composants — Architecture détaillée
 
 ---
 
-### 5.1 RAMQ.Samples.Queue.TDF.SeqCon.Worker
+### 5.1 TDF Producer — VE + Publication
 
+**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Worker`
 **Type :** Azure Function — Timer Trigger
 **Déclenchement :** `"0 */2 * * * *"` (toutes les 2 minutes — configurable)
-**Rôle :** Simuler le TDF Frontend. Exécute un cycle TDF complet à chaque déclenchement.
+**Rôle :** Simuler le TDF Frontend. Effectue la validation et l'enrichissement (VE) des messages avant publication. Exécute un cycle TDF complet (3 étapes) à chaque déclenchement.
 
 Le Worker expose **quatre méthodes** correspondant aux quatre responsabilités distinctes :
 
@@ -441,12 +442,12 @@ public sealed class WorkerOptions
 
 ---
 
-### 5.2 RAMQ.Samples.Queue.TDF.SeqCon.Subscriber
+### 5.2 TDF Subscriber — Orchestration légère + Routage
 
+**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Subscriber`
 **Type :** Azure Function — ServiceBus Trigger
-**Rôle :** Couche d'orchestration mince sur `TDF.Queue`. **Aucune logique métier.**
-Coordonne `StateFul`, `Consumer`, et `IMessageProducer`. Seul responsable
-du `PublishAsync` vers `TDF.Topic`.
+**Rôle :** Couche d'orchestration mince sur `tdf-queue`. **Aucune logique métier.**
+Route par `Variables["step"]` vers les Consumers appropriés. Coordonne le Durable Orchestrator. Seul responsable du `PublishAsync` vers `tdf-topic`.
 
 #### Règles absolues
 
@@ -457,7 +458,7 @@ du `PublishAsync` vers `TDF.Topic`.
 | Jamais `ServiceBusMessageActions` directement | Toujours via `_consumer.CompleteMessageAsync` / `DeadLetterMessageAsync` |
 | Complétion différée | `_consumer.CompleteMessageAsync` est **toujours le dernier appel** |
 | Pas de logique métier | Tout le VTE délégué au Consumer |
-| `PublishAsync` dans le Subscriber | Le Consumer retourne `IndExecOrcSpec` — c'est le Subscriber qui publie vers `TDF.Topic` |
+| `PublishAsync` dans le Subscriber | Le Consumer retourne `IndExecOrcSpec` — c'est le Subscriber qui publie vers `tdf-topic` |
 
 #### Structure de classe
 
@@ -672,10 +673,11 @@ builder.Services
 
 ---
 
-### 5.3 RAMQ.Samples.Queue.TDF.SeqCon.Consumer
+### 5.3 TDF Consumers — VTE (Validation, Transform, Enrich)
 
+**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Consumer`
 **Type :** Librairie .NET 8 — `BaseConsumer<TdfTransactionCommand>` (EMT)
-**Rôle :** Logique métier des Étapes 2 et 3.
+**Rôle :** Logique métier des Étapes 2 et 3. Deux consommateurs spécifiques aux étapes : `EnvoyerLotFichierConsumer` (Étape 2 — V+E) et `CorrellerEnvoyerConsumer` (Étape 3 — V+T+E).
 **Contraintes :** Aucune référence à Service Bus. Pas de `IMessageProducer`. Pas de `CompleteMessageAsync`.
 
 ```csharp
@@ -816,10 +818,11 @@ public record ConsumeResult
 
 ---
 
-### 5.4 RAMQ.Samples.Queue.TDF.SeqCon.StateFul
+### 5.4 TDF Durable Orchestrator — Corrélation d'état
 
+**Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.StateFul`
 **Type :** Azure Durable Function
-**Rôle :** Machine à états inter-étapes. Valide le `AuthorizationToken`. Aucun appel API.
+**Rôle :** Machine à états inter-étapes. Valide le `AuthorizationToken`. Aucun appel API. Aucune logique métier.
 
 #### Modèles
 
@@ -921,10 +924,11 @@ FileSent ──► Failed_Timeout (30 s PoC / 24 h prod sans Étape 3)
 
 ---
 
-### 5.5 RAMQ.Samples.Queue.HOA5.Consumer
+### 5.5 HOA5 Subscriber + Consumer — VTE vers Backend
 
+**Projet :** `RAMQ.Samples.Queue.HOA5.Consumer`
 **Type :** Azure Function — ServiceBus Trigger + `BaseConsumer<TdfTransactionCommand>` (EMT)
-**Rôle :** Réception sur `HOA5.Queue`. VTE : transforme TDF → contrat HOA5 Backend + appel Refit.
+**Rôle :** Réception sur `hoa5-queue`. VTE (Validation, Transform, Enrich) : transforme TDF → contrat HOA5 Backend + appel Refit.
 
 #### Subscriber HOA5
 
@@ -1023,11 +1027,11 @@ public record TraiterTransmissionRequest
 
 ---
 
-### 5.6 RAMQ.Samples.Queue.HOA5.Backend
+### 5.6 HOA5 Backend — Résolution de jetons Claim Check
 
+**Projet :** `RAMQ.Samples.Queue.HOA5.Backend`
 **Type :** Azure Function — HTTP Trigger
-**Rôle :** Backend HOA5. Reçoit `TraiterTransmissionRequest`, résout le Claim Check
-(téléchargement blob), journalise, retourne `200 OK`.
+**Rôle :** Backend HOA5. Reçoit `TraiterTransmissionRequest`, résout le Claim Check depuis Azure Blob Storage (téléchargement blob), journalise, retourne `200 OK`.
 
 ```csharp
 [Function("TraiterTransmission")]
@@ -1072,7 +1076,7 @@ public async Task<HttpResponseData> RunAsync(
 
 ---
 
-## 6. Structure de la solution
+## 6. Topologie de la solution — Répertoires et projets
 
 ```
 RAMQ.Samples.Queue.TDF.SeqCon/
@@ -1144,7 +1148,7 @@ RAMQ.Samples.Queue.TDF.SeqCon/
 
 | # | Critère | Indicateur observable |
 |---|---------|----------------------|
-| 1 | Worker publie Étape 2 | Log Worker : ZIP uploadé + `PublishAsync` OK. Message visible dans `TDF.Queue` (sessionId correct). |
+| 1 | Worker publie Étape 2 | Log Worker : ZIP uploadé + `PublishAsync` OK. Message visible dans `tdf-queue` (sessionId correct). |
 | 2 | Worker publie Étape 3 | Log Worker : `PublishAsync` OK pour `tdf.correller` avec **même** `SessionId`. |
 | 3 | Subscriber route Étape 2 | Log Subscriber : `HandleEnvoyerLotFichierAsync` invoqué. |
 | 4 | Consumer V+E Étape 2 | Log Consumer : validation OK, aucun appel API. |
@@ -1154,7 +1158,7 @@ RAMQ.Samples.Queue.TDF.SeqCon/
 | 8 | FileTokens fusionnés | `context.Tokens` enrichi des `FileTokens` Étape 2 avant appel Consumer Étape 3. |
 | 9 | Consumer VTE Étape 3 | Log Consumer : `InscrireSuiviFichCorln` appelé, `IndExecOrcSpec = "O"` reçu. |
 | 10 | Publication vers TDF.Topic | Log Subscriber : `PublishAsync` avec `Consumer='All'`, `Action=HOA5_ServTransmPrel_bt`. |
-| 11 | HOA5 Consumer invoqué | Log HOA5 Subscriber : Consumer VTE exécuté sur `HOA5.Queue`. |
+| 11 | HOA5 Consumer invoqué | Log HOA5 Subscriber : Consumer VTE exécuté sur `hoa5-queue`. |
 | 12 | HOA5 Backend résout le blob | Log Backend : blob téléchargé, taille et contentType journalisés. |
 | 13 | Erreur — token invalide | Étape 3 avec `AuthToken` différent → orchestration `Failed_Token` → DLQ. |
 | 14 | Erreur — timeout (30 s) | Pas d'Étape 3 dans le délai → orchestration `Failed_Timeout` → DLQ. |
@@ -1185,7 +1189,7 @@ RAMQ.Samples.Queue.TDF.SeqCon/
 | D-002 | `SessionId` = `InstanceId` Durable | Corrélation 1:1 session Service Bus / instance orchestration, idempotence naturelle |
 | D-003 | 4 méthodes distinctes dans le Worker | Responsabilités isolées : transaction, message, pièce jointe, publication — testabilité maximale |
 | D-004 | `CompleteMessageAsync` toujours en dernier | Garantie at-least-once : tout échec avant complétion → redistribution Service Bus |
-| D-005 | Consumer sans `IMessageProducer` | Patron Subscriber-orchestre : seul le Subscriber évalue `IndExecOrcSpec` et publie vers `TDF.Topic` |
+| D-005 | Consumer sans `IMessageProducer` | Patron Subscriber-orchestre : seul le Subscriber évalue `IndExecOrcSpec` et publie vers `tdf-topic` |
 | D-006 | `Token.Reference` = chemin relatif uniquement | Sécurité : ne jamais exposer le nom de compte de stockage ni de SAS token dans les messages |
 | D-007 | `AutoCompleteMessages = false` + `autoComplete: false` dans `host.json` | Obligation EMT — double garde contre la complétion automatique |
 | D-008 | `ctx.CreateTimer` (Durable) — jamais `Task.Delay` | Persisté et rejouable ; `Task.Delay` est détruit au redémarrage du Function Host |
@@ -1195,8 +1199,8 @@ RAMQ.Samples.Queue.TDF.SeqCon/
 
 ## 10. Références
 
-| Document | Lien |
-|----------|------|
-| Architecture cible HOA5/TDF | [`target-state-hoa5-fr.md`](../target-state-hoa5-fr.md) |
-| Exemples EMT (référence implémentation) | [`Exemples/`](../Exemples/) |
-| Changelog EMT | [`EnterpriseMessageTransit/CHANGELOG.md`](../EnterpriseMessageTransit/CHANGELOG.md) |
+| Document | Lien | Section pertinente |
+|----------|------|-------------------|
+| Architecture cible HOA5/TDF | [`target-state-hoa5-fr.md`](../target-state-hoa5-fr.md) | Section 1 (contexte), Section 3 (topologie Service Bus), Section 6 (orchestration Durable) |
+| Exemples EMT (référence implémentation) | [`Exemples/`](../Exemples/) | — |
+| Changelog EMT | [`EnterpriseMessageTransit/CHANGELOG.md`](../EnterpriseMessageTransit/CHANGELOG.md) | — |
