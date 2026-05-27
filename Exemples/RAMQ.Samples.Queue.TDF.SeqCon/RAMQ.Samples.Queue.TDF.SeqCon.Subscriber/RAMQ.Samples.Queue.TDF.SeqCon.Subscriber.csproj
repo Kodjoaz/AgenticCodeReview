@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <AzureFunctionsVersion>v4</AzureFunctionsVersion>
+    <OutputType>Exe</OutputType>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.ApplicationInsights.WorkerService" Version="2.23.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="2.0.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.ApplicationInsights" Version="2.0.0" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.ServiceBus" Version="5.22.2" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.Extensions.DurableTask" Version="1.1.7" />
+    <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk" Version="2.0.5" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\EnterpriseMessageTransit\EnterpriseMessageTransit.csproj" />
+    <ProjectReference Include="..\..\RAMQ.Samples.ConfigurationService\RAMQ.Samples.ConfigurationService.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.Queue.TDF.SeqCon.Consumer\RAMQ.Samples.Queue.TDF.SeqCon.Consumer.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.Queue.TDF.SeqCon.StateFul\RAMQ.Samples.Queue.TDF.SeqCon.StateFul.csproj" />
+  </ItemGroup>
+
+</Project>

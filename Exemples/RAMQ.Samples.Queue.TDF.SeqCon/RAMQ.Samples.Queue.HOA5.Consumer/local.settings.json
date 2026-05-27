@@ -1,0 +1,27 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "ServiceBusConnection__fullyQualifiedNamespace": "sb-tdf-seqcon.servicebus.windows.net"
+  },
+  "AppSettings": {
+    "ServiceBusNamespace": "sb-tdf-seqcon.servicebus.windows.net",
+    "ApplicationName": "HOA5 Consumer",
+    "Endpoints": [
+      {
+        "Endpoint": {
+          "EntityName": "sbq-tdf-seqcon-result",
+          "EntityType": "Queue"
+        }
+      }
+    ]
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "http://127.0.0.1:10000/devstoreaccount1",
+    "ContainerName": "tdf-files",
+    "FolderName": "transmissions",
+    "ClaimCheckThresholdBytes": 262144
+  },
+  "Hoa5BackendUrl": "http://localhost:7072"
+}

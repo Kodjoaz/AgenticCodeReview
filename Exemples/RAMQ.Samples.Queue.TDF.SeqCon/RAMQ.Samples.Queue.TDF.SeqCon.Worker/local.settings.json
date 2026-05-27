@@ -1,0 +1,27 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated"
+  },
+  "AppSettings": {
+    "ServiceBusNamespace": "sb-tdf-seqcon.servicebus.windows.net",
+    "ApplicationName": "TDF SeqCon Worker",
+    "Endpoints": [
+      {
+        "Endpoint": {
+          "EntityName": "sbq-tdf-seqcon-session",
+          "EntityType": "Queue",
+          "EnableSession": true,
+          "PublishTimeout": "00:01:00"
+        }
+      }
+    ]
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "http://127.0.0.1:10000/devstoreaccount1",
+    "ContainerName": "tdf-files",
+    "FolderName": "transmissions",
+    "ClaimCheckThresholdBytes": 262144
+  }
+}
