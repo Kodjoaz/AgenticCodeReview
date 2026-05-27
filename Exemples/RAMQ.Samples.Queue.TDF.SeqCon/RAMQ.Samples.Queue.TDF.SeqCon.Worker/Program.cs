@@ -7,11 +7,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
-using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
 using RAMQ.Samples.ConfigurationService;
-using RAMQ.Samples.Queue.TDF.SeqCon.Consumer.Messages;
+using RAMQ.Samples.Queue.TDF.Integration.Producer.Services;
 using RAMQ.Samples.Queue.TDF.SeqCon.Worker.Options;
+using RAMQ.Samples.Queue.TDF.SeqCon.Worker.Services;
 using RAMQ.Samples.Queue.TDF.SeqCon.Worker.Telemetry;
+using Refit;
 
 var host = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
@@ -39,11 +40,14 @@ var host = new HostBuilder()
                 : new BlobServiceClient(uri, new VisualStudioCredential());
         });
 
-        services.AddSingleton<ProducerConfigurationService>();
-        services.AddSingleton<IMessageTransitConfigurationService>(sp => sp.GetRequiredService<ProducerConfigurationService>());
-        services.AddSingleton<IProducerConfigurationService>(sp => sp.GetRequiredService<ProducerConfigurationService>());
+        // Producer HTTP client for clean abstraction
+        var producerBaseUrl = ctx.Configuration["Producer:BaseUrl"] ?? "http://localhost:7071";
+        services.AddRefitClient<ITdfProducerHttpClient>()
+            .ConfigureHttpClient(c => c.BaseAddress = new Uri(producerBaseUrl))
+            .ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(30));
 
-        services.AddProducer<TdfTransactionCommand>();
+        // Clean abstraction for EMT protocol via Producer
+        services.AddSingleton<ITdfProducerOrchestration, TdfProducerOrchestration>();
 
         services.ConfigureAzureProviders(new VisualStudioCredential());
     })
