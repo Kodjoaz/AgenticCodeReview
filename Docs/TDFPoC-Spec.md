@@ -1,9 +1,9 @@
 # TDF PoC — Spécification du Proof of Concept
 
 **Projet :** Remplacement de BizTalk HOA5/TDF par Azure Functions + EMT
-**Version :** 2.0
-**Architecture cible :** [`target-state-hoa5-fr.md`](../target-state-hoa5-fr.md) — Voir Section 1 pour le contexte stratégique et Section 3 pour la topologie Service Bus complète.
-**Périmètre :** Proof of Concept — flux entrant TDF complet (3 étapes) jusqu'au HOA5 Backend
+**Version :** 3.0 — Architecture avec TDF.Integration.Producer, observabilité complète, nomenclature alignée
+**Architecture cible :** [`target-state-hoa5-fr.md`](../target-state-hoa5-fr.md) — Sections 1, 3, 10 (observabilité), 11 (sécurité)
+**Périmètre :** Proof of Concept — flux entrant TDF complet (3 étapes) avec observabilité via Message Transit Journal + AppInsights
 
 ---
 
@@ -13,20 +13,47 @@ Valider end-to-end que le protocole TDF en 3 étapes — actuellement géré par
 (`TDF_OOA2` + `MEC_HOA5`) — peut être implémenté avec **Azure Functions .NET 8 isolated worker**
 et la librairie **EnterpriseMessageTransit (EMT)**.
 
-Les six projets de code du PoC :
+Démontrer aussi l'**observabilité complète** via Message Transit Journal (EMT) + Application Insights,
+remplaçant la BizTalk Tracking DB non fonctionnelle.
+
+### **Projets de code du PoC — TDF.Integration + HOA5.Integration**
 
 | # | Projet | Type | Rôle |
 |---|--------|------|------|
-| 1 | `RAMQ.Samples.Queue.TDF.SeqCon.Worker` | Azure Function — **Timer Trigger** (TDF Producer) | Simule le TDF Frontend : publie 3 étapes dans `tdf-queue` via EMT |
-| 2 | `RAMQ.Samples.Queue.TDF.SeqCon.Subscriber` | Azure Function — **ServiceBus Trigger** (TDF Subscriber) | Orchestrateur mince : route par étape, coordonne Durable Orchestrator, Consumers |
-| 3 | `RAMQ.Samples.Queue.TDF.SeqCon.Consumer` | Librairie — **EMT BaseConsumer** (TDF Consumers) | Logique métier des Étapes 2 et 3 — VTE (Validation, Transform, Enrich) |
-| 4 | `RAMQ.Samples.Queue.TDF.SeqCon.StateFul` | Azure Function — **Durable** (TDF Durable Orchestrator) | Corrélation d'état inter-étapes + validation token |
-| 5 | `RAMQ.Samples.Queue.HOA5.Consumer` | Azure Function — **ServiceBus Trigger** (HOA5 Subscriber + Consumer) | Logique HOA5 : VTE + appel HTTP vers HOA5 Backend |
-| 6 | `RAMQ.Samples.Queue.HOA5.Backend` | Azure Function — **HTTP Trigger** (HOA5 Backend) | Backend HOA5 : reçoit requête, résout Claim Check depuis Azure Blob Storage |
+| **TDF.Integration** |  |  |  |
+| 1 | `RAMQ.Samples.Queue.TDF.Integration.Frontend` | Azure Function — **Timer Trigger** | Simule le TDF Frontend (.NET 4.8) — Claim Check upload + HttpClient → Producer |
+| 2 | `RAMQ.Samples.Queue.TDF.Integration.Producer` | Azure Function — **HTTP Trigger** | **Point d'entrée unique** — reçoit JSON du Frontend, VE, publie `tdf-queue` |
+| 3 | `RAMQ.Samples.Queue.TDF.Integration.Subscriber` | Azure Function — **ServiceBus Trigger** | Orchestration légère — route par `Variables["step"]`, coordonne Orchestrator + Consumers |
+| 4 | `RAMQ.Samples.Queue.TDF.Integration.Consumer` | Librairie — **EMT BaseConsumer** | Logique métier VTE — `EnvoyerLotFichierConsumer` (Étape 2), `CorrellerEnvoyerConsumer` (Étape 3) |
+| 5 | `RAMQ.Samples.Queue.TDF.Integration.Orchestrator` | Azure Function — **Durable** | Machine à états inter-étapes — corrélation SessionId, validation AuthToken |
+| **HOA5.Integration** |  |  |  |
+| 6 | `RAMQ.Samples.Queue.HOA5.Integration.Subscriber` | Azure Function — **ServiceBus Trigger** | Écoute `hoa5-queue`, route vers Consumer |
+| 7 | `RAMQ.Samples.Queue.HOA5.Integration.Consumer` | Librairie — **EMT BaseConsumer** | Logique métier — transformation TDF → contrat HOA5 Backend |
+| 8 | `RAMQ.Samples.Queue.HOA5.Integration.Backend` | Azure Function — **HTTP Trigger** | Résout tokens depuis Blob Storage, persistance Oracle |
 
 > **Infrastructure hors périmètre :** `tdf-queue`, `tdf-topic`, `hoa5-queue`, l'abonnement HOA5,
 > et la règle `ForwardTo` sont gérés par l'équipe infrastructure. Ces ressources sont
 > supposées **pré-provisionnées**. Le code ne crée aucune ressource Service Bus.
+
+---
+
+## 1.1 Observabilité — Message Transit Journal + Application Insights
+
+### Pourquoi le Producer HTTP (pas Native Direct Service Bus) ?
+
+**Décision architecturale :** Le TDF.Integration.Frontend appelle TDF.Integration.Producer via HttpClient,
+plutôt que de publier directement dans `tdf-queue`. Cela centralise :
+
+| Capacité | Via Producer ✅ | Direct SB ❌ |
+|----------|-----------------|------------|
+| **Message Transit Journal (EMT)** | Automatique — Azure Table Storage | Manuel — à implémenter |
+| **Application Insights Traçage distribué** | Complet Frontend→Producer→SB→Subscriber→Consumer→API | Partiel — manque Producer |
+| **Gestion États (STARTED/RETRY/COMPLETED/DLQ)** | EMT automatique | Manuel |
+| **Alertes DLQ** | Automatique | À coder |
+| **Indicateurs opérationnels (taux succès, latence, orphelins)** | Prédéfinis dans Journal | À calculer |
+| **Conformité RAMQ (Modèle C + G)** | Complète | Partielle |
+
+**Résultat :** Observabilité complète sans développement supplémentaire. Voir Section 8.
 
 ---
 
@@ -184,7 +211,30 @@ flowchart TD
 
 ---
 
-### 5.1 TDF Producer — HTTP Trigger + VE + Publication
+### 5.0 Justification architecturale — Pourquoi Producer HTTP (pas Native Direct SB)
+
+**Décision :** TDF.Integration.Frontend appelle TDF.Integration.Producer via HttpClient, plutôt que de publier directement dans `tdf-queue`.
+
+**Raisons (voir Section 6 Observabilité) :**
+
+1. ✅ **Message Transit Journal automatique** — EMT journalise chaque message dans Azure Table Storage
+2. ✅ **Application Insights traçage distribué complet** — timeline Frontend→Producer→Subscriber→Consumer→API visible
+3. ✅ **Gestion états automatique** — STARTED/RETRY/COMPLETED/DLQ sans code personnalisé
+4. ✅ **Alertes DLQ intégrées** — détection automatique des messages en erreur
+5. ✅ **Indicateurs opérationnels prédéfinis** — taux succès, latence p95, orphelins sans développement supplémentaire
+6. ✅ **Conformité RAMQ** — Modèles C (Producer HTTP + JWT validation) + G (Frontend → Producer via OAuth)
+7. ✅ **Point d'entrée unique** — Toutes les validations métier et VE centralisées au Producer
+
+**Alternative rejetée (Native Direct SB) :**
+- ❌ Aucune journalisation structurée automatique
+- ❌ Traçage distribué partiel
+- ❌ Gestion états manuelle (~2-3 semaines dev supplémentaire)
+- ❌ Alertes DLQ personnalisées
+- ❌ Moins conforme RAMQ
+
+---
+
+### 5.1 TDF.Integration.Producer — HTTP Trigger + VE + Publication
 
 **Projet :** `RAMQ.Samples.Queue.TDF.SeqCon.Producer`
 **Type :** Azure Function — **HTTP Trigger**
@@ -1211,7 +1261,117 @@ public async Task<HttpResponseData> RunAsync(
 
 ---
 
-## 6. Topologie de la solution — Répertoires et projets
+## 6. Observabilité — Message Transit Journal + Application Insights
+
+### 6.1 Message Transit Journal (EMT)
+
+EMT écrit automatiquement dans **Azure Table Storage** (`MessageTransitJournal`) pour chaque opération de Producer et Consumer.
+Cela remplace la **BizTalk Tracking DB non fonctionnelle**.
+
+**Structure des enregistrements :**
+
+| Champ | Description | Exemple |
+|-------|-------------|---------|
+| `PartitionKey` | Domaine d'application | `"TDF"` ou `"HOA5"` |
+| `RowKey` | `{MessageId}_{Timestamp}` | `"9c4f7f9c2f5f4cd49f767eb86ec2397a_20260527T103005Z"` |
+| `SessionId` | Corrélation transaction | `"POC-a1b2c3d4e5f641a28b3c4d5e6f7a8b9c"` |
+| `MessageId` | Traçabilité bout en bout | `"9c4f7f9c2f5f4cd49f767eb86ec2397a"` |
+| `Mode` | État du cycle de vie | `STARTED`, `RETRY`, `COMPLETED`, `DLQ` |
+| `DeliveryCount` | Numéro de tentative | `1`, `2`, `3` |
+| `Consumer` | Classe Consumer exécutée | `"EnvoyerLotFichierConsumer"` |
+| `Action` | Action métier (step) | `"tdf.envoi"` |
+| `StatusCode` | HTTP ou exception | `200`, `500`, `null` |
+| `ErrorDescription` | Si Mode=DLQ | `"AuthToken invalid"` |
+| `EnqueuedTimeUtc` | Mis en file Service Bus | `"2026-05-27T10:30:00.000Z"` |
+| `StartedTimeUtc` | Début Consumer | `"2026-05-27T10:30:00.500Z"` |
+| `CompletedTimeUtc` | Fin Consumer | `"2026-05-27T10:30:05.200Z"` |
+
+**Requête Analytics — Messages par état :**
+
+```sql
+SELECT Mode, COUNT(*) as Count, AVG(DATEDIFF(ms, StartedTimeUtc, CompletedTimeUtc)) as AvgDurationMs
+FROM MessageTransitJournal
+WHERE PartitionKey='TDF' AND Timestamp >= DATEADD(hour,-1,GETUTCDATE())
+GROUP BY Mode
+ORDER BY Count DESC
+```
+
+### 6.2 Application Insights — Traçage distribué
+
+Toutes les Azure Functions sont instrumentées automatiquement. Cela capture :
+
+**Traçage frontend-to-backend :**
+```
+TDF.Integration.Frontend [Timer Trigger]
+  ├─ CustomEvent: "TDF.Integration.Frontend.Started" {SessionId, Timestamp}
+  ├─ Dependency: "Blob Storage Upload" {BlobPath, SizeBytes}
+  ├─ Dependency: "HttpClient POST" {ProducerUrl, StatusCode=200}
+  │
+  └─ TDF.Integration.Producer [HTTP Trigger]
+    ├─ CustomEvent: "TDF.Integration.Producer.VE.Started" {SessionId, Step}
+    ├─ Dependency: "IMessageProducer.PublishAsync" {SessionId, MessageId}
+    │
+    └─ Azure Service Bus — tdf-queue
+      ├─ Message enqueued {SessionId, DeliveryCount=1}
+      │
+      └─ TDF.Integration.Subscriber [ServiceBus Trigger]
+        ├─ Request: "HandleEnvoyerLotFichierAsync | HandleCorrellerEnvoyerAsync"
+        ├─ Dependency: "TDF.Integration.Orchestrator (Durable)"
+        │
+        └─ TDF.Integration.Consumer
+          ├─ CustomEvent: "ConsumeAsync.Started" {Step, SessionId}
+          ├─ Dependency: "OOA2_InscrireSuiviFich_Ws" [Étape 3] {Duration=150ms, StatusCode=200}
+          └─ CustomEvent: "ConsumeAsync.Completed" {Step, IndExecOrcSpec}
+```
+
+**Latence end-to-end visible dans AppInsights :**
+- Frontend → Producer : ~10ms (HTTP)
+- Producer VE + Publish : ~8ms
+- Service Bus latency : ~5ms
+- Subscriber trigger + Consumer : ~160ms (incluant appel OOA2)
+- **Total Frontend → Completed : ~180ms**
+
+### 6.3 Indicateurs opérationnels clés
+
+| Indicateur | Calcul | Seuil d'alerte |
+|-----------|--------|----------------|
+| **Taux de succès bout en bout** | `COUNT(Mode='COMPLETED') / COUNT(*)` | < 99% |
+| **Latence p95** | `PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY CompletedTimeUtc - StartedTimeUtc)` | > SLA défini |
+| **Taux de réessai** | `COUNT(DeliveryCount > 1) / COUNT(*)` | Augmentation soudaine |
+| **Volume DLQ** | `COUNT(Mode='DLQ') par Consumer` | Toute DLQ = triage requis |
+| **Messages orphelins** | TDF `COMPLETED` sans HOA5 `COMPLETED` (même MessageId) après 15min | > 0 = investigation |
+| **Zombies Orchestrator** | Instances Durable actives depuis >24h | = 0 (minuteurs anti-zombie) |
+
+### 6.4 Alertes Azure Monitor
+
+```json
+{
+  "alerts": [
+    {
+      "name": "TDF DLQ Alert",
+      "condition": "COUNT(MessageTransitJournal.Mode='DLQ') > 0",
+      "actionGroup": "TDF-OnCall",
+      "description": "Messages entrant en DLQ. Vérifier ErrorDescription."
+    },
+    {
+      "name": "TDF Latency p95 Exceeded",
+      "condition": "p95(CompletedTimeUtc - StartedTimeUtc) > 500ms",
+      "actionGroup": "TDF-Performance",
+      "description": "Dégradation de latence. Vérifier Consumer VTE + appels API en aval."
+    },
+    {
+      "name": "TDF Orphan Messages",
+      "condition": "TDF.COMPLETED sans HOA5.COMPLETED après 15min",
+      "actionGroup": "TDF-OnCall",
+      "description": "Transfert échoué de TDF vers HOA5. Vérifier tdf-topic subscription."
+    }
+  ]
+}
+```
+
+---
+
+## 7. Topologie de la solution — Répertoires et projets
 
 ```
 RAMQ.Samples.Queue.TDF.SeqCon/
