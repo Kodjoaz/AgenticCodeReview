@@ -648,7 +648,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Claim Check | 🟡 70 % | Nettoyage orphelins + sample dédié (R5) |
 | Request / Reply | 🟢 **Complet (R3 livré)** | RAS — `IRequestReplyClient<TRequest, TResponse>` |
 | Pub/Sub Topic | 🟢 Complet | RAS |
-| Saga / Compensation | 🟢 **Complet (R7 livré)** | Counter `routing_slip_compensation_total` câblé |
+| Saga / Compensation | 🟢 **Complet** | Counter `routing_slip_compensation_total` + span `routing_slip.compensation` câblés |
 | Pattern A5 (Journal) | 🟢 **Complet (R6 livré)** | RAS — batch via `SubmitTransactionAsync` |
 | Circuit Breaker | 🟢 **Complet (R7 livré)** | `circuit_state` + `circuit_transitions_total` câblés |
 | Idempotence / Dedup | 🟡 50 % | Validation infra + sample (R4) |
