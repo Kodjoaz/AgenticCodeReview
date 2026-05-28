@@ -1314,9 +1314,9 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 | Lot | Description | Estimation | Priorité | Bloqué par | Statut |
 |---|---|---|---|---|---|
 | **R1** | Couverture tests (F6, F10) | 1-2 sem. | 🔴 Critique | — | ⬜ À démarrer |
-| **R2** | Sample Claim Check | 1 sem. | 🟠 Majeur | R1 | ⬜ À démarrer |
+| **R2** | Sample Claim Check | 1 sem. | 🟠 Majeur | R1 | ✅ **Livré** |
 | **R3** | Refonte Request/Reply | 3-4 sem. | 🔴 Critique | R1 | ✅ **Livré** |
-| **R4** | Triangle idempotence | 2 sem. | 🟠 Majeur | R1 | ⬜ À démarrer |
+| **R4** | Triangle idempotence | 2 sem. | 🟠 Majeur | R1 | 🟡 **Partiel** — `RequiresDuplicateDetection` livré ; sample + guidance MessageId déterministe restants |
 | **R5** | Claim Check orphelins + métriques | 2 sem. | 🟠 Majeur | R1 | ⬜ À démarrer |
 | **R6** | Journal batch async | 1 sem. | 🟡 Mineur | R1 | ✅ **Livré** |
 | **R7** | Métriques manquantes | 1 sem. | 🟠 Majeur | R1 | ✅ **Livré** |
