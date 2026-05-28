@@ -161,9 +161,22 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                         "RoutingSlipExecutor: Fault à l'étape '{Step}', SlipId={SlipId}",
                         currentStep.Name, envelope.Header.SlipId);
                     stepActivity?.SetStatus(ActivityStatusCode.Error, fault.Exception.Message);
-                    _metrics?.IncrementRoutingSlipCompensation(
-                        envelope.Header.SlipName,
-                        fault.Exception.GetType().Name);
+                    using (var compensationActivity = MessagingActivitySource.Source.StartActivity(
+                        "routing_slip.compensation",
+                        ActivityKind.Internal,
+                        stepActivity?.Context ?? default))
+                    {
+                        compensationActivity?.SetTag("slip.id",            envelope.Header.SlipId);
+                        compensationActivity?.SetTag("slip.name",          envelope.Header.SlipName);
+                        compensationActivity?.SetTag("slip.step",          currentStep.Name);
+                        compensationActivity?.SetTag("slip.cursor",        envelope.Cursor);
+                        compensationActivity?.SetTag("compensation.reason", fault.Exception.GetType().Name);
+                        compensationActivity?.SetTag("exception.message",  fault.Exception.Message);
+                        compensationActivity?.SetStatus(ActivityStatusCode.Error, fault.Exception.Message);
+                        _metrics?.IncrementRoutingSlipCompensation(
+                            envelope.Header.SlipName,
+                            fault.Exception.GetType().Name);
+                    }
                     await provider.DeadLetterMessageAsync(fault.Exception, ct);
                     break;
 

@@ -602,7 +602,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Implémentation | 🟢 Complet | `ActivityResult.Fault(ex)` déclenche les compensateurs LIFO |
 | Complétude | 🟢 Complet | Voir [RoutingSlip-ScenarioReservation.md](../RoutingSlip-ScenarioReservation.md) (10 scénarios) |
 | Testabilité | 🟢 Bon | Activités + compensateurs séparés |
-| Observabilité | 🟢 **Livré R7** | Counter `routing_slip_compensation_total{slip_name,reason}` câblé dans `RoutingSlipExecutor` |
+| Observabilité | 🟢 **Complet** | Span dédié `routing_slip.compensation` (tags: `slip.id`, `slip.name`, `slip.step`, `slip.cursor`, `compensation.reason`) + counter `routing_slip_compensation_total{slip_name,reason}` |
 | Documentation | 🟢 Excellent | Scénario réservation très détaillé |
 
 ### 8.7 Pattern A5 (Journal hors chemin critique)
