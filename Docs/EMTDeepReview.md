@@ -582,16 +582,17 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 
 | Axe | Verdict | Évidence |
 |---|---|---|
-| Implémentation | 🟢 Complet | [`ClaimCheckOptions.cs`](../EnterpriseMessageTransit/Messaging/Producer/ClaimCheckOptions.cs), `PrepareContextWithTokensAsync` dans `BaseMessageTransit` |
+| Implémentation | 🟢 Complet | [`ClaimCheckOptions.cs`](../EnterpriseMessageTransit/Messaging/Producer/ClaimCheckOptions.cs), logique upload dans [`ClaimCheckPreparer`](../EnterpriseMessageTransit/Messaging/Producer/ClaimCheckPreparer.cs) (extrait de `Producer<T>` — S3) |
 | Complétude | 🟡 Partielle | ✅ Upload + token, ❌ pas de nettoyage automatique des claim-checks orphelins (DE Review §4.1 point 3) |
 | Testabilité | 🟢 Bon | `IStorageProvider` mockable |
 | Observabilité | 🟢 **Complet** | Counters `claimcheck_uploads_total` + `claimcheck_downloads_total` + histogrammes durée câblés (R7) + tag `messaging.claimcheck` sur span `messaging.publish` |
-| Documentation | 🟢 Bon | Pas d'aucun sample ne le démontre (cf. observation S-1) |
+| Documentation | 🟢 Bon | Aucun sample ne le démontre encore (cf. observation S-1 — lot R2 ouvert) |
 
 🟠 **À compléter (lot R5 du plan de résolution) :**
 - TTL Blob automatique ou job de nettoyage des orphelins (risque CAI/RGPD).
-- Compteur OTel pour visibility opérationnelle.
 - Sample dédié `Queue.ClaimCheck.PDF` démontrant l'envoi d'un PDF de 5 Mo.
+
+> ✅ Counters OTel (`claimcheck_uploads_total`, `claimcheck_downloads_total`) déjà livrés en R7.
 
 ### 8.4 Request / Reply
 
@@ -846,9 +847,9 @@ Un client fire-and-forget injecte `IMessageProducer<T>` ; un client request/repl
 
 `IMessagingProvider` décomposée en 5 interfaces fines. Voir [§9.3 O1](#-violation-o1--résolu-par-r9).
 
-#### 🟡 Violation I3 — `IProducerPatterns` est interne mais expose `IMessagingProvider` (résolu)
+#### ✅ Violation I3 — **Résolu (S3 — IProducerPatterns supprimée)**
 
-[Senior Review §2.2](#2-architectural-review) : l'interface forçait à passer un `IMessagingProvider` en paramètre alors que le `Producer` l'a déjà en champ injecté. Statut : 🟢 **résolu en Sprint** — interface rendue `internal` + paramètre redondant supprimé.
+`IProducerPatterns` a été **supprimée** lors du refactoring S3. `Producer<T>` n'implémente plus que `IMessageProducer<TMessage>`. La logique claim check est maintenant dans `IClaimCheckPreparer` / `ClaimCheckPreparer`.
 
 ### 9.6 DIP — Dependency Inversion Principle
 
@@ -894,13 +895,12 @@ Tous les samples EMT utilisent `AddEMTSampleProducerDefaults(config, new VisualS
 | Classe / Interface | S | O | L | I | D | Statut |
 |---|---|---|---|---|---|---|
 | `MessageTransitContext<T>` | 🟠 | 🟢 | 🟢 | 🟢 | 🟢 | Séparer envelope/runtime (Phase 6 future) |
-| `Producer<T>` | 🟠 | 🟢 | 🟢 | 🟢 | ✅ | D2 résolu par R9 — injecte `IMessagePublisher + IMessagingEndpointResolver` |
+| `Producer<T>` | 🟡 | 🟢 | 🟢 | 🟢 | ✅ | S3 résolu (IClaimCheckPreparer) ; S4 → Phase 6 ; D2 résolu R9 |
 | `BaseConsumer<T>` | ✅ | 🟢 | 🟢 | 🟢 | 🟢 | S1 résolu par R8 — délègue settlement/telemetry via interfaces fines |
 | `IMessageProducer<T>` | 🟢 | 🟢 | 🟢 | ✅ | 🟢 | I1 résolu par R3 — `IRequestReplyClient<T,R>` séparé |
 | `IMessagingProvider` | 🟢 | ✅ | 🟢 | ✅ | 🟢 | O1+I2 résolus par R9 — composite backward-compat sur 5 interfaces fines |
-| `IMessagingProvider` | 🟢 | 🟠 | 🟢 | 🟠 | 🟠 | Scinder en 5 interfaces fines |
-| `AzureMessagingProvider` | 🟠 | 🟢 | 🟢 | 🟠 | 🟢 | Idem |
-| `AzureFunctionMessagingAdapter` | 🟠 | 🟢 | 🟢 | 🟢 | 🟠 | Sortir dans `Hosting.Functions` assembly |
+| `AzureMessagingProvider` | 🟠 | 🟢 | 🟢 | ✅ | 🟢 | S4 → Phase 6 ; I résolu R9 (5 interfaces fines via DI) |
+| `AzureFunctionMessagingAdapter` | 🟠 | 🟢 | 🟢 | 🟢 | 🟠 | S/D hors scope v1.0 — Consumer AzFunc uniquement (R10) |
 | `RoutingSlipExecutor<TArgs>` | 🟢 | 🟢 | 🟢 | 🟢 | 🟢 | RAS — exemple à suivre |
 | `IRoutingSlipActivity<TArgs>` | 🟢 | 🟢 | 🟢 | 🟢 | 🟢 | RAS — référence |
 | `CircuitBreakerManager` | 🟢 | 🟢 | 🟢 | 🟢 | 🟢 | RAS |
@@ -1042,8 +1042,8 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 - 10 scénarios documentés dans `Exemples/RAMQ.Samples.Queue.RequestReply.README.md`.
 
 **Estimation :** 3-4 semaines (1 dev expérimenté).
-**Risque :** 🟠 Moyen — touche le contrat public (`IMessageProducer<T>` perd `GetResponseAsync`).
-**Priorité :** 🔴 **Critique** — le sample induit en erreur tout nouveau venu.
+**Risque :** ~~🟠 Moyen~~ ✅ **Breaking change livré** — `IMessageProducer<T>` a bien perdu `GetResponseAsync` (déplacé vers `IRequestReplyClient<T,R>`).
+**Priorité :** ~~🔴 **Critique**~~ ✅ **Livré** — sample fonctionnel end-to-end.
 
 ### 11.4 Lot R4 — Compléter le triangle idempotence
 
