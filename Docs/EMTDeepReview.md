@@ -961,7 +961,7 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 ### 11.3 Lot R3 — Refonte intégrale du pattern Request/Reply ✅ Livré
 
 **Origine :** [EMT1.0-RequestReply.md](EMT1.0-RequestReply.md) — C1, C2, C3, I2-I5, S1-S8.
-**Objectif :** rendre le pattern utilisable (actuellement le sample ne compile pas, le worker crashe).
+**Objectif :** rendre le pattern utilisable (**état initial :** sample ne compilait pas, worker crashait au démarrage — voir [EMT1.0-RequestReply.md](EMT1.0-RequestReply.md) pour le détail). ✅ **Résolu.**
 
 **Livré le 27 mai 2026 :**
 - `IRequestReplyClient<TRequest, TResponse>` — nouvelle interface (ISP : séparée de `IMessageProducer<T>`)
