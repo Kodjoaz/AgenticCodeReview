@@ -397,6 +397,26 @@ if (reply?.Message?.Content != null)
 > 2. **Code EMT :** `MessageId` systématiquement renseigné (✅).
 > 3. **Métier :** `MessageId` **déterministe** pour les scénarios où le caller retente.
 
+#### ⚠️ Comportement critique : MessageId régénéré sur retry exponentiel (sans session)
+
+> **Lors d'un `ExponentialRetry` sans session**, EMT **génère un nouveau `MessageId`** pour le message re-schedulé. Raison : si `RequiresDuplicateDetection = true` est configuré sur la queue, Service Bus rejetterait silencieusement un retry portant le même `MessageId` (il considérerait le message comme un doublon).
+>
+> Pour préserver la traçabilité bout-en-bout malgré ce changement de `MessageId`, EMT copie l'identifiant original dans le `CorrelationId` du message retry :
+> - **1er retry** : `CorrelationId = MessageId` original
+> - **Retries suivants** : `CorrelationId` déjà en place → préservé tel quel
+>
+> **Conséquence pour les développeurs :** pour tracer un message à travers ses retries, utiliser **`CorrelationId`** — pas `MessageId`. Le `CorrelationId` ne change jamais et représente l'identité logique immuable du message original.
+
+```
+Publish initial : MessageId=AAA, CorrelationId=AAA
+                       ↓ ExponentialRetry (no session)
+Retry #1        : MessageId=BBB, CorrelationId=AAA  ← AAA préservé
+                       ↓ ExponentialRetry
+Retry #2        : MessageId=CCC, CorrelationId=AAA  ← AAA toujours là
+```
+
+> ℹ️ **Retry avec session** (`ImmediateRetry` ou `ExponentialRetry` session) : le message est abandonné (`AbandonAsync`) et re-livré par Service Bus — **même `MessageId`**, pas de régénération. L'ordre FIFO de session est préservé.
+
 ### 6.6 Retry, Circuit Breaker et Dead Letter Queue
 
 Trois politiques de retry :
@@ -631,13 +651,15 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 
 | Axe | Verdict | Évidence |
 |---|---|---|
-| Implémentation | 🟡 Partielle | EMT garantit `MessageId` présent ; ne valide pas `RequiresDuplicateDetection` côté broker |
-| Complétude | 🟠 Triangle incomplet | Manque validation infrastructurelle + guidance MessageId déterministe (DE Review O9 / M1-M4) |
+| Implémentation | 🟡 Partielle | EMT garantit `MessageId` présent ; régénère `MessageId` sur retry exponentiel sans session (✅ — évite rejet duplicate detection) ; `CorrelationId` immuable préservé |
+| Complétude | 🟠 Triangle incomplet | Manque validation infrastructurelle `RequiresDuplicateDetection` au démarrage (lot R4) |
 | Testabilité | 🟢 Bon | Sample TDF démontre l'audit de corrélation |
-| Observabilité | 🟡 Partielle | Counter `duplicate_detected_total` dans `IMetricsProvider` mais non câblé (R4 : broker ne notifie pas les doublons filtrés) |
-| Documentation | 🟢 Bon | [idempotence.md](../EnterpriseMessageTransit/docs/idempotence.md) |
+| Observabilité | 🟡 Partielle | Counter `duplicate_detected_total` dans `IMetricsProvider` mais non câblé (broker ne notifie pas les doublons filtrés) |
+| Documentation | 🟢 Bon | [idempotence.md](../EnterpriseMessageTransit/docs/idempotence.md) + §6.5 |
 
-🟠 **À compléter (lot R4) :** ajouter un check dans `ServiceBusHealthCheck` qui interroge Service Bus pour vérifier que les entités consommées ont `RequiresDuplicateDetection = true` avec une fenêtre suffisante.
+> ⚠️ **Invariant de traçabilité :** utiliser `CorrelationId` (immuable) pour corréler un message et ses retries — pas `MessageId` (régénéré à chaque retry exponentiel sans session). Voir [§6.5](#65-idempotence-et-duplicate-detection) pour le détail.
+
+🟠 **À compléter (lot R4) :** ajouter un check au démarrage qui interroge Service Bus pour vérifier que les entités ont `RequiresDuplicateDetection = true` avec une fenêtre suffisante.
 
 ### 8.10 Récapitulatif des patterns
 
