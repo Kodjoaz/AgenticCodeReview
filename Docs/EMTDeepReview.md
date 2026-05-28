@@ -394,8 +394,77 @@ if (reply?.Message?.Content != null)
 
 > 🧭 **L'idempotence producteur repose sur un triangle à trois côtés :**
 > 1. **Infra :** `RequiresDuplicateDetection = true` sur la queue/topic (Bicep/Terraform).
-> 2. **Code EMT :** `MessageId` systématiquement renseigné (✅).
+> 2. **Code EMT :** `MessageId` systématiquement renseigné + `TransportSettings.RequiresDuplicateDetection = true` → vérification au démarrage (✅).
 > 3. **Métier :** `MessageId` **déterministe** pour les scénarios où le caller retente.
+
+#### Mise en place complète — pseudo-code
+
+**Étape 1 — Infrastructure (Bicep)**
+```bicep
+resource sbQueue 'Microsoft.ServiceBus/namespaces/queues@2022-10-01-preview' = {
+  name: 'sbq-mon-domaine'
+  properties: {
+    requiresDuplicateDetection: true              // ← activer côté broker
+    duplicateDetectionHistoryTimeWindow: 'PT10M'  // fenêtre 10 minutes
+    maxDeliveryCount: 10
+  }
+}
+```
+
+**Étape 2 — Config EMT (`appsettings.json` / `local.settings.json`)**
+```json
+"Endpoints": [{
+  "Target": "mon-domaine",
+  "Endpoint": {
+    "EntityName": "sbq-mon-domaine",
+    "EntityType": "Queue",
+    "RequiresDuplicateDetection": true   // ← EMT vérifie au démarrage
+  }
+}]
+```
+
+**Étape 3 — Publisher (MessageId déterministe)**
+```csharp
+// Le MessageId doit être déterministe : même entrée métier = même MessageId.
+// Ainsi, si le caller retente après un timeout réseau, Service Bus déduplique silencieusement.
+var messageId = $"dossier-{dossierId}-action-{actionCode}"; // déterministe
+
+var ctx = new MessageTransitContext<MaCommande>
+{
+    MessageId     = messageId,   // déterministe → protège contre les doubles envois
+    CorrelationId = messageId,   // même valeur au 1er publish ; EMT préserve sur retry
+    SessionId     = dossierId,   // si sessions activées
+    Message       = new MaCommande { ... }
+};
+
+await _producer.PublishAsync(ctx, null, cancellationToken);
+```
+
+**Étape 4 — Démarrage (fast-fail automatique)**
+```
+// Au démarrage de l'application, EMT appelle automatiquement :
+// ServiceBusAdministrationClient.GetQueueAsync("sbq-mon-domaine")
+//   → props.RequiresDuplicateDetection == false ?
+//       → ConfigurationException("L'entité 'sbq-mon-domaine' n'a pas RequiresDuplicateDetection...")
+//   → props.RequiresDuplicateDetection == true ?
+//       → OK, l'application démarre normalement
+```
+
+**Ce qui se passe sans `MessageId` déterministe :**
+```
+Caller envoie MaCommande(dossierId=D-001)  → MessageId=uuid-aaa → Service Bus OK
+Timeout réseau → caller retente
+Caller envoie MaCommande(dossierId=D-001)  → MessageId=uuid-bbb → Service Bus ACCEPTE (nouveau MessageId)
+                                            → ⚠️ doublon métier : commande traitée 2 fois
+```
+
+**Ce qui se passe AVEC `MessageId` déterministe + `RequiresDuplicateDetection` :**
+```
+Caller envoie MaCommande(dossierId=D-001)  → MessageId="dossier-D-001-cmd" → Service Bus OK
+Timeout réseau → caller retente
+Caller envoie MaCommande(dossierId=D-001)  → MessageId="dossier-D-001-cmd" → Service Bus DÉDUPLIQUE
+                                            → ✅ message ignoré silencieusement, 0 doublon
+```
 
 #### ⚠️ Comportement critique : MessageId régénéré sur retry exponentiel (sans session)
 

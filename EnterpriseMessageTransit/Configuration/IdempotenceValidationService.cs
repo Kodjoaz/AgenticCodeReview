@@ -7,7 +7,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration
 {
     /// <summary>
     /// Service hébergé qui valide, au démarrage de l'application, que chaque endpoint
-    /// ayant <see cref="TransportSettings.EnforceIdempotentPublish"/> = <c>true</c>
+    /// ayant <see cref="TransportSettings.RequiresDuplicateDetection"/> = <c>true</c>
     /// possède bien <c>RequiresDuplicateDetection</c> activé côté Service Bus.
     /// <para>
     /// En cas d'échec, une <see cref="Exceptions.ConfigurationException"/> est levée avant
@@ -56,7 +56,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration
             foreach (var entry in endpoints)
             {
                 var transport = entry.Endpoint;
-                if (transport is null || (!transport.EnforceIdempotentPublish && !transport.RequiresDuplicateDetection))
+                if (transport is null || !transport.RequiresDuplicateDetection)
                     continue;
 
                 _logger.LogInformation(

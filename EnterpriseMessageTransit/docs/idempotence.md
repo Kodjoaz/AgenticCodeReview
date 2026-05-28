@@ -54,7 +54,7 @@ az servicebus queue create \
 
 ---
 
-## 3. Activation côté EMT — `EnforceIdempotentPublish`
+## 3. Activation côté EMT — `RequiresDuplicateDetection`
 
 Par défaut, EMT **ne vérifie pas** si l'entité a la déduplication activée.  
 Pour activer la vérification au démarrage :
@@ -64,17 +64,17 @@ Pour activer la vérification au démarrage :
 {
   "TransportSettings": {
     "EntityName": "ma-queue-idempotente",
-    "EnforceIdempotentPublish": true
+    "RequiresDuplicateDetection": true
   }
 }
 ```
 
-Avec `EnforceIdempotentPublish = true`, EMT appelle `ServiceBusHealthCheck.ValidateIdempotenceAsync()` au démarrage. Si l'entité n'a pas `RequiresDuplicateDetection = true`, une `ConfigurationException` est levée avant que la première publication soit tentée (**fast-fail**).
+Avec `RequiresDuplicateDetection = true`, EMT appelle `ServiceBusHealthCheck.ValidateIdempotenceAsync()` au démarrage. Si l'entité n'a pas `RequiresDuplicateDetection = true`, une `ConfigurationException` est levée avant que la première publication soit tentée (**fast-fail**).
 
 ```
 ConfigurationException: L'entité 'ma-queue' n'a pas RequiresDuplicateDetection activé.
 Activez RequiresDuplicateDetection sur l'entité Service Bus,
-ou désactivez EnforceIdempotentPublish dans TransportSettings.
+ou désactivez RequiresDuplicateDetection dans TransportSettings.
 ```
 
 ### Wiring manuel dans `Program.cs` / `Startup.cs`
@@ -85,7 +85,7 @@ await ServiceBusHealthCheck.ValidateIdempotenceAsync(
     adminClient:              adminClient,
     entityName:               transportSettings.EntityName,
     entityType:               transportSettings.EntityType,
-    enforceIdempotentPublish: transportSettings.EnforceIdempotentPublish,
+    requiresDuplicateDetection: transportSettings.RequiresDuplicateDetection,
     cancellationToken:        ct);
 ```
 
@@ -99,7 +99,7 @@ await ServiceBusHealthCheck.ValidateIdempotenceAsync(
 | **Best-effort** | La déduplication n'est pas garantie en cas de migration d'entité, de failover ou de compaction. |
 | **Topic uniquement sur le namespace** | La déduplication s'applique par topic/queue — pas entre entités distinctes. |
 | **Consumer non couvert** | EMT garantit que le *producteur* n'envoie pas deux fois le même message dans la fenêtre. La gestion des doublons côté consumer (traitement idempotent) reste la responsabilité de l'application. |
-| **Coût réseau** | `EnforceIdempotentPublish = true` émet 1 appel HTTP de gestion par entité au démarrage. Négligeable en production, à désactiver dans les tests unitaires. |
+| **Coût réseau** | `RequiresDuplicateDetection = true` émet 1 appel HTTP de gestion par entité au démarrage. Négligeable en production, à désactiver dans les tests unitaires. |
 
 ---
 
@@ -135,5 +135,5 @@ protected override async Task ExecuteAsync(
 
 - [ADR-006 — Politique de désérialisation](adr/ADR-006-politique-deserialisation.md)
 - [failure-modes.md — Modes d'échec producteur](failure-modes.md)
-- `Configuration/TransportSettings.cs` — `EnforceIdempotentPublish`
+- `Configuration/TransportSettings.cs` — `RequiresDuplicateDetection`
 - `Configuration/ServiceBusHealthCheck.cs` — `ValidateIdempotenceAsync` / `ValidateIdempotenceCoreAsync`

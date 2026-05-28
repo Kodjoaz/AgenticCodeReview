@@ -107,8 +107,8 @@ Format : [Keep a Changelog](https://keepachangelog.com/fr/1.0.0/) · [SemVer str
   - `Producer.PublishBatchAsync` : journal parallélisé via `Task.WhenAll` — suppression du blocage O(n).
   - `EndpointResolver` : listes pré-calculées via `Lazy<T>` + index `Dictionary<string, EndpointSettings>` pour `TryResolve` O(1).
   - Tests de contrat : 28 tests (`IMessageSerializer` × 10, `IJournalProvider` × 3, `IStorageProvider` × 5, `IMetricsProvider` × 10).
-  - `TransportSettings.EnforceIdempotentPublish` : opt-in DuplicateDetection.
-  - `IdempotenceValidationService` (`IHostedService`) : validation au démarrage que les entités avec `EnforceIdempotentPublish = true` ont `RequiresDuplicateDetection` activé côté Service Bus — fast-fail au lieu de comportement silencieux.
+  - `TransportSettings.RequiresDuplicateDetection` : opt-in DuplicateDetection.
+  - `IdempotenceValidationService` (`IHostedService`) : validation au démarrage que les entités avec `RequiresDuplicateDetection = true` ont `RequiresDuplicateDetection` activé côté Service Bus — fast-fail au lieu de comportement silencieux.
   - `IHasRawServiceBusMessage` (interface `internal`) : élimine le cast direct vers `AzureFunctionMessageTransit` dans `AzureFunctionMessagingAdapter.BindContext` — `AzureFunctionMessageTransit` implémente désormais `IMessageTransit, IHasRawServiceBusMessage`.
   - `docs/adr/ADR-006-politique-dlq-deserialisation.md` (superseded) · `docs/idempotence.md`.
 - **Phase 4 — Performance et enveloppe opérationnelle** :

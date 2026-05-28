@@ -139,6 +139,6 @@ public class ServiceBusHealthCheck
             throw new ConfigurationException(
                 $"L'entité '{entityName}' n'a pas RequiresDuplicateDetection activé côté Service Bus. " +
                 $"Activez RequiresDuplicateDetection sur l'entité Service Bus (Bicep/Terraform), " +
-                $"ou désactivez RequiresDuplicateDetection (et EnforceIdempotentPublish) dans TransportSettings.");
+                $"ou désactivez TransportSettings.RequiresDuplicateDetection pour cet endpoint.");
     }
 }

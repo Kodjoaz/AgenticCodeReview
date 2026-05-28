@@ -152,7 +152,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
             });
 
             // --- IHostedService : validation idempotence au démarrage (P3-T2) ----------------
-            // Active uniquement si au moins un endpoint a EnforceIdempotentPublish = true.
+            // Active uniquement si au moins un endpoint a RequiresDuplicateDetection = true.
             services.AddHostedService<IdempotenceValidationService>();
 
             return services;

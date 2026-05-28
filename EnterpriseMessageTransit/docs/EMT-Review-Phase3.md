@@ -212,7 +212,7 @@ private static async Task ValidateDuplicateDetectionIfRequiredAsync(
 }
 ```
 
-**Note architecturale :** Cette validation est optionnelle et doit être activée via `TransportSettings.EnforceIdempotentPublish = true` (opt-in) pour ne pas casser les projets qui ne font pas d'idempotence. C'est une contrainte coûteuse (1 appel HTTP de gestion par démarrage) et inutile si le caller ne fournit pas de `MessageId`.
+**Note architecturale :** Cette validation est optionnelle et doit être activée via `TransportSettings.RequiresDuplicateDetection = true` (opt-in) pour ne pas casser les projets qui ne font pas d'idempotence. C'est une contrainte coûteuse (1 appel HTTP de gestion par démarrage) et inutile si le caller ne fournit pas de `MessageId`.
 
 #### Étape B — Documentation dans `docs/idempotence.md`
 
@@ -233,7 +233,7 @@ configurée à la création ou via le portail Azure / Bicep / az CLI).
 ## Activation côté EMT
 ```json
 "TransportSettings": {
-  "EnforceIdempotentPublish": true
+  "RequiresDuplicateDetection": true
 }
 ```
 Avec cette option, EMT vérifie au démarrage que les entités cibles ont la déduplication activée.
@@ -248,10 +248,10 @@ Avec cette option, EMT vérifie au démarrage que les entités cibles ont la dé
 
 ### Critère de sortie
 
-- [x] `TransportSettings.EnforceIdempotentPublish` (opt-in, défaut : `false`). *(`TransportSettings.cs` — 27 avril 2026)*
-- [x] Validation au démarrage si `EnforceIdempotentPublish = true`. *(`ServiceBusHealthCheck.ValidateIdempotenceCoreAsync` + `ValidateIdempotenceAsync` — 27 avril 2026)*
+- [x] `TransportSettings.RequiresDuplicateDetection` (opt-in, défaut : `false`). *(`TransportSettings.cs` — 27 avril 2026)*
+- [x] Validation au démarrage si `RequiresDuplicateDetection = true`. *(`ServiceBusHealthCheck.ValidateIdempotenceCoreAsync` + `ValidateIdempotenceAsync` — 27 avril 2026)*
 - [x] `IdempotenceValidationService` (`IHostedService`) enregistré via `ConfigurerProviders` : branche la validation au lifecycle .NET (StartAsync) — n'était pas appelée avant. *(8 mai 2026 — 8 tests dans `IdempotenceValidationServiceTests.cs`)*
-- [x] Test : exception levée au démarrage si `EnforceIdempotentPublish = true` ET entité sans déduplication. *(`ServiceBusHealthCheckIdempotenceTests.cs` — 5 tests — 27 avril 2026)*
+- [x] Test : exception levée au démarrage si `RequiresDuplicateDetection = true` ET entité sans déduplication. *(`ServiceBusHealthCheckIdempotenceTests.cs` — 5 tests — 27 avril 2026)*
 - [x] `docs/idempotence.md` publié. *(`docs/idempotence.md` — 27 avril 2026)*
 
 ---
@@ -631,8 +631,8 @@ public bool TryResolve(string target, string? consumer, string? action, out Endp
 |----------|----------|----------|-----------|--------|
 | P3-T1 | Tests de contrat interface + `docs/extensibility.md` | 🟡 Basse | 1 semaine | ✅ Complet |
 | | | | | 28 tests de contrat ✅ · `IMessageSerializer` (10 tests) · `IJournalProvider` (3 tests) · `IStorageProvider` (5 tests) · `IMetricsProvider` (10 tests) — `docs/extensibility.md` ✅ Phase 4 (27 avril 2026) |
-| P3-T2 | `EnforceIdempotentPublish` opt-in + `docs/idempotence.md` | 🟡 Basse | 3 jours | ✅ Complet |
-| | | | | `TransportSettings.EnforceIdempotentPublish` ✅ · `ServiceBusHealthCheck.ValidateIdempotenceCoreAsync` ✅ · 5 tests ✅ · `IdempotenceValidationService` (IHostedService, 8 tests) branché 8 mai 2026 · `docs/idempotence.md` ✅ |
+| P3-T2 | `RequiresDuplicateDetection` opt-in + `docs/idempotence.md` | 🟡 Basse | 3 jours | ✅ Complet |
+| | | | | `TransportSettings.RequiresDuplicateDetection` ✅ · `ServiceBusHealthCheck.ValidateIdempotenceCoreAsync` ✅ · 5 tests ✅ · `IdempotenceValidationService` (IHostedService, 8 tests) branché 8 mai 2026 · `docs/idempotence.md` ✅ |
 | P3-T3 | `PublishTimeout` borné à 30s + tests | 🟠 Moyenne | 2 jours | ✅ Complet |
 | | | | | `TransportSettings.PublishTimeout` ✅ · timeout `PublishAsync`+`PublishBatchAsync` ✅ · 2 tests ✅ · CHANGELOG ✅ (8 mai 2026) |
 | P3-T4 | `DeserializationResult<T>` — call-sites + métriques | 🟠 Moyenne | 1 semaine | ✅ Complet (breaking change 8 mai 2026) |
