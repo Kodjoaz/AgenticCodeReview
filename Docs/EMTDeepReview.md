@@ -690,7 +690,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 
 | Principe | Verdict global | Note |
 |---|---|---|
-| **S** — Single Responsibility | 🟡 **Partiellement résolu** | S1 résolu R8 ; S3 résolu (IClaimCheckPreparer) ; S4 (AzureMessagingProvider) restant |
+| **S** — Single Responsibility | 🟡 **Partiellement résolu** | S1 résolu R8 ; S3 résolu (IClaimCheckPreparer) ; S4 (AzureMessagingProvider) → Phase 6 |
 | **O** — Open / Closed | ✅ **Résolu** | R9 : 5 interfaces fines permettent l'extension sans modifier `IMessagingProvider` |
 | **L** — Liskov Substitution | 🟡 **OK avec marker interfaces** | Hiérarchie de config saine mais marqueur inutile |
 | **I** — Interface Segregation | ✅ **Résolu** | R9 : `IMessagePublisher`, `IMessageReceiver`, `IMessageSettler`, `IMessagingEndpointResolver`, `IMessageDeserializer` |
@@ -780,9 +780,11 @@ public class Producer<TMessage> : BaseMessageTransit<TMessage>, IMessageProducer
 
 **Responsabilités restantes dans `Producer<T>` :** R1 (orchestration), R3 (journal — déjà délégué), R4 (OTel — cross-cutting), R5 (compensation blob orphelin sur erreur send). Ces 4 responsabilités sont cohérentes dans un orchestrateur de publication.
 
-#### 🟠 Violation S4 — `AzureMessagingProvider` est une god-class
+#### 🟠 Violation S4 — `AzureMessagingProvider` est une god-class — Reportée Phase 6
 
 Voir Lead Review §2.1. Mélange : envoi, batch, request/reply, désérialisation, résolution endpoint, hydratation `Attempt`, propagation traceparent, gestion sender cache, application circuit breaker… **Implémente une interface > 10 méthodes** (cf. §9.5 ISP).
+
+> ⛾ **Décision (2026-05-28) :** la décomposition de `AzureMessagingProvider` en classes distinctes (`AzureMessagePublisher`, `AzureMessageSettler`, etc.) est reportée en **Phase 6**. La scission implique de partager `ServiceBusClient` + `ServiceBusSenderCache` entre plusieurs classes — à coordonner avec l'éventuelle refonte multi-broker.
 
 ### 9.3 OCP — Open / Closed Principle
 
