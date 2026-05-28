@@ -786,29 +786,28 @@ Les 5 interfaces fines :
 
 ### 9.5 ISP — Interface Segregation Principle
 
-#### 🟠 Violation I1 — `IMessageProducer<T>` mélange publish + request/reply
+#### ✅ Violation I1 — **Résolu par R3**
 
-[`Messaging/Producer/IMessageProducer.cs:6-32`](../EnterpriseMessageTransit/Messaging/Producer/IMessageProducer.cs)
+[`Messaging/Producer/IMessageProducer.cs`](../EnterpriseMessageTransit/Messaging/Producer/IMessageProducer.cs)
+
+`GetResponseAsync` a été **retiré** de `IMessageProducer<T>` et déplacé dans une interface dédiée `IRequestReplyClient<TRequest, TResponse>`. `IMessageProducer<T>` ne contient plus que les opérations fire-and-forget :
 
 ```csharp
+// ✅ IMessageProducer<T> — publish uniquement
 public interface IMessageProducer<TPayload> where TPayload : class
 {
-    Task<MessageTransitContext<MessageTransitResponse>> PublishAsync(...);    // fire-and-forget
-    Task<IReadOnlyList<string>> PublishBatchAsync(...);                       // fire-and-forget batch
-    Task<MessageTransitContext<MessageTransitResponse>?> GetResponseAsync(...); // request/reply (bloquant)
+    Task<MessageTransitContext<MessageTransitResponse>> PublishAsync(...);
+    Task<IReadOnlyList<string>> PublishBatchAsync(...);
+}
+
+// ✅ IRequestReplyClient<TRequest,TResponse> — request/reply séparé (R3)
+public interface IRequestReplyClient<TRequest, TResponse>
+{
+    Task<MessageTransitContext<TResponse>?> GetResponseAsync(...);
 }
 ```
 
-Un client qui ne fait que publier dépend de `GetResponseAsync` qui pourrait n'être pas implémentée. Un client qui ne fait que du request/reply n'utilise pas `PublishBatchAsync`. **C'est l'anti-ISP type.**
-
-🧭 **Refactor proposé :**
-
-```csharp
-public interface IMessagePublisher<TPayload>  { Task PublishAsync(...); Task PublishBatchAsync(...); }
-public interface IRequestReplyClient<TPayload, TResponse>  { Task<TResponse?> GetResponseAsync(...); }
-```
-
-Le `Producer<T>` peut implémenter les deux ; le client injecte celle dont il a besoin.
+Un client fire-and-forget injecte `IMessageProducer<T>` ; un client request/reply injecte `IRequestReplyClient<TRequest, TResponse>`. Violation ISP éliminée.
 
 #### ✅ Violation I2 — **Résolu par R9**
 
