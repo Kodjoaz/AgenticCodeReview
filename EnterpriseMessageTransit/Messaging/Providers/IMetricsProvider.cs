@@ -123,4 +123,23 @@ public interface IMetricsProvider
     /// </summary>
     /// <param name="entityName">Entité Service Bus sur laquelle le doublon a été détecté</param>
     void IncrementDuplicateDetected(string entityName);
+
+    /// <summary>
+    /// Incrémente le compteur d'uploads claim-check réussis.
+    /// </summary>
+    /// <param name="entityName">Nom du fichier ou du conteneur Blob</param>
+    void IncrementClaimCheckUploads(string entityName);
+
+    /// <summary>
+    /// Incrémente le compteur de downloads claim-check réussis.
+    /// </summary>
+    /// <param name="entityName">Nom du fichier ou du conteneur Blob</param>
+    void IncrementClaimCheckDownloads(string entityName);
+
+    /// <summary>
+    /// Incrémente le compteur de compensations routing slip déclenchées (FaultResult).
+    /// </summary>
+    /// <param name="slipName">Nom du routing slip</param>
+    /// <param name="reason">Raison de la compensation</param>
+    void IncrementRoutingSlipCompensation(string slipName, string reason);
 }

@@ -12,6 +12,5 @@
         public string? OriginalFileName { get; init; }
         public bool ForceClaimCheck { get; init; }
         public string? Target { get; init; }
-        public bool EnableOffline { get; init; }
     }
 }

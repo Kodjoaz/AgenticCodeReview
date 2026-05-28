@@ -122,6 +122,12 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
             // IMessagingProvider, IMessagingAdapter, IJournalProvider, IStorageProvider ont un
             // état lié au message en cours (BindContext) → ne pas partager entre invocations.
             services.AddScoped<IMessagingProvider, AzureMessagingProvider>();
+            // R9 — Interfaces fines (ISP/OCP) : même instance que IMessagingProvider dans le scope.
+            services.AddScoped<IMessagePublisher>(sp => sp.GetRequiredService<IMessagingProvider>());
+            services.AddScoped<IMessagingEndpointResolver>(sp => sp.GetRequiredService<IMessagingProvider>());
+            services.AddScoped<IMessageReceiver>(sp => sp.GetRequiredService<IMessagingProvider>());
+            services.AddScoped<IMessageSettler>(sp => sp.GetRequiredService<IMessagingProvider>());
+            services.AddScoped<IMessageDeserializer>(sp => sp.GetRequiredService<IMessagingProvider>());
             services.AddScoped<IRetryPolicyHandler, RetryPolicyHandler>(); // Scoped: évite captive dependency avec IEndpointResolver
             services.AddScoped<IMessagingAdapter, AzureFunctionMessagingAdapter>();
             services.AddScoped<IJournalProvider, AzureJournalProvider>();

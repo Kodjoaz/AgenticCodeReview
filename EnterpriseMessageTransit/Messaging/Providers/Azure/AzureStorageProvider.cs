@@ -1,5 +1,6 @@
 ﻿using Azure.Storage.Blobs;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
@@ -9,13 +10,16 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
     {
         private readonly BlobServiceClient _blobServiceClient;
         private readonly IMessageTransitConfigurationService _config;
+        private readonly IMetricsProvider? _metrics;
 
         public AzureStorageProvider(
             BlobServiceClient blobServiceClient,
-            IMessageTransitConfigurationService config)
+            IMessageTransitConfigurationService config,
+            IMetricsProvider? metrics = null)
         {
             _blobServiceClient = blobServiceClient ?? throw new ArgumentNullException(nameof(blobServiceClient));
-            _config = config ?? throw new ArgumentNullException(nameof(config));
+            _config            = config            ?? throw new ArgumentNullException(nameof(config));
+            _metrics           = metrics;
         }
 
         private string GetContainerName()
@@ -73,23 +77,29 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 throw new ArgumentNullException(nameof(reference));
             }
 
-            // If absolute URI provided, use it directly
+            var sw = Stopwatch.StartNew();
+            Stream result;
+
             if (Uri.TryCreate(reference, UriKind.Absolute, out var absoluteUri))
             {
                 var blob = new BlobClient(absoluteUri);
-                return await blob.OpenReadAsync(cancellationToken: cancellationToken);
+                result = await blob.OpenReadAsync(cancellationToken: cancellationToken);
             }
-
-            // Otherwise expect a relative container/blob reference: "container/path/to/blob"
-            var parts = reference.TrimStart('/').Split(new[] { '/' }, 2);
-            if (parts.Length < 2)
+            else
             {
-                throw new InvalidOperationException("Invalid blob reference. Expected 'container/blobpath' or absolute URI.");
+                var parts = reference.TrimStart('/').Split(new[] { '/' }, 2);
+                if (parts.Length < 2)
+                    throw new InvalidOperationException("Invalid blob reference. Expected 'container/blobpath' or absolute URI.");
+
+                var containerClient = _blobServiceClient.GetBlobContainerClient(parts[0]);
+                var blobClient      = containerClient.GetBlobClient(parts[1]);
+                result = await blobClient.OpenReadAsync(cancellationToken: cancellationToken);
             }
 
-            var containerClient = _blobServiceClient.GetBlobContainerClient(parts[0]);
-            var blobClient = containerClient.GetBlobClient(parts[1]);
-            return await blobClient.OpenReadAsync(cancellationToken: cancellationToken);
+            sw.Stop();
+            _metrics?.RecordClaimCheckDownloadDuration(sw.Elapsed.TotalMilliseconds, reference);
+            _metrics?.IncrementClaimCheckDownloads(reference);
+            return result;
         }
 
         public async Task DeleteAsync(string reference, CancellationToken cancellationToken)

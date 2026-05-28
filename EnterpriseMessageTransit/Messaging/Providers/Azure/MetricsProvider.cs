@@ -76,6 +76,18 @@ public class MetricsProvider : IMetricsProvider
         "duplicate_detected_total",
         description: "Total number of duplicate messages detected");
 
+    private readonly Counter<long> _claimCheckUploadsCounter = s_meter.CreateCounter<long>(
+        "claimcheck_uploads_total",
+        description: "Total number of successful claim-check blob uploads");
+
+    private readonly Counter<long> _claimCheckDownloadsCounter = s_meter.CreateCounter<long>(
+        "claimcheck_downloads_total",
+        description: "Total number of successful claim-check blob downloads");
+
+    private readonly Counter<long> _routingSlipCompensationCounter = s_meter.CreateCounter<long>(
+        "routing_slip_compensation_total",
+        description: "Total number of routing slip compensations triggered (FaultResult)");
+
     private readonly ObservableGauge<long> _circuitStateGauge;
 
     /// <summary>
@@ -212,6 +224,25 @@ public class MetricsProvider : IMetricsProvider
     {
         _duplicateDetectedCounter.Add(1,
             new KeyValuePair<string, object?>("entity_name", entityName));
+    }
+
+    public void IncrementClaimCheckUploads(string entityName)
+    {
+        _claimCheckUploadsCounter.Add(1,
+            new KeyValuePair<string, object?>("entity_name", entityName));
+    }
+
+    public void IncrementClaimCheckDownloads(string entityName)
+    {
+        _claimCheckDownloadsCounter.Add(1,
+            new KeyValuePair<string, object?>("entity_name", entityName));
+    }
+
+    public void IncrementRoutingSlipCompensation(string slipName, string reason)
+    {
+        _routingSlipCompensationCounter.Add(1,
+            new KeyValuePair<string, object?>("slip_name", slipName),
+            new KeyValuePair<string, object?>("reason",    reason));
     }
 
     /// <summary>

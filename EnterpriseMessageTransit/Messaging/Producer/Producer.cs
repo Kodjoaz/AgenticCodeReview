@@ -21,14 +21,16 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
     /// <typeparam name="TMessage">Représente le contenu de l'événement</typeparam>
     public class Producer<TMessage> : BaseMessageTransit<TMessage>, IMessageProducer<TMessage>, IProducerPatterns where TMessage : class
     {
-        private readonly IMessagingProvider _messagingProvider;
+        private readonly IMessagePublisher _publisher;
+        private readonly IMessagingEndpointResolver _resolver;
         private readonly IJournalProvider _journal;
         private readonly ISystemClock _systemClock;
         private readonly IMessageTargetMap? _targetMap;
         private readonly IMetricsProvider? _metrics;
 
         public Producer(
-            IMessagingProvider messagingProvider,
+            IMessagePublisher publisher,
+            IMessagingEndpointResolver resolver,
             IJournalProvider journal,
             ILogger<Producer<TMessage>> logger,
             IProducerConfigurationService config,
@@ -39,7 +41,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             IMetricsProvider? metrics = null)
             : base(logger, config, serializer, storageProvider)
         {
-            _messagingProvider = messagingProvider ?? throw new ArgumentNullException(nameof(messagingProvider));
+            _publisher = publisher ?? throw new ArgumentNullException(nameof(publisher));
+            _resolver  = resolver  ?? throw new ArgumentNullException(nameof(resolver));
             _journal = journal ?? throw new ArgumentNullException(nameof(journal));
             _systemClock = systemClock ?? throw new ArgumentNullException(nameof(systemClock));
             _targetMap = targetMap;
@@ -94,7 +97,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
 
             // Résolution du target : IMessageTargetMap (DI) → fallback mono-audience.
             string? effectiveTarget = _targetMap?.ResolveTarget<TMessage>();
-            EndpointSettings audience = _messagingProvider.Resolve(effectiveTarget);
+            EndpointSettings audience = _resolver.Resolve(effectiveTarget);
             string? resolvedTarget = audience.Target;
             bool enableSession = audience.Endpoint.EnableSession;
 
@@ -149,7 +152,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
 
                 try
                 {
-                    await _messagingProvider.SendAsync(context, options, effectiveCt);
+                    await _publisher.SendAsync(context, options, effectiveCt);
                     activity?.SetStatus(ActivityStatusCode.Ok);
                 }
                 catch (Exception sendEx)
@@ -264,7 +267,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
 
             // Résolution du target et activation des sessions (identique à PublishCoreAsync)
             string? effectiveTarget = _targetMap?.ResolveTarget<TMessage>();
-            EndpointSettings audience = _messagingProvider.Resolve(effectiveTarget);
+            EndpointSettings audience = _resolver.Resolve(effectiveTarget);
             string? resolvedTarget = audience.Target;
             bool enableSession = audience.Endpoint.EnableSession;
 
@@ -299,13 +302,34 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
 
             try
             {
-                await _messagingProvider.SendBatchAsync(contextsList, options, effectiveCt);
+                await _publisher.SendBatchAsync(contextsList, options, effectiveCt);
 
-                // P3-T5 — Journal parallélisé : remplace le séquentiel O(n) (O14 DE Review).
+                // R6 — Journal batch via TransactionalBatch Azure Table (1 transaction par partition ≤ 100).
                 // Pattern A5 maintenu : les erreurs de journal ne propagent jamais vers le caller.
                 (string? consumer, string? action) = ExtractMessageProperties(properties);
-                await Task.WhenAll(contextsList.Select(ctx =>
-                    WriteJournalEntrySafeAsync(ctx, consumer, action, resolvedTarget, effectiveCt)));
+                var journalEntries = contextsList.Select(ctx => JournalEntry.ForPublish(
+                    consumer ?? "(none)",
+                    action   ?? "(none)",
+                    ctx.MessageId   ?? string.Empty,
+                    ctx.SessionId   ?? string.Empty,
+                    resolvedTarget  ?? string.Empty,
+                    ctx.SessionId,
+                    Config.AppSettings?.ApplicationName,
+                    _systemClock.UtcNow.UtcDateTime)).ToList();
+
+                var journalBatchSw = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    await _journal.WriteBatchAsync(journalEntries, effectiveCt);
+                    journalBatchSw.Stop();
+                    _metrics?.RecordJournalWriteDuration(journalBatchSw.Elapsed.TotalMilliseconds);
+                }
+                catch (Exception jEx)
+                {
+                    Logger.LogWarning(jEx,
+                        "Journal batch failed — {Count} messages sent but not journalized.",
+                        contextsList.Count);
+                }
             }
             catch (OperationCanceledException) when (timeoutCts?.IsCancellationRequested == true && !cancellationToken.IsCancellationRequested)
             {
@@ -325,104 +349,6 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             return contextsList.Select(ctx => ctx.MessageId!).ToList();
         }
 
-        /// <summary>
-        /// P3-T5 — Écriture journal atomique et isolée pour un seul message du batch.
-        /// Pattern A5 : une erreur de journal ne remonte jamais vers le caller.
-        /// </summary>
-        private async Task WriteJournalEntrySafeAsync(
-            MessageTransitContext<TMessage> ctx,
-            string? consumer,
-            string? action,
-            string? entityName,
-            CancellationToken cancellationToken)
-        {
-            var journalEntry = JournalEntry.ForPublish(
-                consumer ?? "(none)",
-                action ?? "(none)",
-                ctx.MessageId ?? string.Empty,
-                ctx.SessionId ?? string.Empty,
-                entityName ?? string.Empty,
-                ctx.SessionId,
-                Config.AppSettings?.ApplicationName,
-                _systemClock.UtcNow.UtcDateTime);
-
-            try
-            {
-                await _journal.WriteRecordAsync(journalEntry, cancellationToken);
-            }
-            catch (Exception jEx)
-            {
-                Logger.LogWarning(jEx,
-                    "Journal failed (batch) — message sent but not journalized. MessageId={MessageId}",
-                    ctx.MessageId);
-            }
-        }
-
-        /// <summary>
-        /// Request/Reply avec résolution automatique du target.
-        /// </summary>
-        public virtual async Task<MessageTransitContext<MessageTransitResponse>?> GetResponseAsync(
-            MessageTransitContext<TMessage> context,
-            RequestReplyOptions? replyOptions,
-            CancellationToken cancellationToken = default)
-        {
-            ArgumentNullException.ThrowIfNull(context);
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var claimCheck    = replyOptions?.ClaimCheck ?? ClaimCheckOptions.None;
-            var properties    = replyOptions?.Properties;
-            var enableOffline = replyOptions?.EnableOffline ?? false;
-
-            if (string.IsNullOrWhiteSpace(context.MessageId))
-                context.MessageId = Guid.NewGuid().ToString("N");
-
-            if (string.IsNullOrWhiteSpace(context.SessionId))
-                context.SessionId = context.MessageId;
-
-            if (string.IsNullOrWhiteSpace(context.CorrelationId))
-                context.CorrelationId = context.MessageId;
-
-            string? effectiveTarget = _targetMap?.ResolveTarget<TMessage>();
-            EndpointSettings audience = _messagingProvider.Resolve(effectiveTarget);
-
-            var options = new MessagingOptions
-            {
-                Properties       = properties,
-                FileStream       = claimCheck.FileStream,
-                OriginalFileName = claimCheck.OriginalFileName,
-                ForceClaimCheck  = claimCheck.ForceClaimCheck,
-                Target           = audience.Target,
-                EnableOffline    = enableOffline
-            };
-
-            (string? consumer, string? action) = ExtractMessageProperties(properties);
-
-            var rawResult = await _messagingProvider.RequestReplyAsync(context, options, cancellationToken);
-            var result = rawResult == null
-                ? null
-                : context.CopyWithResponse(rawResult.Message as MessageTransitResponse);
-
-            if (result != null)
-            {
-                var journalEntry = JournalEntry.ForRequestReply(
-                    consumer ?? "(none)",
-                    action   ?? "(none)",
-                    context.MessageId  ?? string.Empty,
-                    context.SessionId  ?? string.Empty,
-                    audience.Target    ?? string.Empty,
-                    result.Message is MessageTransitResponse resp ? resp.StatusCode : 0,
-                    context.SessionId,
-                    Config.AppSettings?.ApplicationName,
-                    _systemClock.UtcNow.UtcDateTime);
-
-                try { await _journal.WriteRecordAsync(journalEntry, cancellationToken); }
-                catch (Exception jEx) { Logger.LogWarning(jEx, "Journal failed (request-reply) MessageId={MessageId}", context.MessageId); }
-
-                return result;
-            }
-            return null;
-        }
-
         protected MessageTransitContext<MessageTransitResponse> MapToResponseContext<TAnyMessage>(
             MessageTransitContext<TAnyMessage> source,
             MessageTransitResponse? response)
@@ -434,7 +360,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
         public string GetTargetEntityName(string? target = null)
         {
             string? effectiveTarget = target ?? _targetMap?.ResolveTarget<TMessage>();
-            var aud = _messagingProvider.Resolve(effectiveTarget);
+            var aud = _resolver.Resolve(effectiveTarget);
             if (aud.Endpoint?.EntityName == null)
                 throw new InvalidOperationException("EntityName not resolved.");
             return aud.Endpoint.EntityName;
@@ -504,6 +430,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                     uploadSw.Stop();
                     uploadActivity?.SetStatus(ActivityStatusCode.Ok);
                     _metrics?.RecordClaimCheckUploadDuration(uploadSw.Elapsed.TotalMilliseconds, fileName);
+                    _metrics?.IncrementClaimCheckUploads(fileName);
                 }
                 catch (Exception ex)
                 {

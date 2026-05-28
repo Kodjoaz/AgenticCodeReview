@@ -29,9 +29,10 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
     internal class CircuitBreakerManager
     {
         private readonly CircuitBreakerOptions _options;
+        private readonly IMetricsProvider?     _metrics;
         private readonly ConcurrentDictionary<string, CircuitEntry> _circuits = new();
 
-        public CircuitBreakerManager(CircuitBreakerOptions options)
+        public CircuitBreakerManager(CircuitBreakerOptions options, IMetricsProvider? metrics = null)
         {
             _options = options ?? throw new ArgumentNullException(nameof(options));
             if (options.FailureThreshold <= 0)
@@ -40,6 +41,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
             if (options.OpenDuration <= TimeSpan.Zero)
                 throw new ArgumentOutOfRangeException(nameof(options),
                     $"OpenDuration doit être une durée positive (valeur reçue : {options.OpenDuration}).");
+            _metrics = metrics;
         }
 
         /// <summary>
@@ -63,8 +65,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
                     case CircuitState.Open:
                         if (DateTimeOffset.UtcNow >= entry.OpenedUntil)
                         {
-                            // Transition vers HalfOpen — autorise un test probe
                             entry.State = CircuitState.HalfOpen;
+                            _metrics?.SetCircuitState(entityName, 2);
+                            _metrics?.IncrementCircuitTransition(entityName, "Open", "HalfOpen");
                             return;
                         }
                         throw new CircuitBreakerOpenException(entityName, entry.OpenedUntil);
@@ -84,8 +87,14 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
 
             lock (entry.SyncRoot)
             {
+                var prev = entry.State;
                 entry.ConsecutiveFailures = 0;
                 entry.State = CircuitState.Closed;
+                if (prev != CircuitState.Closed)
+                {
+                    _metrics?.SetCircuitState(entityName, 0);
+                    _metrics?.IncrementCircuitTransition(entityName, prev.ToString(), "Closed");
+                }
             }
         }
 
@@ -102,14 +111,17 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers
 
                 if (entry.State == CircuitState.HalfOpen)
                 {
-                    // Le test probe a échoué → retour en Open
                     entry.State = CircuitState.Open;
                     entry.OpenedUntil = DateTimeOffset.UtcNow.Add(_options.OpenDuration);
+                    _metrics?.SetCircuitState(entityName, 1);
+                    _metrics?.IncrementCircuitTransition(entityName, "HalfOpen", "Open");
                 }
                 else if (entry.ConsecutiveFailures >= _options.FailureThreshold)
                 {
                     entry.State = CircuitState.Open;
                     entry.OpenedUntil = DateTimeOffset.UtcNow.Add(_options.OpenDuration);
+                    _metrics?.SetCircuitState(entityName, 1);
+                    _metrics?.IncrementCircuitTransition(entityName, "Closed", "Open");
                 }
             }
         }

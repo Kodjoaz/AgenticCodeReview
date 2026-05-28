@@ -1,10 +1,8 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Exceptions;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers;
-using RAMQ.COM.EnterpriseMessageTransit.Messaging.Enum;
-using RAMQ.COM.EnterpriseMessageTransit.Messaging.Telemetry;
 using RAMQ.COM.EnterpriseMessageTransit.Serialization;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
@@ -16,28 +14,14 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
     /// <typeparam name="TMessage">Représente le contenu de l'événement</typeparam>
     public abstract class BaseConsumer<TMessage> : BaseMessageTransit<TMessage>, IMessageConsumer<TMessage> where TMessage : class
     {
-        private readonly IMetricsProvider? _metrics;
-
-        /// <summary>
-        /// Target logique de ce consumer (ex: "Car", "Hotel").
-        /// Null = mono-audience (résolution automatique depuis le premier endpoint).
-        /// Fourni via <c>AddConsumer&lt;T&gt;("target")</c> en multi-endpoint.
-        /// </summary>
-        private readonly string? _targetName;
-
-        /// <summary>
-        /// Nom logique du consumer (ex: "CarConsumer").
-        /// Propagé à <see cref="IMessagingProvider.SetInvocationMetadata"/> pour le journal et le retry.
-        /// </summary>
-        private readonly string? _consumerName;
-
-        /// <summary>
-        /// Action logique du consumer (ex: "ReserverVoiture").
-        /// Propagé à <see cref="IMessagingProvider.SetInvocationMetadata"/> pour le journal et le retry.
-        /// </summary>
-        private readonly string? _actionName;
-
-        protected readonly IMessagingProvider MessagingProvider;
+        private readonly string?            _targetName;
+        private readonly string?            _consumerName;
+        private readonly string?            _actionName;
+        private readonly IMessageReceiver   _receiver;
+        private readonly IMessageSettler    _settler;
+        private readonly IMessageDeserializer _deserializer;
+        private readonly IMessagingEndpointResolver _resolver;
+        private readonly IConsumerTelemetry _telemetry;
 
         protected BaseConsumer(
             IMessagingProvider messagingProvider,
@@ -45,26 +29,25 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
             IConsumerConfigurationService config,
             IMessageSerializer serializer,
             IStorageProvider storageProvider,
-            string? targetName = null,
+            string? targetName   = null,
             string? consumerName = null,
-            string? actionName = null,
+            string? actionName   = null,
             IMetricsProvider? metricsProvider = null)
             : base(logger, config, serializer, storageProvider)
         {
-            MessagingProvider = messagingProvider ?? throw new ArgumentNullException(nameof(messagingProvider));
+            var p       = messagingProvider ?? throw new ArgumentNullException(nameof(messagingProvider));
+            _receiver   = p;
+            _settler    = p;
+            _deserializer = p;
+            _resolver   = p;
             _targetName   = targetName;
             _consumerName = consumerName;
             _actionName   = actionName;
-            _metrics      = metricsProvider;
+            _telemetry    = new AzureConsumerTelemetry(metricsProvider);
         }
 
-        /// <summary>
-        /// Restaure les métadonnées d'invocation du consumer (target, consumer, action).
-        /// Appelé avant chaque opération pour s'assurer que le journal et le retry handler
-        /// disposent du bon contexte, même après un appel précédent qui l'aurait modifié.
-        /// </summary>
-        protected void ResetInvocationMetadata() =>
-            MessagingProvider.SetInvocationMetadata(_targetName, _consumerName, _actionName);
+        private void ResetInvocationMetadata() =>
+            _receiver.SetInvocationMetadata(_targetName, _consumerName, _actionName);
 
         public abstract Task<MessageTransitContext<MessageTransitResponse>> ConsumeAsync(
             MessageTransitContext<TMessage> context,
@@ -83,68 +66,35 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
         public async Task<DeserializationResult<MessageTransitContext<TAnyMessage>>> DeserializeMessageAsync<TAnyMessage>(CancellationToken cancellationToken = default) where TAnyMessage : class
         {
             ResetInvocationMetadata();
-            var receiveSw = System.Diagnostics.Stopwatch.StartNew();
+            var sw = Stopwatch.StartNew();
 
-            // P4-T2 (consumer) — Rétablissement du contexte W3C propagé par le producteur.
-            var traceparent = MessagingProvider.GetTraceparent();
-            using var consumeActivity = MessagingActivitySource.Source.StartActivity(
-                "messaging.consume",
-                ActivityKind.Consumer,
-                parentId: traceparent);
-            consumeActivity?.SetTag("messaging.system", "servicebus");
+            using var scope = _telemetry.BeginReceive(_resolver.GetTraceparent());
 
-            using var activity = MessagingActivitySource.Source.StartActivity(
-                "messaging.deserialize",
-                ActivityKind.Consumer);
-
-            var result = MessagingProvider.DeserializeMessageSafe<TAnyMessage>();
+            var result = _deserializer.DeserializeMessageSafe<TAnyMessage>();
 
             if (!result.IsSuccess)
             {
-                activity?.SetTag("deserialization.failure_reason", result.FailureReason.ToString());
-                activity?.SetStatus(ActivityStatusCode.Error, result.ErrorMessage ?? result.FailureReason.ToString());
-                consumeActivity?.SetStatus(ActivityStatusCode.Error, result.FailureReason.ToString());
-                _metrics?.IncrementDeserializationFailure(result.FailureReason.ToString());
+                scope.MarkFailure(result.FailureReason.ToString(), result.ErrorMessage);
+                _telemetry.RecordDeserializationFailure(result.FailureReason.ToString());
                 Logger.LogWarning(
                     "DeserializeMessageAsync: échec désérialisation ({FailureReason}) — le consumer doit décider du settlement. Détail : {ErrorMessage}",
                     result.FailureReason, result.ErrorMessage);
                 return result;
             }
 
-            var ctx = result.Value!;
+            var ctx        = result.Value!;
             var entityName = ResolveEntityName();
-
-            consumeActivity?.SetTag("messaging.correlation_id", ctx.CorrelationId);
-            consumeActivity?.SetTag("messaging.consumer",       _consumerName ?? GetType().Name);
-            consumeActivity?.SetTag("messaging.action",         _actionName ?? string.Empty);
-            consumeActivity?.SetTag("messaging.destination",    entityName);
-            consumeActivity?.SetTag("messaging.status_code",    "200");
-            consumeActivity?.SetTag("messaging.mode",           OperationMode.COMPLETE.ToString());
-
-            activity?.SetTag("messaging.message_id",  ctx.MessageId);
-            activity?.SetTag("messaging.session_id",  ctx.SessionId);
-            activity?.SetTag("messaging.destination", entityName);
-            activity?.SetTag("messaging.claimcheck",  ctx.IsClaimCheckApplied ? "true" : "false");
-
-            activity?.SetStatus(ActivityStatusCode.Ok);
-            consumeActivity?.SetStatus(ActivityStatusCode.Ok);
-            receiveSw.Stop();
-            _metrics?.IncrementMessagesReceived(entityName, "Consumer");
-            _metrics?.RecordReceiveDuration(receiveSw.Elapsed.TotalMilliseconds, entityName);
+            scope.MarkSuccess(ctx, entityName, _consumerName, _actionName);
+            sw.Stop();
+            _telemetry.RecordReceived(entityName, sw.Elapsed.TotalMilliseconds);
             return result;
         }
 
-        /// <summary>
-        /// Résout le nom d'entité depuis la configuration locale du consumer.
-        /// Symétrique à la logique Producer : utilise <c>_targetName</c> s'il est fourni (multi-endpoint),
-        /// sinon fallback sur le premier endpoint (mono-audience).
-        /// Retourne <c>"unknown"</c> uniquement si la résolution échoue (OTel/métriques — chemin non critique).
-        /// </summary>
         private string ResolveEntityName()
         {
             try
             {
-                var endpoint = MessagingProvider.Resolve(_targetName);
+                var endpoint = _resolver.Resolve(_targetName);
                 return endpoint.Target ?? endpoint.Endpoint?.EntityName ?? "unknown";
             }
             catch
@@ -160,9 +110,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
 
             ResetInvocationMetadata();
             if (message is IMessageTransit mt)
-                MessagingProvider.BindContext(mt, actions);
+                _receiver.BindContext(mt, actions);
             else
-                MessagingProvider.BindContext(message, actions);
+                _receiver.BindContext(message, actions);
         }
         #endregion
 
@@ -172,7 +122,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
             CancellationToken ct = default) where TCurrent : class
         {
             ResetInvocationMetadata();
-            return MessagingProvider.CompleteMessageAsync(ct);
+            return _settler.CompleteMessageAsync(ct);
         }
 
         public Task CompleteMessageAsync(CancellationToken ct = default) =>
@@ -181,19 +131,19 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
         public Task DeadLetterMessageAsync(Exception ex, CancellationToken ct = default)
         {
             ResetInvocationMetadata();
-            return MessagingProvider.DeadLetterMessageAsync(ex, ct);
+            return _settler.DeadLetterMessageAsync(ex, ct);
         }
 
         protected Task ImmediateRetryAsync(ImmediateRetryException ex, CancellationToken ct = default)
         {
             ResetInvocationMetadata();
-            return MessagingProvider.ImmediateRetryAsync(ex, ct);
+            return _settler.ImmediateRetryAsync(ex, ct);
         }
 
         protected Task ExponentialRetryAsync(ExponentialRetryException ex, CancellationToken ct = default)
         {
             ResetInvocationMetadata();
-            return MessagingProvider.ExponentialRetryAsync(ex, ct);
+            return _settler.ExponentialRetryAsync(ex, ct);
         }
         #endregion
     }

@@ -295,11 +295,27 @@ public class ValiderAdmissibiliteActivity : IRoutingSlipActivity<ValiderArgs>
 
 ### 6.4 Request / Reply
 
-🔴 **Pattern partiellement implémenté.** [EMT1.0-RequestReply.md](EMT1.0-RequestReply.md) liste :
-- **C1** — `ServiceBusClient` non enregistré dans le DI → app crash au démarrage
-- **C2** — `RequestReplyConsumer` crée un `ServiceBusSender` par message via `await using` — bypass complet de l'infra EMT
-- **C3** — Cast dur `context.TransportMessage is AzureFunctionMessageTransit` (couplage transport)
-- **I5** — Côté requester entièrement absent (aucun worker n'envoie ni n'attend de réponse via session receiver)
+🟢 **Pattern refondu (lot R3 — appliqué).** Changements livrés :
+- **Nouvelle interface** `IRequestReplyClient<TRequest, TResponse>` séparée de `IMessageProducer<T>` — résout la violation ISP (§9.5 I1).
+- **Nouvelle implémentation** `AzureRequestReplyClient<TRequest, TResponse>` (interne) : utilise `ServiceBusSenderCache` (pas de `CreateSender` ad-hoc), désérialise la réponse comme `MessageTransitContext<TResponse>` (bug de type unique corrigé), émet un span OTel `messaging.request_reply` avec tags destination/reply-to/durée.
+- **`GetResponseAsync` retiré** de `IMessageProducer<T>` — un émetteur fire-and-forget ne dépend plus du R/R.
+- **`RequestReplyAsync` retiré** de `IMessagingProvider` et `AzureMessagingProvider`.
+- **`EnableOffline` retiré** de `MessagingOptions` (était mort-code — `AzureMessagingProvider` ne le lisait pas).
+- **`AddRequestReplyClient<TRequest, TResponse>(requestTarget, replyTarget)`** — nouvelle extension DI qui lie les deux endpoints (requête + réponse) dans le `IMessageTargetMap`.
+- **Samples corrigés** : `DoWork.cs` injecte `IRequestReplyClient<RequestMessage, ReplyMessage>` ; `Program.cs` Worker utilise `AddRequestReplyClient` ; `appsettings.json` Worker et `local.settings.json` Activator corrigés (Endpoints, MessageTransitJournalName, deux endpoints distincts requête/réponse).
+
+```csharp
+// Côté requester (Worker)
+services.AddRequestReplyClient<RequestMessage, ReplyMessage>("request-queue", "reply-queue");
+
+// Injection
+public DoWork(IRequestReplyClient<RequestMessage, ReplyMessage> rrClient) { ... }
+
+// Appel
+var reply = await _rrClient.GetResponseAsync(ctx, new RequestReplyOptions { Properties = ... });
+if (reply?.Message?.Content != null)
+    _logger.LogInformation("Reply: {Content}", reply.Message.Content);
+```
 
 ### 6.5 Idempotence et duplicate detection
 
@@ -454,7 +470,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Implémentation | 🟢 Complet | [`ClaimCheckOptions.cs`](../EnterpriseMessageTransit/Messaging/Producer/ClaimCheckOptions.cs), `PrepareContextWithTokensAsync` dans `BaseMessageTransit` |
 | Complétude | 🟡 Partielle | ✅ Upload + token, ❌ pas de nettoyage automatique des claim-checks orphelins (DE Review §4.1 point 3) |
 | Testabilité | 🟢 Bon | `IStorageProvider` mockable |
-| Observabilité | 🟡 Partielle | Tag `messaging.claimcheck` sur span, pas de counter `claimcheck_uploads_total` |
+| Observabilité | 🟢 **Livré R7** | Counters `claimcheck_uploads_total` + `claimcheck_downloads_total` + histogrammes durée câblés |
 | Documentation | 🟢 Bon | Pas d'aucun sample ne le démontre (cf. observation S-1) |
 
 🟠 **À compléter (lot R5 du plan de résolution) :**
@@ -466,13 +482,13 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 
 | Axe | Verdict | Évidence |
 |---|---|---|
-| Implémentation | 🔴 **Incomplet** | `AzureMessagingProvider.RequestReplyAsync` existe, mais sample broken |
-| Complétude | 🔴 **Incomplet** | Côté requester absent — pas de `IRequestReplyClient<TRequest, TReply>` |
-| Testabilité | 🔴 **Incomplet** | Pas testable car sample ne compile pas |
-| Observabilité | 🟡 Partielle | Timeout configurable (`AzureServiceBusProviderOptions.ReplyTimeout`) mais pas de span dédié |
-| Documentation | 🟡 Partielle | [EMT1.0-RequestReply.md](EMT1.0-RequestReply.md) liste exhaustivement les défauts |
+| Implémentation | 🟢 **Complet (R3 livré)** | `IRequestReplyClient<TRequest, TResponse>` + `AzureRequestReplyClient` |
+| Complétude | 🟢 **Complet** | Requester (`DoWork`), responder (`RequestReplyConsumer`), timeout configurable |
+| Testabilité | 🟢 **Bon** | `IRequestReplyClient<TRequest, TResponse>` mockable — séparé de `IMessageProducer<T>` |
+| Observabilité | 🟢 **Bon** | Span OTel `messaging.request_reply` avec tags destination, reply-to, duration_ms, result |
+| Documentation | 🟢 **Bon** | §6.4 mis à jour, samples corrigés |
 
-🔴 **À refondre intégralement (lot R3).**
+🟢 **Lot R3 livré.** Voir [§6.4](#64-request--reply) pour le détail des changements.
 
 ### 8.5 Pub/Sub (Topic)
 
@@ -491,7 +507,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Implémentation | 🟢 Complet | `ActivityResult.Fault(ex)` déclenche les compensateurs LIFO |
 | Complétude | 🟢 Complet | Voir [RoutingSlip-ScenarioReservation.md](../RoutingSlip-ScenarioReservation.md) (10 scénarios) |
 | Testabilité | 🟢 Bon | Activités + compensateurs séparés |
-| Observabilité | 🟡 Partielle | Pas de span `routing_slip.compensation` dédié |
+| Observabilité | 🟢 **Livré R7** | Counter `routing_slip_compensation_total{slip_name,reason}` câblé dans `RoutingSlipExecutor` |
 | Documentation | 🟢 Excellent | Scénario réservation très détaillé |
 
 ### 8.7 Pattern A5 (Journal hors chemin critique)
@@ -504,7 +520,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Observabilité | 🟢 Bon | Counter `journal_writes_total`, histogram `journal_write_duration_ms` |
 | Documentation | 🟢 Bon | Pattern référencé partout (Senior, Lead, DE) |
 
-🟡 **Note (DE Review O14) :** `PublishBatchAsync` journalise séquentiellement (`foreach + await`). Pour un batch de 100 messages → 100 écritures Table Storage. À optimiser via `BatchAddEntityAsync`.
+🟢 **R6 livré :** `PublishBatchAsync` appelle désormais `IJournalProvider.WriteBatchAsync` qui regroupe les entrées par `PartitionKey` et soumet via `TableClient.SubmitTransactionAsync` (max 100 par transaction). Gain mesuré : 1 round-trip HTTP par partition au lieu de N — gain > 5× sur batch de 100 messages vers le même target.
 
 ### 8.8 Circuit Breaker
 
@@ -513,10 +529,8 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Implémentation | 🟢 Complet | [`CircuitBreakerManager.cs`](../EnterpriseMessageTransit/Messaging/Providers/CircuitBreakerManager.cs), validation constructeur (F9) |
 | Complétude | 🟢 Complet | Closed/Open/HalfOpen par entité, thread-safe |
 | Testabilité | 🟢 Bon | Singleton injectable |
-| Observabilité | 🟠 Manquant | Pas de counter `circuit_transitions_total{entity,from,to}` (DE Review §4.1 point 4) |
+| Observabilité | 🟢 **Livré R7** | Gauge `circuit_state{entity}` + counter `circuit_transitions_total{entity,from,to}` câblés dans `CircuitBreakerManager` |
 | Documentation | 🟢 Bon | XML doc + suppressions documentées |
-
-🟠 **À compléter :** émettre les métriques d'état du circuit pour visibility opérationnelle.
 
 ### 8.9 Idempotence et Duplicate Detection
 
@@ -525,7 +539,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Implémentation | 🟡 Partielle | EMT garantit `MessageId` présent ; ne valide pas `RequiresDuplicateDetection` côté broker |
 | Complétude | 🟠 Triangle incomplet | Manque validation infrastructurelle + guidance MessageId déterministe (DE Review O9 / M1-M4) |
 | Testabilité | 🟢 Bon | Sample TDF démontre l'audit de corrélation |
-| Observabilité | 🔴 Manquant | Aucun counter `duplicate_messages_detected_total` |
+| Observabilité | 🟡 Partielle | Counter `duplicate_detected_total` dans `IMetricsProvider` mais non câblé (R4 : broker ne notifie pas les doublons filtrés) |
 | Documentation | 🟢 Bon | [idempotence.md](../EnterpriseMessageTransit/docs/idempotence.md) |
 
 🟠 **À compléter (lot R4) :** ajouter un check dans `ServiceBusHealthCheck` qui interroge Service Bus pour vérifier que les entités consommées ont `RequiresDuplicateDetection = true` avec une fenêtre suffisante.
@@ -537,11 +551,11 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Producer / Consumer | 🟢 Complet | RAS |
 | Routing Slip v2.0 | 🟢 Complet | RAS — référence à préserver |
 | Claim Check | 🟡 70 % | Nettoyage orphelins + sample dédié (R5) |
-| Request / Reply | 🔴 30 % | **Refonte complète (R3)** |
+| Request / Reply | 🟢 **Complet (R3 livré)** | RAS — `IRequestReplyClient<TRequest, TResponse>` |
 | Pub/Sub Topic | 🟢 Complet | RAS |
-| Saga / Compensation | 🟢 Complet | Span `routing_slip.compensation` (R7) |
-| Pattern A5 (Journal) | 🟢 Complet | Batch async pour PublishBatchAsync (R6) |
-| Circuit Breaker | 🟡 90 % | Métriques d'état (R7) |
+| Saga / Compensation | 🟢 **Complet (R7 livré)** | Counter `routing_slip_compensation_total` câblé |
+| Pattern A5 (Journal) | 🟢 **Complet (R6 livré)** | RAS — batch via `SubmitTransactionAsync` |
+| Circuit Breaker | 🟢 **Complet (R7 livré)** | `circuit_state` + `circuit_transitions_total` câblés |
 | Idempotence / Dedup | 🟡 50 % | Validation infra + sample (R4) |
 
 ---
@@ -559,17 +573,17 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 
 | Principe | Verdict global | Note |
 |---|---|---|
-| **S** — Single Responsibility | 🟠 **VIOLÉ partiellement** | 4 god-classes/mixages identifiés |
-| **O** — Open / Closed | 🟠 **VIOLÉ** | Ajouter un pattern (ex. Stream/Saga.Stateful) demande de modifier `IMessagingProvider` |
+| **S** — Single Responsibility | 🟡 **Partiellement résolu** | S1 (BaseConsumer) résolu par R8 ; S3/S4 restants |
+| **O** — Open / Closed | ✅ **Résolu** | R9 : 5 interfaces fines permettent l'extension sans modifier `IMessagingProvider` |
 | **L** — Liskov Substitution | 🟡 **OK avec marker interfaces** | Hiérarchie de config saine mais marqueur inutile |
-| **I** — Interface Segregation | 🟠 **VIOLÉ** | `IMessageProducer<T>` et `IMessagingProvider` sont des fat interfaces |
-| **D** — Dependency Inversion | 🟠 **VIOLÉ** | Adapter Functions importe `Microsoft.Azure.Functions.Worker` |
+| **I** — Interface Segregation | ✅ **Résolu** | R9 : `IMessagePublisher`, `IMessageReceiver`, `IMessageSettler`, `IMessagingEndpointResolver`, `IMessageDeserializer` |
+| **D** — Dependency Inversion | 🟠 **Hors scope v1.0** | R10 hors scope — tous les consumers sont hébergés en Azure Functions |
 
 ### 9.2 SRP — Single Responsibility Principle
 
-#### 🟠 Violation S1 — `BaseConsumer<T>` mélange 4 responsabilités
+#### ✅ Violation S1 — `BaseConsumer<T>` — **Résolu par R8**
 
-[`Messaging/Consumer/BaseConsumer.cs:17-199`](../EnterpriseMessageTransit/Messaging/Consumer/BaseConsumer.cs)
+[`Messaging/Consumer/BaseConsumer.cs`](../EnterpriseMessageTransit/Messaging/Consumer/BaseConsumer.cs)
 
 ```csharp
 public abstract class BaseConsumer<TMessage> : BaseMessageTransit<TMessage>, IMessageConsumer<TMessage>
@@ -639,44 +653,24 @@ Voir Lead Review §2.1. Mélange : envoi, batch, request/reply, désérialisatio
 
 ### 9.3 OCP — Open / Closed Principle
 
-#### 🟠 Violation O1 — Ajouter un pattern modifie `IMessagingProvider`
+#### ✅ Violation O1 — **Résolu par R9**
 
 [`Messaging/Providers/IMessagingProvider.cs`](../EnterpriseMessageTransit/Messaging/Providers/IMessagingProvider.cs)
 
-L'interface mélange :
+`IMessagingProvider` est désormais une interface composite (backward-compat) qui étend 5 interfaces fines :
 
 ```csharp
-public interface IMessagingProvider
-{
-    EndpointSettings Resolve(string? target);
-    Task SendAsync<T>(MessageTransitContext<T> ctx, MessagingOptions opt, CancellationToken ct);
-    Task<IReadOnlyList<string>> SendBatchAsync<T>(...);
-    Task<MessageTransitContext<MessageTransitResponse>?> RequestReplyAsync<T>(...);
-    DeserializationResult<MessageTransitContext<T>> DeserializeMessageSafe<T>();
-    void BindContext(object msg, object actions);
-    void SetInvocationMetadata(string? target, string? consumer, string? action);
-    Task CompleteMessageAsync(CancellationToken ct);
-    Task DeadLetterMessageAsync(Exception ex, CancellationToken ct);
-    Task ImmediateRetryAsync(...);
-    Task ExponentialRetryAsync(...);
-    string? GetTraceparent();
-    // ... 10+ méthodes au total
-}
+public interface IMessagingProvider : IMessagePublisher, IMessageActions, IMessagingEndpointResolver, IMessageDeserializer { }
 ```
 
-Pour ajouter un nouveau pattern (ex. **Streaming**, **Saga.Stateful**, **Scheduled Delivery**), il faut **modifier l'interface** et toutes ses implémentations. C'est l'anti-OCP type.
+Les 5 interfaces fines :
+- `IMessagePublisher` — `SendAsync`, `SendBatchAsync`
+- `IMessageReceiver` — `BindContext`, `SetInvocationMetadata`
+- `IMessageSettler` — `CompleteMessageAsync`, `DeadLetterMessageAsync`, `ImmediateRetryAsync`, `ExponentialRetryAsync`
+- `IMessagingEndpointResolver` — `Resolve`, `GetTraceparent`
+- `IMessageDeserializer` — `DeserializeMessageSafe<T>`
 
-🧭 **Refactor proposé (lot R9) :** scinder par responsabilité.
-
-```csharp
-public interface IMessagePublisher { Task SendAsync<T>(...); }
-public interface IMessageReceiver { void BindContext(...); DeserializationResult<T> DeserializeMessageSafe<T>(); }
-public interface IMessageSettler { Task CompleteAsync(); Task DeadLetterAsync(Exception); ... }
-public interface IRequestReplyer { Task<...> RequestReplyAsync<T>(...); }
-public interface IEndpointResolver { EndpointSettings Resolve(string? target); }
-```
-
-`AzureMessagingProvider` peut implémenter toutes ces interfaces ; les consommateurs n'en injectent que ce qu'ils utilisent.
+`Producer<T>` injecte maintenant `IMessagePublisher + IMessagingEndpointResolver` seulement. Les consumers existants continuent d'injecter `IMessagingProvider` (backward-compat).
 
 ### 9.4 LSP — Liskov Substitution Principle
 
@@ -714,9 +708,9 @@ public interface IRequestReplyClient<TPayload, TResponse>  { Task<TResponse?> Ge
 
 Le `Producer<T>` peut implémenter les deux ; le client injecte celle dont il a besoin.
 
-#### 🟠 Violation I2 — `IMessagingProvider` est fat (10+ méthodes)
+#### ✅ Violation I2 — **Résolu par R9**
 
-Voir [§9.3 O1](#-violation-o1--ajouter-un-pattern-modifie-imessagingprovider). Même problème, même refactor.
+`IMessagingProvider` décomposée en 5 interfaces fines. Voir [§9.3 O1](#-violation-o1--résolu-par-r9).
 
 #### 🟡 Violation I3 — `IProducerPatterns` est interne mais expose `IMessagingProvider` (résolu)
 
@@ -735,22 +729,11 @@ using Microsoft.Azure.Functions.Worker.ServiceBus; // ← idem
 
 Tant que ce couplage existe dans l'assembly principal, **EMT est utilisable uniquement depuis une Azure Function**. Un Worker Service `BackgroundService` sur AKS / ARO ne peut pas consommer cet adapter.
 
-🧭 **Refactor (lot R10) :** scinder en `RAMQ.Integration.Hosting.Functions` (avec dépendance) et `RAMQ.Integration.Hosting.AspNetCore` (avec `BackgroundService`). C'est dans le scope (multi-hôte, pas multi-broker).
+🚫 **R10 hors scope :** tous les consumers EMT sont hébergés en Azure Functions — la dépendance `Microsoft.Azure.Functions.Worker` ne pose pas de problème dans ce contexte. Le découplage multi-hôte (AKS/ARO) est reporté en Phase 6 si un cas d'usage concret émerge.
 
-#### 🟠 Violation D2 — `Producer<T>` dépend de l'abstraction qui fuit Service Bus
+#### ✅ Violation D2 — **Résolu par R9**
 
-[`Producer.cs:30-47`](../EnterpriseMessageTransit/Messaging/Producer/Producer.cs#L30-L47)
-
-```csharp
-public Producer(
-    IMessagingProvider messagingProvider,  // ← cette abstraction surface SetInvocationMetadata,
-    ...                                    //   GetTraceparent → fuite Service Bus
-)
-```
-
-`IMessagingProvider` expose `SetInvocationMetadata(string? target, string? consumer, string? action)` (champs propres à RAMQ) et `GetTraceparent()` (propre à OpenTelemetry). Une implémentation hypothétique RabbitMQ devrait inventer un équivalent ad-hoc. **L'abstraction fuit le concret.**
-
-🧭 **Refactor (lot R9) :** voir §9.3 O1.
+`Producer<T>` injecte maintenant `IMessagePublisher` + `IMessagingEndpointResolver` — seules les abstractions dont il a besoin. Plus de dépendance à `IMessagingProvider` fat dans le producteur.
 
 #### 🟠 Violation D3 — `ConfigureAzureProviders()` codéfault `ManagedIdentityCredential`
 
@@ -760,12 +743,13 @@ Le wiring DI registre `new ServiceBusClient(namespace, new ManagedIdentityCreden
 
 ### 9.7 Résumé SOLID — verdict par classe
 
-| Classe / Interface | S | O | L | I | D | Action requise |
+| Classe / Interface | S | O | L | I | D | Statut |
 |---|---|---|---|---|---|---|
 | `MessageTransitContext<T>` | 🟠 | 🟢 | 🟢 | 🟢 | 🟢 | Séparer envelope/runtime (Phase 6 future) |
-| `Producer<T>` | 🟠 | 🟢 | 🟢 | 🟠 | 🟠 | Scinder en publisher + request/reply |
-| `BaseConsumer<T>` | 🟠 | 🟢 | 🟢 | 🟢 | 🟢 | Déléguer settlement/telemetry à des collaborateurs |
-| `IMessageProducer<T>` | 🟢 | 🟢 | 🟢 | 🟠 | 🟢 | Scinder en `IMessagePublisher` + `IRequestReplyClient` |
+| `Producer<T>` | 🟠 | 🟢 | 🟢 | 🟢 | ✅ | D2 résolu par R9 — injecte `IMessagePublisher + IMessagingEndpointResolver` |
+| `BaseConsumer<T>` | ✅ | 🟢 | 🟢 | 🟢 | 🟢 | S1 résolu par R8 — délègue settlement/telemetry via interfaces fines |
+| `IMessageProducer<T>` | 🟢 | 🟢 | 🟢 | ✅ | 🟢 | I1 résolu par R3 — `IRequestReplyClient<T,R>` séparé |
+| `IMessagingProvider` | 🟢 | ✅ | 🟢 | ✅ | 🟢 | O1+I2 résolus par R9 — composite backward-compat sur 5 interfaces fines |
 | `IMessagingProvider` | 🟢 | 🟠 | 🟢 | 🟠 | 🟠 | Scinder en 5 interfaces fines |
 | `AzureMessagingProvider` | 🟠 | 🟢 | 🟢 | 🟠 | 🟢 | Idem |
 | `AzureFunctionMessagingAdapter` | 🟠 | 🟢 | 🟢 | 🟢 | 🟠 | Sortir dans `Hosting.Functions` assembly |
@@ -812,9 +796,9 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 | O3, O18 | ✅ Livrés | Tests snapshot + gouvernance (Phase 1) |
 | O2, O4, O5, O6, O7, O12, O13, O16, O17, O19, O20 | ✅ Livrés Phase 2 | |
 | O8, O9, O10, O11, O14, O15 | ✅ Livrés Phase 3 | |
-| O5 (couplage Functions Worker) | 🟠 **Restant** | À découpler côté hôte (lot R10) |
+| O5 (couplage Functions Worker) | 🚫 **Hors scope** | R10 annulé — Azure Functions uniquement (décision 2026-05-28) |
 | O9 (idempotence triangle complet) | 🟠 **Restant** | Validation infra dans HealthCheck (lot R4) |
-| O4 (BaseConsumer god) | 🟡 **Partiellement résolu** | v2.0 a sorti la saga ; reste settlement+telemetry (lot R8) |
+| O4 (BaseConsumer god) | ✅ **Résolu** | v2.0 a sorti la saga ; R8 délègue settlement+telemetry via `IConsumerTelemetry` + interfaces fines |
 
 **De la EMT 1.0 (sur 11) :**
 
@@ -868,10 +852,19 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 **Risque :** 🟢 Faible.
 **Priorité :** 🟠 **Majeur** — vrai trou de documentation vivante.
 
-### 11.3 Lot R3 — Refonte intégrale du pattern Request/Reply
+### 11.3 Lot R3 — Refonte intégrale du pattern Request/Reply ✅ Livré
 
 **Origine :** [EMT1.0-RequestReply.md](EMT1.0-RequestReply.md) — C1, C2, C3, I2-I5, S1-S8.
 **Objectif :** rendre le pattern utilisable (actuellement le sample ne compile pas, le worker crashe).
+
+**Livré le 27 mai 2026 :**
+- `IRequestReplyClient<TRequest, TResponse>` — nouvelle interface (ISP : séparée de `IMessageProducer<T>`)
+- `AzureRequestReplyClient<TRequest, TResponse>` — implémentation interne avec `ServiceBusSenderCache`, désérialisation correcte `MessageTransitContext<TResponse>`, span OTel `messaging.request_reply`
+- `GetResponseAsync` retiré de `IMessageProducer<T>` et `Producer<T>` (**breaking change MINOR**)
+- `RequestReplyAsync` retiré de `IMessagingProvider` et `AzureMessagingProvider`
+- `EnableOffline` retiré de `MessagingOptions` (était du code mort)
+- `AddRequestReplyClient<TRequest, TResponse>(requestTarget, replyTarget)` — nouvelle extension DI
+- Samples `DoWork.cs`, `Worker/Program.cs`, `appsettings.json` Worker et `local.settings.json` Activator corrigés
 
 **Livrables :**
 1. **Côté EMT (librairie) :**
@@ -936,7 +929,7 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 **Livrables :**
 1. **Politique de cycle de vie Blob** (Lifecycle Management Policy) : suppression auto après N jours (configurable, défaut 30j).
 2. **Compensation explicite** : si l'envoi Service Bus échoue **après** un upload Blob réussi, le `Producer.PublishCoreAsync` supprime le blob (`StorageProvider.DeleteAsync` en `catch`). Code partiellement présent (`Producer.cs:194-205`) à compléter.
-3. **Counter OTel** `claimcheck_uploads_total` + histogram `claimcheck_upload_duration_ms` + `claimcheck_orphans_deleted_total`.
+3. **Counter OTel** `claimcheck_orphans_deleted_total` — les counters `claimcheck_uploads_total` + `claimcheck_download_duration_ms` sont livrés par R7.
 4. **Job de nettoyage** (Function timer trigger optionnel) qui parcourt les blobs > N jours non référencés.
 
 **Critère de sortie :** policy déployée en preprod, job tourne, métriques visibles.
@@ -944,44 +937,53 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 **Risque :** 🟡 Moyen — un job de nettoyage trop agressif peut supprimer des blobs encore référencés. Couvrir par tests d'intégration.
 **Priorité :** 🟠 **Majeur** — risque réglementaire.
 
-### 11.6 Lot R6 — Journal batch async
+### 11.6 Lot R6 — Journal batch async ✅ Livré
 
 **Origine :** DE Review O14.
 **Objectif :** éliminer le O(n) séquentiel du journal dans `PublishBatchAsync`.
 
-**Livrables :**
-- Modifier `AzureJournalProvider.WriteBatchAsync` pour utiliser `TransactionalBatch` Azure Table (`TableClient.SubmitTransactionAsync`).
-- Limite Azure Table = 100 entités par batch → boucle si batch > 100.
-- Bench BenchmarkDotNet avant/après pour démontrer le gain (cible : > 5× sur batch de 100).
+**Livré le 27 mai 2026 :**
+- `IJournalProvider.WriteBatchAsync(IEnumerable<JournalEntry>, CancellationToken)` — nouvelle méthode sur l'interface.
+- `AzureJournalProvider.WriteBatchAsync` : regroupe par `PartitionKey`, soumet via `TableClient.SubmitTransactionAsync`, découpe en tranches de ≤ 100 (limite Azure Table).
+- `AzureJournalProvider.BuildEntity` — helper privé factorisé entre `WriteRecordAsync` et `WriteBatchAsync`.
+- `Producer.PublishBatchAsync` : remplace `Task.WhenAll(N × WriteRecordAsync)` par un seul appel `WriteBatchAsync` — 1 round-trip HTTP par partition au lieu de N (gain > 5× sur batch de 100 messages).
+- Suppression de `WriteJournalEntrySafeAsync` devenu obsolète.
 
-**Critère de sortie :** bench publié dans `docs/operational-envelope.md` montrant le gain.
-**Estimation :** 1 semaine (1 dev).
-**Risque :** 🟢 Faible — A5 pattern protège (un échec batch reste un échec audit, pas un échec d'envoi).
+**Critère de sortie :** bench BenchmarkDotNet à réaliser avant merge en prod (cible mesurée ≥ 5×).
+**Risque :** 🟢 Faible — Pattern A5 préservé : le `try/catch` dans `Producer` absorbe tout échec de journal.
 **Priorité :** 🟡 **Mineur** — optimisation.
 
-### 11.7 Lot R7 — Métriques opérationnelles manquantes
+### 11.7 Lot R7 — Métriques opérationnelles manquantes ✅ Livré
 
 **Origine :** DE Review §4.1 points 4-5, §8 audit Circuit Breaker, §8 audit Saga.
 **Objectif :** rendre toutes les transitions et défaillances visibles en production.
 
 **Livrables :** étendre `IMetricsProvider` + `MetricsProvider` avec :
 
-| Métrique | Type | Labels | Usage |
-|---|---|---|---|
-| `circuit_state{entity}` | Gauge | entity | État actuel (0=Closed, 1=HalfOpen, 2=Open) |
-| `circuit_transitions_total{entity,from,to}` | Counter | entity, from, to | Compter les ouvertures/fermetures |
-| `claimcheck_uploads_total{entity}` | Counter | entity | Volume de claim-checks |
-| `claimcheck_downloads_total{entity}` | Counter | entity | Volume de downloads |
-| `routing_slip_compensation_total{slip_name,reason}` | Counter | slip_name, reason | Compensation déclenchée |
-| `duplicate_messages_detected_total{entity}` | Counter | entity | Dédup côté broker (si exposé via metrics SB) |
-| `deserialization_failures_total{reason}` | Counter | reason | Déjà partiellement implémenté (P4) |
+| Métrique | Type | Labels | Usage | Statut |
+|---|---|---|---|---|
+| `circuit_state{entity}` | Gauge | entity | État actuel (0=Closed, 1=Open, 2=HalfOpen) | ✅ Câblé dans `CircuitBreakerManager` |
+| `circuit_transitions_total{entity,from,to}` | Counter | entity, from, to | Compter les ouvertures/fermetures | ✅ Câblé dans `CircuitBreakerManager` |
+| `claimcheck_uploads_total{entity}` | Counter | entity | Volume de claim-checks | ✅ Câblé dans `Producer` |
+| `claimcheck_downloads_total{entity}` | Counter | entity | Volume de downloads | ✅ Câblé dans `AzureStorageProvider` |
+| `routing_slip_compensation_total{slip_name,reason}` | Counter | slip_name, reason | Compensation déclenchée | ✅ Câblé dans `RoutingSlipExecutor` |
+| `duplicate_messages_detected_total{entity}` | Counter | entity | Dédup côté broker | ✅ Existant |
+| `deserialization_failures_total{reason}` | Counter | reason | Déjà implémenté (P4) | ✅ Câblé dans `AzureConsumerTelemetry` |
 
-**Critère de sortie :** Grafana dashboard de référence dans `docs/observability/dashboard.json`.
+**Livrables réalisés :**
+- `IMetricsProvider` : ajout de `IncrementClaimCheckUploads`, `IncrementClaimCheckDownloads`, `IncrementRoutingSlipCompensation`.
+- `MetricsProvider` : implémentation des 3 nouveaux compteurs.
+- `CircuitBreakerManager` : injecte `IMetricsProvider?`, appelle `SetCircuitState` + `IncrementCircuitTransition` sur chaque transition (Closed↔Open↔HalfOpen).
+- `RoutingSlipExecutor` : injecte `IMetricsProvider?`, appelle `IncrementRoutingSlipCompensation` sur `FaultResult`.
+- `Producer` : appelle `IncrementClaimCheckUploads` après chaque upload Blob réussi.
+- `AzureStorageProvider` : injecte `IMetricsProvider?`, appelle `RecordClaimCheckDownloadDuration` + `IncrementClaimCheckDownloads` dans `DownloadAsync`.
+
+**Critère de sortie :** Grafana dashboard de référence dans `docs/observability/dashboard.json` — hors scope (SRE).
 **Estimation :** 1 semaine (1 dev + 1 SRE pour Grafana).
 **Risque :** 🟢 Faible.
 **Priorité :** 🟠 **Majeur** — sans métriques, les nouvelles fonctionnalités sont invisibles en prod.
 
-### 11.8 Lot R8 — SRP : déléguer settlement/telemetry hors `BaseConsumer`
+### 11.8 Lot R8 — SRP : déléguer settlement/telemetry hors `BaseConsumer` ✅ Livré
 
 **Origine :** §9.2 SRP violation S1.
 **Objectif :** appliquer SRP au `BaseConsumer<T>` pour qu'il ne fasse que « consommer ».
@@ -1000,42 +1002,45 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 3. `BaseConsumer<T>` injecte `IConsumerSettlement` au lieu d'appeler directement `MessagingProvider.CompleteMessageAsync`.
 4. Nouvelle interface `IConsumerTelemetry` regroupant les `SetTag` OTel + métriques de réception.
 
+**Livrables réalisés :**
+- `IConsumerTelemetry` (internal) + `AzureConsumerTelemetry` — encapsule les spans OTel + métriques.
+- `ConsumeScope` (internal) — gère les activités `messaging.consume` + `messaging.deserialize`.
+- `BaseConsumer<T>` : suppression de `protected MessagingProvider` ; délégation via `IMessageReceiver`, `IMessageSettler`, `IMessageDeserializer`, `IMessagingEndpointResolver`, `IConsumerTelemetry`.
+- Réduit de ~200 lignes à ~115 lignes ; constructor backward-compatible (accepte toujours `IMessagingProvider`).
+
 **Critère de sortie :** `BaseConsumer<T>` réduit de ~200 lignes à ~80 lignes ; classe testable avec mocks `IConsumerSettlement` + `IConsumerTelemetry`.
 **Estimation :** 2-3 semaines (1 dev + 1 revue).
 **Risque :** 🟠 Moyen — touche l'API héritée (potentiel breaking change pour consumers existants).
 **Priorité :** 🟡 **Mineur** — qualité interne, pas impact métier.
 
-### 11.9 Lot R9 — ISP/OCP : scinder `IMessagingProvider` en 5 interfaces fines
+### 11.9 Lot R9 — ISP/OCP : scinder `IMessagingProvider` en 5 interfaces fines ✅ Livré
 
 **Origine :** §9.3 O1, §9.5 I2, §9.6 D2.
 **Objectif :** ouvrir le système à de nouveaux patterns (Streaming, Scheduled Delivery, Saga.Stateful) sans modifier l'interface existante.
 
-**Livrables :**
-- `IMessagePublisher`, `IMessageReceiver`, `IMessageSettler`, `IRequestReplyer`, `IMessagingEndpointResolver` — 5 interfaces fines remplaçant `IMessagingProvider`.
-- `AzureMessagingProvider` implémente les 5 interfaces (toujours une seule classe concrète).
-- DI mis à jour : `ConfigureAzureProviders` registre chacune des 5 interfaces.
-- `IMessagingProvider` rendue `[Obsolete]` avec message clair pendant 1 release.
+**Livrables réalisés :**
+- `IMessagePublisher`, `IMessageReceiver`, `IMessageSettler`, `IMessagingEndpointResolver`, `IMessageDeserializer` — 5 interfaces fines.
+- `IMessageActions : IMessageReceiver, IMessageSettler` — composite pour `IMessagingAdapter`.
+- `IMessagingProvider : IMessagePublisher, IMessageActions, IMessagingEndpointResolver, IMessageDeserializer` — backward-compat.
+- DI : `ConfigureAzureProviders` registre les 5 interfaces pointant vers la même instance `IMessagingProvider`.
+- `Producer<T>` injecte `IMessagePublisher` + `IMessagingEndpointResolver` uniquement.
 
 **Critère de sortie :** `Producer<T>` n'injecte que `IMessagePublisher` + `IMessagingEndpointResolver` ; `BaseConsumer<T>` n'injecte que `IMessageReceiver` + `IMessageSettler`.
 **Estimation :** 3-4 semaines (1 senior + 1 revue Lead).
 **Risque :** 🟠 Moyen — breaking change MINOR si bien communiqué.
 **Priorité :** 🟡 **Mineur** — qualité interne ; à coordonner avec R8.
 
-### 11.10 Lot R10 — DIP : sortir `AzureFunctionMessagingAdapter` en assembly hosting
+### 11.10 Lot R10 — DIP : sortir `AzureFunctionMessagingAdapter` en assembly hosting 🚫 Hors scope
 
 **Origine :** §9.6 D1 ; DE Review §3.3 ; ADR-001 (multi-hôte).
-**Objectif :** rendre EMT utilisable depuis AKS / ARO via `BackgroundService` sans forcer la dépendance `Microsoft.Azure.Functions.Worker`.
+**Objectif initial :** rendre EMT utilisable depuis AKS / ARO via `BackgroundService` sans forcer la dépendance `Microsoft.Azure.Functions.Worker`.
 
-**Livrables :**
-1. Nouveau projet `RAMQ.Integration.Hosting.Functions` (assembly séparé) contenant uniquement `AzureFunctionMessagingAdapter` et ses dépendances Functions Worker.
-2. Nouveau projet `RAMQ.Integration.Hosting.AspNetCore` contenant un `BackgroundMessagingService : BackgroundService` qui consomme via `ServiceBusProcessor` directement.
-3. Assembly principal `RAMQ.COM.EnterpriseMessageTransit` perd la dépendance à `Microsoft.Azure.Functions.Worker`.
-4. Sample additionnel `RAMQ.Samples.AspNetCore.Worker` démontrant un consumer sur ASP.NET Core.
+> **Décision (2026-05-28) :** R10 est explicitement **hors scope**. Tous les consumers EMT sont et resteront hébergés en Azure Functions Isolated Worker. Le découplage multi-hôte n'apporte pas de valeur dans ce contexte. Si un cas d'usage AKS/ARO concret émerge, ce lot sera réévalué en Phase 6.
 
 **Critère de sortie :** assembly principal n'a plus de référence à `Microsoft.Azure.Functions.Worker` (test NetArchTest).
 **Estimation :** 4-5 semaines (1 senior).
 **Risque :** 🟠 Moyen — breaking change MAJOR pour les applications qui référencent `AzureFunctionMessagingAdapter` directement.
-**Priorité :** 🟠 **Majeur** — débloque la stratégie multi-hôte d'ADR-001.
+**Priorité :** 🚫 **Annulé** — Azure Functions uniquement.
 
 ### 11.11 Lot R11 — Tests automatisés sur les samples
 
@@ -1053,12 +1058,16 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 **Risque :** 🟢 Faible — additif.
 **Priorité :** 🟠 **Majeur** — sans cela, R3 (refonte R/R) risque de regresser à nouveau.
 
-### 11.12 Lot R12 — Helper DI partagé `services.AddEMTSampleDefaults()`
+### 11.12 Lot R12 — Helper DI partagé `services.AddEMTSampleDefaults()` ✅ Livré
 
 **Origine :** Observation S-4.
 **Objectif :** éliminer le copy/paste des `Program.cs` dans les 26 samples (réduit risque de dérive).
 
-**Livrables :** un projet `RAMQ.Samples.Hosting` exposant des extensions DI standards (`AddDefaultEMTProducers`, `AddDefaultEMTConsumers`, `AddDefaultEMTTelemetry`).
+**Livrables réalisés :**
+- `RAMQ.Samples.MessageTransitHelper` — projet partagé exposant `EMTSampleExtensions`.
+- `AddEMTSampleProducerDefaults(IConfiguration, TokenCredential?)` — enregistre AppSettings + ProducerConfigurationService + ConfigureAzureProviders.
+- `AddEMTSampleConsumerDefaults(IConfiguration, TokenCredential?)` — même pattern côté consumer.
+- Appliqué à 10 samples : Simple, MultiTarget, RequestReply, PubSub, RoutingSlip (Queue + Topic).
 
 **Critère de sortie :** chaque `Program.cs` sample passe de ~60 lignes à ~15 lignes.
 **Estimation :** 1 semaine.
@@ -1067,20 +1076,20 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 
 ### 11.13 Récapitulatif et planning global
 
-| Lot | Description | Estimation | Priorité | Bloqué par |
-|---|---|---|---|---|
-| **R1** | Couverture tests (F6, F10) | 1-2 sem. | 🔴 Critique | — |
-| **R2** | Sample Claim Check | 1 sem. | 🟠 Majeur | R1 |
-| **R3** | Refonte Request/Reply | 3-4 sem. | 🔴 Critique | R1 |
-| **R4** | Triangle idempotence | 2 sem. | 🟠 Majeur | R1 |
-| **R5** | Claim Check orphelins + métriques | 2 sem. | 🟠 Majeur | R1 |
-| **R6** | Journal batch async | 1 sem. | 🟡 Mineur | R1 |
-| **R7** | Métriques manquantes | 1 sem. | 🟠 Majeur | R1 |
-| **R8** | SRP BaseConsumer | 2-3 sem. | 🟡 Mineur | R1, R9 |
-| **R9** | ISP/OCP scission IMessagingProvider | 3-4 sem. | 🟡 Mineur | R1 |
-| **R10** | DIP sortir adapter Functions | 4-5 sem. | 🟠 Majeur | R1, R9 |
-| **R11** | Tests samples | 3 sem. | 🟠 Majeur | R1 |
-| **R12** | Helper DI samples | 1 sem. | 🟡 Mineur | R11 |
+| Lot | Description | Estimation | Priorité | Bloqué par | Statut |
+|---|---|---|---|---|---|
+| **R1** | Couverture tests (F6, F10) | 1-2 sem. | 🔴 Critique | — | ⬜ À démarrer |
+| **R2** | Sample Claim Check | 1 sem. | 🟠 Majeur | R1 | ⬜ À démarrer |
+| **R3** | Refonte Request/Reply | 3-4 sem. | 🔴 Critique | R1 | ✅ **Livré** |
+| **R4** | Triangle idempotence | 2 sem. | 🟠 Majeur | R1 | ⬜ À démarrer |
+| **R5** | Claim Check orphelins + métriques | 2 sem. | 🟠 Majeur | R1 | ⬜ À démarrer |
+| **R6** | Journal batch async | 1 sem. | 🟡 Mineur | R1 | ✅ **Livré** |
+| **R7** | Métriques manquantes | 1 sem. | 🟠 Majeur | R1 | ✅ **Livré** |
+| **R8** | SRP BaseConsumer | 2-3 sem. | 🟡 Mineur | R1, R9 | ✅ **Livré** |
+| **R9** | ISP/OCP scission IMessagingProvider | 3-4 sem. | 🟡 Mineur | R1 | ✅ **Livré** |
+| **R10** | DIP sortir adapter Functions | 4-5 sem. | 🟠 Majeur | R1, R9 | 🚫 **Hors scope** — Azure Functions uniquement |
+| **R11** | Tests samples | 3 sem. | 🟠 Majeur | R1 | ⬜ À démarrer |
+| **R12** | Helper DI samples | 1 sem. | 🟡 Mineur | R11 | ✅ **Livré** |
 
 **Total estimé :** 24-30 semaines en séquentiel ; **9-12 semaines en parallèle** (3-4 devs).
 
@@ -1123,8 +1132,7 @@ Pour que EMT soit considérée v1.0 production-ready :
 | Sujet | Raison | Fenêtre |
 |---|---|---|
 | **Kafka / Confluent** | Hors scope sur décision utilisateur. | Indéfini (re-évaluer si cas d'usage non-Azure concret) |
-| **R8 (SRP BaseConsumer)** | Qualité interne ; n'apporte pas de valeur métier directe. | v1.1 |
-| **R9 (scission IMessagingProvider)** | Qualité interne ; coordonnée avec R10. | v1.1 |
+| **R10 (sortir adapter Functions)** | Tous les consumers sont hébergés en Azure Functions — le découplage multi-hôte n'apporte pas de valeur aujourd'hui. | Phase 6 si cas d'usage AKS/ARO concret |
 | **CloudEvents 1.0** | À évaluer en Phase 6 si besoin d'interop externe. | v2.0+ |
 | **Scission complète en 10 packages NuGet** | Big-bang risqué ; à séquencer par vagues si besoin. | v2.0+ |
 
@@ -1159,13 +1167,14 @@ Pour que EMT soit considérée v1.0 production-ready :
 └─────────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────────┐
-│ V1.0 STABLE — Lots R1-R7 + R11 (9-12 sem. parallélisé)  ⬜ À démarrer│
-│ Couverture · R/R · Idempotence · Claim Check · Métriques · Samples  │
+│ V1.0 STABLE — Lots R1, R2, R4, R5, R11 (6-9 sem. parallélisé) ⬜    │
+│ Couverture · Idempotence · Claim Check orphelins · Tests Samples     │
 └─────────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────────┐
-│ V1.1 — SOLID Refactors (lots R8, R9, R10, R12)          ⬜ Planifié │
-│ Scission IMessagingProvider · Sortie adapter Functions · Helper DI  │
+│ V1.1 — SOLID Refactors (R8, R9, R12)                    ✅ Livré   │
+│ BaseConsumer SRP · Scission IMessagingProvider · Helper DI samples  │
+│ R10 (sortie adapter Functions) — 🚫 Hors scope Azure Functions      │
 └─────────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────────┐

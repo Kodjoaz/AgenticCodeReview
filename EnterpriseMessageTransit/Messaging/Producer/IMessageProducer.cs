@@ -1,7 +1,8 @@
 ﻿namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
 {
     /// <summary>
-    /// Abstraction alignée sur BaseProducer pour publication (publish) et request/reply.
+    /// Abstraction pour la publication de messages (fire-and-forget, single et batch).
+    /// Pour le pattern Request/Reply, utiliser <see cref="IRequestReplyClient{TRequest,TResponse}"/>.
     /// </summary>
     public interface IMessageProducer<TPayload> where TPayload : class
     {
@@ -20,14 +21,6 @@
         Task<IReadOnlyList<string>> PublishBatchAsync(
             IEnumerable<MessageTransitContext<TPayload>> contexts,
             PublishOptions? publishOptions = null,
-            CancellationToken cancellationToken = default);
-
-        /// <summary>
-        /// Request/Reply. Le target est résolu via RequestReplyOptions.Target → IMessageTargetMap → mono-audience.
-        /// </summary>
-        Task<MessageTransitContext<MessageTransitResponse>?> GetResponseAsync(
-            MessageTransitContext<TPayload> context,
-            RequestReplyOptions? options,
             CancellationToken cancellationToken = default);
     }
 

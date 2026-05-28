@@ -1,6 +1,7 @@
 ﻿using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
 {
@@ -54,6 +55,41 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
         {
             services.TryAddSingleton<IMessageTargetMap, MessageTargetMap>();
             services.TryAddScoped<IMessageProducer<TMessage>, Producer<TMessage>>();
+
+            return services;
+        }
+
+        /// <summary>
+        /// Enregistre un <see cref="IRequestReplyClient{TRequest, TResponse}"/> avec les targets
+        /// de l'endpoint de requête et de l'endpoint de réponse.
+        /// </summary>
+        /// <typeparam name="TRequest">Type du message requête envoyé au responder.</typeparam>
+        /// <typeparam name="TResponse">Type du message réponse attendu du responder.</typeparam>
+        /// <param name="requestTarget">Target logique de l'endpoint de requête (ex: "request-queue").</param>
+        /// <param name="replyTarget">Target logique de l'endpoint de réponse (ex: "reply-queue").</param>
+        /// <example>
+        /// <code>
+        /// services.AddRequestReplyClient&lt;RequestMessage, ReplyMessage&gt;("request-queue", "reply-queue");
+        /// </code>
+        /// </example>
+        public static IServiceCollection AddRequestReplyClient<TRequest, TResponse>(
+            this IServiceCollection services,
+            string requestTarget,
+            string replyTarget)
+            where TRequest : class
+            where TResponse : class
+        {
+            ArgumentNullException.ThrowIfNull(requestTarget);
+            ArgumentNullException.ThrowIfNull(replyTarget);
+
+            services.TryAddSingleton<IMessageTargetMap, MessageTargetMap>();
+            services.Configure<MessageTargetMapOptions>(o =>
+            {
+                o.Map<TRequest>(requestTarget);
+                o.Map<TResponse>(replyTarget);
+            });
+            services.TryAddScoped<IRequestReplyClient<TRequest, TResponse>,
+                AzureRequestReplyClient<TRequest, TResponse>>();
 
             return services;
         }

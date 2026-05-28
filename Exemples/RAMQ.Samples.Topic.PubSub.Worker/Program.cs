@@ -3,15 +3,13 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using RAMQ.COM.EnterpriseMessageTransit.Configuration;
-using RAMQ.Samples.ConfigurationService;
-using RAMQ.Samples.Topic.PubSub.Events;
-using RAMQ.AIS.Sample.Queue.SimpleComplete.Sender;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
+using RAMQ.Samples.MessageTransitHelper;
+using RAMQ.Samples.Topic.PubSub.Events;
 
 var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
-    .ConfigureAppConfiguration((context, config) =>
+    .ConfigureAppConfiguration((_, config) =>
     {
         config.AddJsonFile("local.settings.json", optional: false, reloadOnChange: true);
     })
@@ -20,24 +18,10 @@ var builder = new HostBuilder()
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
 
-        var configuration = hostContext.Configuration;
+        // R12 — Boilerplate EMT réduit à un appel.
+        services.AddEMTSampleProducerDefaults(hostContext.Configuration, new VisualStudioCredential());
 
-        // Configuration sections
-        services.Configure<BlobStorageSetting>(configuration.GetSection("BlobStorageSetting"));
-        services.Configure<AppSettings>(configuration.GetSection("AppSettings"));
-
-        // Services de configuration (Producer)
-        services.AddSingleton<ProducerConfigurationService>();
-        services.AddSingleton<IMessageTransitConfigurationService>(sp => sp.GetRequiredService<ProducerConfigurationService>());
-        services.AddSingleton<IProducerConfigurationService>(sp => sp.GetRequiredService<ProducerConfigurationService>());
-                
-        // Producer (NotifyEvent) — target fixé via AddProducer
         services.AddProducer<NotifyEvent>("notifyevent");
-
-        // Enregistrement centralisé des providers Azure
-        services.ConfigureAzureProviders(new VisualStudioCredential());
     });
 
 builder.Build().Run();
-
-

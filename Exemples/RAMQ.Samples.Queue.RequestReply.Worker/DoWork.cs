@@ -1,9 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using RAMQ.COM.EnterpriseMessageTransit;
-using RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging;
-using RAMQ.Samples.Queue.RequestReply.Consumer;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer;
 using RAMQ.Samples.Queue.RequestReply.Message;
 using System;
 using System.Collections.Generic;
@@ -11,21 +9,22 @@ using System.Diagnostics;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+
 namespace RAMQ.Samples.Queue.RequestReply.Worker
 {
     public class DoWork : BackgroundService
     {
         private const int SimulatedUserCount = 1;
         private readonly ILogger<DoWork> _logger;
-        private readonly IMessageProducer<RequestMessage> _producer;
+        private readonly IRequestReplyClient<RequestMessage, ReplyMessage> _rrClient;
         private readonly string _userFileDirectory;
-        private const string TargetQueue = "simple.consumercomplete-queue";
 
-        public DoWork(ILogger<DoWork> logger,
-                      IMessageProducer<RequestMessage> producer)
+        public DoWork(
+            ILogger<DoWork> logger,
+            IRequestReplyClient<RequestMessage, ReplyMessage> rrClient)
         {
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _producer = producer ?? throw new ArgumentNullException(nameof(producer));
+            _logger   = logger   ?? throw new ArgumentNullException(nameof(logger));
+            _rrClient = rrClient ?? throw new ArgumentNullException(nameof(rrClient));
             _userFileDirectory = Path.Combine(AppContext.BaseDirectory, "userfiles");
             Directory.CreateDirectory(_userFileDirectory);
         }
@@ -70,7 +69,7 @@ namespace RAMQ.Samples.Queue.RequestReply.Worker
 
                     var sw = Stopwatch.StartNew();
 
-                    var reply = await _producer.GetResponseAsync(
+                    var reply = await _rrClient.GetResponseAsync(
                         ctx,
                         new RequestReplyOptions { Properties = BuildProperties() },
                         cancellationToken: ct);
@@ -79,10 +78,11 @@ namespace RAMQ.Samples.Queue.RequestReply.Worker
 
                     if (reply != null)
                     {
-                        _logger.LogInformation("User {UserId}: Reply reçue CorrelationId={CorrelationId} Status={Status} Duration={Ms}ms",
+                        _logger.LogInformation(
+                            "User {UserId}: Reply reçue CorrelationId={CorrelationId} Content={Content} Duration={Ms}ms",
                             userId,
                             reply.MessageId,
-                            reply.Message?.StatusCode,
+                            reply.Message?.Content,
                             sw.ElapsedMilliseconds);
                     }
                     else
@@ -142,11 +142,11 @@ namespace RAMQ.Samples.Queue.RequestReply.Worker
                 _logger.LogInformation("Offline recovery start CorrelationId={CorrelationId}", messageId);
 
                 var sw = Stopwatch.StartNew();
-                MessageTransitContext<MessageTransitResponse>? reply = null;
+                MessageTransitContext<ReplyMessage>? reply = null;
 
                 try
                 {
-                    reply = await _producer.GetResponseAsync(
+                    reply = await _rrClient.GetResponseAsync(
                         ctx,
                         new RequestReplyOptions { Properties = BuildProperties(), EnableOffline = true },
                         cancellationToken: ct);
@@ -164,9 +164,10 @@ namespace RAMQ.Samples.Queue.RequestReply.Worker
 
                 if (reply != null)
                 {
-                    _logger.LogInformation("Offline reply CorrelationId={CorrelationId} Status={Status} Duration={Ms}ms",
+                    _logger.LogInformation(
+                        "Offline reply CorrelationId={CorrelationId} Content={Content} Duration={Ms}ms",
                         reply.MessageId,
-                        reply.Message?.StatusCode,
+                        reply.Message?.Content,
                         sw.ElapsedMilliseconds);
                 }
                 else

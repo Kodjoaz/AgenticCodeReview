@@ -17,6 +17,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\EnterpriseMessageTransit\EnterpriseMessageTransit.csproj" />
     <ProjectReference Include="..\RAMQ.Samples.ConfigurationService\RAMQ.Samples.ConfigurationService.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.MessageTransitHelper\RAMQ.Samples.MessageTransitHelper.csproj" />
     <ProjectReference Include="..\RAMQ.Samples.Queue.Simple.Consumer\RAMQ.Samples.Queue.Simple.Consumer.csproj" />
     <ProjectReference Include="..\RAMQ.Samples.Queue.Simple.Message\RAMQ.Samples.Queue.Simple.Message.csproj" />
   </ItemGroup>

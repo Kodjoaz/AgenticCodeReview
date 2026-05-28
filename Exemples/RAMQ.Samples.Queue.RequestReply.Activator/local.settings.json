@@ -7,16 +7,32 @@
   },
   "AppSettings": {
     "ServiceBusNamespace": "sb-wrapca.servicebus.windows.net",
-    "Itinerary": [
+    "Endpoints": [
       {
+        "Target": "RequestReplyConsumerComplete",
         "Endpoint": {
           "EntityName": "simple.consumercomplete-queue",
-          "EntityType": "Queue"
-        },
-        "Target": "RequestReplyConsumerComplete"
+          "EntityType": "Queue",
+          "EnableSession": true
+        }
+      },
+      {
+        "Target": "reply-queue",
+        "Endpoint": {
+          "EntityName": "simple.consumercomplete_replyto-queue",
+          "EntityType": "Queue",
+          "EnableSession": true
+        }
       }
     ],
-    "ApplicationName": "Request Reply",
-    "MessageTransitJournal": "COMJournalAISUnit"
+    "ApplicationName": "Request Reply Activator",
+    "MessageTransitJournalName": "COMJournalAISUnit",
+    "MessageTransitJournalStoreUri": "https://stxalpum.table.core.windows.net"
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "https://stxalpum.blob.core.windows.net",
+    "ContainerName": "claimcheck",
+    "FolderName": "messages",
+    "ClaimCheckThresholdBytes": 262144
   }
 }

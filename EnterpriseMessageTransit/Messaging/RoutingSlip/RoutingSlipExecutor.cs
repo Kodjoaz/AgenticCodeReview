@@ -27,13 +27,16 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
 
         private readonly IRoutingSlipActivity<TArgs> _activity;
         private readonly ILogger _logger;
+        private readonly IMetricsProvider? _metrics;
 
         public RoutingSlipExecutor(
             IRoutingSlipActivity<TArgs> activity,
-            ILogger<RoutingSlipExecutor<TArgs>> logger)
+            ILogger<RoutingSlipExecutor<TArgs>> logger,
+            IMetricsProvider? metrics = null)
         {
             _activity = activity ?? throw new ArgumentNullException(nameof(activity));
             _logger   = logger   ?? throw new ArgumentNullException(nameof(logger));
+            _metrics  = metrics;
         }
 
         // ─── IRoutingSlipExecutor ────────────────────────────────────────────
@@ -158,6 +161,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                         "RoutingSlipExecutor: Fault à l'étape '{Step}', SlipId={SlipId}",
                         currentStep.Name, envelope.Header.SlipId);
                     stepActivity?.SetStatus(ActivityStatusCode.Error, fault.Exception.Message);
+                    _metrics?.IncrementRoutingSlipCompensation(
+                        envelope.Header.SlipName,
+                        fault.Exception.GetType().Name);
                     await provider.DeadLetterMessageAsync(fault.Exception, ct);
                     break;
 

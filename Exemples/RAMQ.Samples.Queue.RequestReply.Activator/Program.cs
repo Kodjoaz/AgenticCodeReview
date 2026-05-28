@@ -4,13 +4,14 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
-using RAMQ.Samples.ConfigurationService;
-using RAMQ.Samples.Queue.RequestReply.Consumer;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
+using RAMQ.Samples.ConfigurationService;
+using RAMQ.Samples.MessageTransitHelper;
+using RAMQ.Samples.Queue.RequestReply.Consumer;
 
 var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
-    .ConfigureAppConfiguration((context, config) =>
+    .ConfigureAppConfiguration((_, config) =>
     {
         config.AddJsonFile("local.settings.json", optional: false, reloadOnChange: true);
     })
@@ -19,26 +20,15 @@ var builder = new HostBuilder()
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
 
-        var configuration = hostContext.Configuration;
-        services.Configure<AppSettings>(configuration.GetSection("AppSettings"));
-        services.Configure<BlobStorageSetting>(configuration.GetSection("BlobStorageSetting"));
+        // R12 — Boilerplate consommateur EMT réduit à un appel.
+        services.AddEMTSampleConsumerDefaults(hostContext.Configuration, new VisualStudioCredential());
 
-        // Config consumer
-        services.AddSingleton<ConsumerConfigurationService>();
-        services.AddSingleton<IMessageTransitConfigurationService>(sp => sp.GetRequiredService<ConsumerConfigurationService>());
-        services.AddSingleton<IConsumerConfigurationService>(sp => sp.GetRequiredService<ConsumerConfigurationService>());
-
-        // Config producer (pour IMessageProducer<ReplyMessage> utilisé par RequestReplyConsumer)
+        // Producer de réponses — nécessaire pour IMessageProducer<ReplyMessage> dans RequestReplyConsumer.
         services.AddSingleton<ProducerConfigurationService>();
         services.AddSingleton<IProducerConfigurationService>(sp => sp.GetRequiredService<ProducerConfigurationService>());
 
-        // Producer de réponses — cible configurée dans local.settings.json sous AppSettings:Endpoints:reply-queue
         services.AddProducer<RAMQ.Samples.Queue.RequestReply.Message.ReplyMessage>("reply-queue");
-
-        // Consumer RequestReply — mono-endpoint (ConsumerConfigurationService = 1 endpoint) : aucun paramètre requis.
         services.AddConsumer<RequestReplyConsumer>();
-
-        services.ConfigureAzureProviders(new VisualStudioCredential());
     });
 
 builder.Build().Run();

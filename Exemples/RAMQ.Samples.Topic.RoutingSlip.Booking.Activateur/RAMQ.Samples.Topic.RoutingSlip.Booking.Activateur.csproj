@@ -28,6 +28,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\EnterpriseMessageTransit\EnterpriseMessageTransit.csproj" />
     <ProjectReference Include="..\RAMQ.Samples.RoutingSlip.Booking.Message\RAMQ.Samples.RoutingSlip.Booking.Message.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.ConfigurationService\RAMQ.Samples.ConfigurationService.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.MessageTransitHelper\RAMQ.Samples.MessageTransitHelper.csproj" />
   </ItemGroup>
 
 </Project>

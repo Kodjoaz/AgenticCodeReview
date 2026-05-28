@@ -1,16 +1,15 @@
-﻿using Azure.Identity;
+using Azure.Identity;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using RAMQ.COM.EnterpriseMessageTransit.Configuration;
-using RAMQ.Samples.ConfigurationService;
-using RAMQ.Samples.Topic.PubSub.Consumer;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
+using RAMQ.Samples.MessageTransitHelper;
+using RAMQ.Samples.Topic.PubSub.Consumer;
 
 var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
-    .ConfigureAppConfiguration((context, config) =>
+    .ConfigureAppConfiguration((_, config) =>
     {
         config.AddJsonFile("local.settings.json", optional: false, reloadOnChange: true)
               .AddEnvironmentVariables();
@@ -20,27 +19,15 @@ var builder = new HostBuilder()
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
 
-        var configuration = hostContext.Configuration;
+        // R12 — Boilerplate EMT réduit à un appel.
+        services.AddEMTSampleConsumerDefaults(hostContext.Configuration, new VisualStudioCredential());
 
-        services.Configure<AppSettings>(configuration.GetSection("AppSettings"));
-        services.Configure<BlobStorageSetting>(configuration.GetSection("BlobStorageSetting"));
-
-        // Service de configuration consommateur (une seule impl�mentation)
-        services.AddSingleton<ConsumerConfigurationService>();
-        services.AddSingleton<IMessageTransitConfigurationService>(sp => sp.GetRequiredService<ConsumerConfigurationService>());
-        services.AddSingleton<IConsumerConfigurationService>(sp => sp.GetRequiredService<ConsumerConfigurationService>());
-                
-        // Consumers — multi-endpoint Topic : seul le target est requis pour la résolution (EndpointResolver).
         services.AddConsumer<CarBookingConsumer>("CarBooking");
         services.AddConsumer<CarCancellationConsumer>("CarCancellation");
         services.AddConsumer<HotelBookingConsumer>("HotelBooking");
         services.AddConsumer<HotelCancellationConsumer>("HotelCancellation");
         services.AddConsumer<FlightBookingConsumer>("FlightBooking");
         services.AddConsumer<FlightCancellationConsumer>("FlightCancellation");
-
-        // Enregistrement centralisé
-        services.ConfigureAzureProviders(new VisualStudioCredential());
     });
 
 await builder.Build().RunAsync();
-

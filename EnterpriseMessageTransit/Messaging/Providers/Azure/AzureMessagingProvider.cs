@@ -273,59 +273,6 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             }
         }
 
-        public async Task<MessageTransitContext<TMessage>?> RequestReplyAsync<TMessage>(MessageTransitContext<TMessage> context, MessagingOptions options, CancellationToken cancellationToken = default) where TMessage : class
-        {
-            // C5 — ArgumentNullException au lieu de NullReferenceException (anti-pattern CLR)
-            ArgumentNullException.ThrowIfNull(context.Message, nameof(context.Message));
-
-            var audience = Resolve(options.Target);
-            var retryPolicy = audience.Endpoint.SendRetry ?? ProducerSendRetryPolicy.Default;
-            context.SessionId ??= context.MessageId ?? Guid.NewGuid().ToString("N");
-
-            var request = new ServiceBusMessage(_serializer.Serialize(context.Message))
-            {
-                MessageId = context.MessageId ?? Guid.NewGuid().ToString(),
-                SessionId = context.SessionId,
-                ReplyToSessionId = context.SessionId
-            };
-
-            if (options.Properties != null)
-            {
-                foreach (var kvp in options.Properties)
-                {
-                    request.ApplicationProperties[kvp.Key] = kvp.Value ?? "";
-                }
-            }
-
-            await SendSingleWithRetryAsync(
-                _senderCache.GetOrCreate(_client, audience.Endpoint.EntityName),
-                request,
-                audience.Endpoint.EntityName,
-                retryPolicy,
-                cancellationToken);
-
-            await using var receiver = await _client.AcceptSessionAsync(audience.Endpoint.EntityName, context.SessionId, cancellationToken: cancellationToken);
-            var received = await receiver.ReceiveMessageAsync(_providerOptions.ReplyTimeout, cancellationToken);
-            if (received == null)
-            {
-                return null;
-            }
-
-            var responsePayload = _serializer.Deserialize<TMessage>(received.Body.ToString());
-            var replyContext = new MessageTransitContext<TMessage>
-            {
-                Message          = responsePayload,
-                MessageId        = received.MessageId,
-                SessionId        = received.SessionId,
-                SequenceNumber   = received.SequenceNumber,
-                TransportMessage = new AzureFunctionMessageTransit(received),
-                Tokens           = context.Tokens,
-                Variables        = context.Variables
-            };
-            await receiver.CompleteMessageAsync(received, cancellationToken);
-            return replyContext;
-        }
-
         /// <summary>
         /// A4 — Envoi d'un message unique avec retry selon <see cref="ProducerSendRetryPolicy"/>.
         /// En cas d'erreur fatale, remplace le sender et réessaie jusqu'à <see cref="ProducerSendRetryPolicy.MaxAttempts"/>.
