@@ -565,7 +565,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Implémentation | 🟢 Complet | [`ClaimCheckOptions.cs`](../EnterpriseMessageTransit/Messaging/Producer/ClaimCheckOptions.cs), `PrepareContextWithTokensAsync` dans `BaseMessageTransit` |
 | Complétude | 🟡 Partielle | ✅ Upload + token, ❌ pas de nettoyage automatique des claim-checks orphelins (DE Review §4.1 point 3) |
 | Testabilité | 🟢 Bon | `IStorageProvider` mockable |
-| Observabilité | 🟢 **Livré R7** | Counters `claimcheck_uploads_total` + `claimcheck_downloads_total` + histogrammes durée câblés |
+| Observabilité | 🟢 **Complet** | Counters `claimcheck_uploads_total` + `claimcheck_downloads_total` + histogrammes durée câblés (R7) + tag `messaging.claimcheck` sur span `messaging.publish` |
 | Documentation | 🟢 Bon | Pas d'aucun sample ne le démontre (cf. observation S-1) |
 
 🟠 **À compléter (lot R5 du plan de résolution) :**

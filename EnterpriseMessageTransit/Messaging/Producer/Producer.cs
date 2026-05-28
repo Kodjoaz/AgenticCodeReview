@@ -149,6 +149,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                 activity?.SetTag("messaging.destination", resolvedTarget);
                 activity?.SetTag("messaging.message_id",  context.MessageId);
                 activity?.SetTag("messaging.session_id",  context.SessionId);
+                activity?.SetTag("messaging.claimcheck",  context.IsClaimCheckApplied);
 
                 try
                 {
