@@ -398,11 +398,11 @@ Le dossier [`Exemples/`](../Exemples/) contient **26 projets** qui démontrent l
    - Chaque étape est un `IRoutingSlipActivity<TArgs>` POCO testable.
    - **Topic vs Queue :** la variante Topic montre que la même saga peut traverser des subscriptions filtrées par `Consumer.Action`.
 
-3. **Famille `Queue.RequestReply`** : 🔴 **NE COMPILE PAS / NE TOURNE PAS** dans son état actuel.
-   - L'Activator a un encodage UTF-8 corrompu (caractères français illisibles).
-   - Le Worker ne register pas `ServiceBusClient` dans le DI (crash au démarrage).
-   - Le Consumer crée un `ServiceBusSender` par message (bypass complet de l'infra EMT).
-   - **À refondre complètement avant utilisation** (voir [§11 Plan de résolution, lot R3](#11-plan-de-résolution)).
+3. **Famille `Queue.RequestReply`** : 🟢 **Refondus et fonctionnels (lot R3 livré).**
+   - `Activator` = côté **responder** : `ServiceBusTrigger` propre, encodage UTF-8 corrigé, plus de cast `AzureFunctionMessageTransit` (C3 résolu).
+   - `Worker` = côté **requester** : `IRequestReplyClient<RequestMessage, ReplyMessage>.GetResponseAsync()`, `AddRequestReplyClient<,>` enregistré en DI, recovery offline (C1, I5 résolus).
+   - `Consumer` : répond via `IMessageProducer<ReplyMessage>` injecté — plus de `ServiceBusSender` brut par message (C2 résolu).
+   - Voir [§6.4](#64-request--reply) et [§11.3](#113-lot-r3--refonte-intégrale-du-pattern-request-reply--livré) pour le détail.
 
 ### 7.3 Famille `Queue.TDF.SeqCon` — cas avancé
 
@@ -421,7 +421,7 @@ Le dossier [`Exemples/`](../Exemples/) contient **26 projets** qui démontrent l
 |---|---|---|
 | **S-1** | Aucun sample ne démontre **Claim Check actif** (envoi d'une PJ > 256 Ko et téléchargement côté worker). C'est un trou pédagogique majeur. | 🟠 Majeur |
 | **S-2** | Aucun sample ne démontre le **Circuit Breaker en action** (injection de panne, ouverture, fermeture). Pattern implémenté mais non illustré. | 🟡 Mineur |
-| **S-3** | `Queue.RequestReply` est inutilisable en l'état. Risque d'induire en erreur tout junior qui le lit. | 🔴 Bloquant |
+| **S-3** | ~~`Queue.RequestReply` est inutilisable en l'état.~~ ✅ **Résolu R3** — C1/C2/C3/I5 corrigés, 4 projets compilent et fonctionnent. | 🟢 Résolu |
 | **S-4** | Plusieurs samples copient/collent le même `Program.cs` (wiring DI). Pas de helper `services.AddEMTSample()` partagé. | 🟡 Mineur |
 | **S-5** | Aucun sample ne démontre **`IRoutingSlipActivity` testé en isolation** (objectif phare de la v2.0). Pas de projet `*.Tests` côté samples. | 🟠 Majeur |
 | **S-6** | `RAMQ.Samples.ConfigurationService` et `RAMQ.Samples.MessageTransitHelper` exposent une API commune sans contrat versionné. Risque de dérive entre samples. | 🟡 Mineur |
@@ -1429,9 +1429,9 @@ Ces actions peuvent être livrées **dans n'importe quel sprint de v1.x** sans s
 3. **Le `MessageTransitContext<T>` est le pivot — mais c'est un god-object.** Le filet snapshot Verify.Xunit (Phase 1) empêche les régressions silencieuses, mais le mélange « contrat sérialisé + état runtime + comportement » n'est **pas** structurellement résolu. La séparation `MessageEnvelope` / `MessageTransitContext<T>` est **alignée sur Phase 6** pour grouper le breaking change avec une éventuelle adoption CloudEvents (cf. [§11.13](#1113-analyse-des-breaking-changes--cas-o3)).
 4. **Le Routing Slip v2.0** est livré et constitue **la référence SOLID** de la lib — c'est le sous-système le mieux conçu. Tous les refactors futurs doivent s'en inspirer.
 5. **L'idempotence repose sur un triangle** : infra + EMT + métier. Sans validation infrastructurelle (lot R4), le triangle est incomplet — risque réel de doublons métier.
-6. **Le pattern Request/Reply est cassé** dans les samples actuels. Lot R3 prioritaire avant qu'un junior n'en hérite et l'utilise mal.
+6. **Le pattern Request/Reply est opérationnel** — lot R3 livré. `IRequestReplyClient<TRequest,TResponse>` séparé de `IMessageProducer<T>`, samples refondus de bout en bout (C1/C2/C3/I5 résolus).
 7. **SOLID est partiellement résolu** : R8/R9 livrés. Modèle de déploiement clarifié — **Producer** est multi-hôte (AzFunc / AKS / ARO) ; **Consumer** est exclusivement Azure Functions. DIP sur le Consumer-adapter (R10) reste hors scope v1.0.
-8. **Les 26 samples sont la documentation vivante**, mais 3 sont cassés (R/R) et plusieurs ont des trous pédagogiques majeurs (Claim Check actif, métriques OTel, tests d'activités). Lots R2, R11, R12.
+8. **Les 26 samples sont la documentation vivante.** Les samples R/R (anciennement cassés) sont désormais fonctionnels (R3). Trous pédagogiques restants : Claim Check actif (R2), métriques OTel (R8 livré, à illustrer), tests d'activités (R11).
 9. **Phase 6 est entièrement hors scope.** Phase 6 = support multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents). Aucun de ces volets n'est prévu dans cette phase du projet. Seul Azure Service Bus est dans le scope.
 10. **Le plan de résolution R1-R12** chiffre 9-12 semaines en parallèle (3-4 devs) pour atteindre une v1.0 stable production-ready, avec critères d'acceptation explicites en [§11.11](#1111-critères-dacceptation-v10-stable).
 
