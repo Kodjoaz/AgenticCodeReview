@@ -1,0 +1,35 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "ServiceBusConnection__fullyQualifiedNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net"
+  },
+  "AppSettings": {
+    "ApplicationName": "ClaimCheckPdfWorker",
+    "ServiceBusNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net",
+    "RetryPolicy": {
+      "InitialDelay": "00:00:05",
+      "MaxDelay": "00:00:30",
+      "UseJitter": true,
+      "MaxDeliveryCount": 5
+    },
+    "Endpoints": [
+      {
+        "Target": "claimcheck-pdf-queue",
+        "Endpoint": {
+          "EntityName": "sbq-claimcheck-pdf",
+          "EntityType": "Queue"
+        }
+      }
+    ],
+    "MessageTransitJournalStoreUri": "https://stxalpum.table.core.windows.net",
+    "MessageTransitJournalName": "COMJournalClaimCheck"
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "https://stxalpum.blob.core.windows.net",
+    "ContainerName": "claimcheck",
+    "FolderName": "rapports-pdf",
+    "ClaimCheckThresholdBytes": 262144
+  }
+}

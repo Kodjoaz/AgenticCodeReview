@@ -1,7 +1,7 @@
 # EMT Deep Review — Comprendre Enterprise Message Transit de A à Z
 
 > **Audience cible :** développeur junior arrivant sur le projet RAMQ et devant comprendre la librairie `EnterpriseMessageTransit` (EMT) **et tous les exemples du dossier `Exemples/`** sans pré-requis.
-> **Objectif :** synthétiser dans un seul document toutes les revues effectuées sur la librairie (Senior, Lead, Distinguished, Phases 1-5, EMT 1.0, Request/Reply, Routing-Slip), inventorier les **31 projets exemples**, vérifier le respect des **principes SOLID ligne par ligne**, l'intégrité de **chaque pattern enterprise**, et fournir un **plan de résolution chiffré et priorisé**.
+> **Objectif :** synthétiser dans un seul document toutes les revues effectuées sur la librairie (Senior, Lead, Distinguished, Phases 1-5, EMT 1.0, Request/Reply, Routing-Slip), inventorier les **35 projets exemples**, vérifier le respect des **principes SOLID ligne par ligne**, l'intégrité de **chaque pattern enterprise**, et fournir un **plan de résolution chiffré et priorisé**.
 > **Sources consolidées :**
 > - [EMT-SeniorEngineerReview.md](../EnterpriseMessageTransit/docs/EMT-SeniorEngineerReview.md) — revue ligne-à-ligne du code Producer
 > - [EMT-LeadEngineerReview.md](../EnterpriseMessageTransit/docs/EMT-LeadEngineerReview.md) — conception locale, SRP, performance
@@ -10,7 +10,7 @@
 > - [architecture-routing-slip.md](../EnterpriseMessageTransit/docs/architecture-routing-slip.md) — refonte saga v2.0
 > - [EMT1.0Review.md](EMT1.0Review.md) — revue v0.9.0 (Routing Slip v2.0 livré)
 > - [EMT1.0-RequestReply.md](EMT1.0-RequestReply.md) — pattern Request/Reply partiel
-> - [Exemples/](../Exemples/) — 31 projets de démonstration
+> - [Exemples/](../Exemples/) — 35 projets de démonstration
 >
 > **Périmètre — clarification du scope :**
 > 🚫 **Phase 6 entièrement hors scope :** Phase 6 = support multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents). Ce volet n'est pas prévu dans cette phase de projet.
@@ -33,7 +33,7 @@
 4. [Cartographie du code source — où est quoi](#4-cartographie-du-code-source)
 5. [Flux d'exécution pas-à-pas](#5-flux-dexécution-pas-à-pas)
 6. [Les patterns expliqués en profondeur](#6-les-patterns-expliqués-en-profondeur)
-7. [Inventaire des exemples — 31 projets dans `Exemples/`](#7-inventaire-des-exemples-31-projets-dans-exemples)
+7. [Inventaire des exemples — 35 projets dans `Exemples/`](#7-inventaire-des-exemples-31-projets-dans-exemples)
 8. [Vérification des patterns enterprise — état actuel](#8-vérification-des-patterns-enterprise)
 9. [Audit SOLID — ligne par ligne](#9-audit-solid--ligne-par-ligne)
 10. [Récapitulatif des revues — corrigé et restant](#10-récapitulatif-des-revues)
@@ -439,9 +439,9 @@ Audit Azure Table avec `JournalEntry.ForPublish/ForRetry/ForDLQ/ForRequestReply`
 
 ---
 
-## 7. Inventaire des exemples — 31 projets dans `Exemples/`
+## 7. Inventaire des exemples — 35 projets dans `Exemples/`
 
-Le dossier [`Exemples/`](../Exemples/) contient **31 projets** qui démontrent les patterns EMT en conditions réelles. Compris dans leur ensemble, ils forment la documentation vivante de la librairie.
+Le dossier [`Exemples/`](../Exemples/) contient **35 projets** qui démontrent les patterns EMT en conditions réelles. Compris dans leur ensemble, ils forment la documentation vivante de la librairie.
 
 ### 7.1 Tableau récapitulatif des samples
 
@@ -478,6 +478,10 @@ Le dossier [`Exemples/`](../Exemples/) contient **31 projets** qui démontrent l
 | 29 | `RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator` | Durable Functions — machine à états Sequential Convoy : attend `tdf.envoi`, timeout configurable, signal `CorrellerEnvoyer`, audit activity, custom status OTel | TDF / Sequential Convoy (orchestrateur) | v2.0 | 🟢 Active |
 | 30 | `RAMQ.Samples.Queue.HOA5.Consumer` | Azure Function `BaseConsumer<CorrelationResultMessage>` — reçoit le résultat de corrélation publié par l'orchestrateur et appelle l'API Backend HOA5 | TDF / Sequential Convoy (consumer HOA5) | v2.0 | 🟢 Active |
 | 31 | `RAMQ.Samples.Queue.HOA5.Integration.Backend` | Azure Function HTTP Backend — expose les endpoints métier HOA5 (`InscrireSuiviFichCornl`, etc.) appelés par `HOA5.Consumer` via Refit | TDF / Sequential Convoy (backend HOA5) | v2.0 | 🟢 Active |
+| 32 | `RAMQ.Samples.Queue.ClaimCheck.PDF.Message` | DTO `PdfRapportMessage` (métadonnées : RapportId, PatientId, TypeRapport, FileName, TailleOctets) | Claim Check | n/a | 🟢 Active |
+| 33 | `RAMQ.Samples.Queue.ClaimCheck.PDF.Worker` | Azure Function HTTP — 3 cas : gros message JSON (> 256 Ko auto), pièce jointe binaire (`WithAttachment`), message léger inline | Claim Check (producteur) | v2.0 | 🟢 Active |
+| 34 | `RAMQ.Samples.Queue.ClaimCheck.PDF.Consumer` | Lib `ClaimCheckPdfConsumer : BaseConsumer<PdfRapportMessage>` — Option A (référence blob → API downstream) + Option B (download inline via `IStorageProvider`) | Claim Check (consumer lib) | v2.0 | 🟢 Active |
+| 35 | `RAMQ.Samples.Queue.ClaimCheck.PDF.Activator` | Azure Function `ServiceBusTrigger` — reçoit les messages de la queue `sbq-claimcheck-pdf` et délègue à `ClaimCheckPdfConsumer` | Claim Check (trigger) | v2.0 | 🟢 Active |
 
 ### 7.2 Trois familles de samples — guide de lecture
 
@@ -528,7 +532,7 @@ Points techniques remarquables :
 
 | # | Observation | Sévérité |
 |---|---|---|
-| **S-1** | Aucun sample ne démontre **Claim Check actif** (envoi d'une PJ > 256 Ko et téléchargement côté worker). C'est un trou pédagogique majeur. | 🟠 Majeur |
+| **S-1** | ~~Aucun sample ne démontre Claim Check actif.~~ ✅ **Résolu R2** — `RAMQ.Samples.Queue.ClaimCheck.PDF.*` (4 projets) couvre gros message JSON, pièce jointe binaire et message léger. Options A (référence) et B (download inline) démontrées. | 🟢 Résolu |
 | **S-2** | Aucun sample ne démontre le **Circuit Breaker en action** (injection de panne, ouverture, fermeture). Pattern implémenté mais non illustré. | 🟡 Mineur |
 | **S-3** | ~~`Queue.RequestReply` est inutilisable en l'état.~~ ✅ **Résolu R3** — C1/C2/C3/I5 corrigés, 4 projets compilent et fonctionnent. | 🟢 Résolu |
 | **S-4** | ~~Plusieurs samples copient/collent le même `Program.cs`.~~ ✅ **Résolu R12** — `AddEMTSampleProducerDefaults` + `AddEMTSampleConsumerDefaults` dans `RAMQ.Samples.MessageTransitHelper`, appliqués sur 10 samples. | 🟢 Résolu |
@@ -982,23 +986,30 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 **Risque :** 🟢 Faible — tests additifs, aucune modif runtime.
 **Priorité :** 🔴 **Critique** — pré-requis avant toute refonte.
 
-### 11.2 Lot R2 — Sample Claim Check de référence
+### 11.2 Lot R2 — Sample Claim Check de référence ✅ Livré
 
 **Origine :** Observation S-1 sur les samples (§7.4).
-**Objectif :** combler le trou pédagogique majeur — aucun sample ne démontre le Claim Check actif.
+**Objectif :** combler le trou pédagogique — aucun sample ne démontrait le Claim Check actif.
 
-**Livrables :**
-- Nouveau projet `RAMQ.Samples.Queue.ClaimCheck.PDF.Activator` + `.Worker` + `.Message`.
-- L'activateur envoie un PDF de 5 Mo (assets statiques dans `tests/assets/`).
-- Le worker démontre les **deux options** de consommation :
-  - Option A — Activité passe le `BlobReference` à l'API downstream (l'API télécharge).
-  - Option B — Activité télécharge elle-même via `IStorageProvider`.
-- README pédagogique expliquant le pattern et la décision d'allocation.
+**Livré — 4 projets dans `Exemples/RAMQ.Samples.Queue.ClaimCheck.PDF.*` :**
 
-**Critère de sortie :** sample tourne end-to-end avec Service Bus Emulator + Azurite via `docker-compose`.
-**Estimation :** 1 semaine (1 dev junior).
-**Risque :** 🟢 Faible.
-**Priorité :** 🟠 **Majeur** — vrai trou de documentation vivante.
+| Projet | Rôle |
+|---|---|
+| `.Message` | DTO `PdfRapportMessage` (métadonnées du rapport) |
+| `.Worker` | Azure Function HTTP trigger — **3 cas de test couverts** |
+| `.Consumer` | Lib `ClaimCheckPdfConsumer : BaseConsumer<PdfRapportMessage>` — Options A et B |
+| `.Activator` | Azure Function `ServiceBusTrigger` — reçoit et délègue au Consumer |
+
+**3 cas de test couverts dans le Worker :**
+- **CAS 1** — `GET /api/publish-large-json` : payload JSON > 350 Ko → Claim Check automatique (seuil `ClaimCheckThresholdBytes`).
+- **CAS 2** — `POST /api/publish-with-attachment` : pièce jointe binaire (PDF, image, etc.) uploadée via `ClaimCheckOptions.WithAttachment(stream, fileName)`.
+- **CAS 3** — `GET /api/publish-light` : payload < seuil → message inline, `IsClaimCheckApplied = false` côté consumer.
+
+**2 options de consommation dans le Consumer :**
+- **Option A** : récupère `context.GetMessageToken()?.Reference` et le transmet à l'API downstream.
+- **Option B** : télécharge inline via `IStorageProvider.DownloadAsync(reference)`.
+
+**Priorité :** ~~🟠 **Majeur**~~ ✅ **Livré**.
 
 ### 11.3 Lot R3 — Refonte intégrale du pattern Request/Reply ✅ Livré
 
@@ -1556,4 +1567,4 @@ Ces actions peuvent être livrées **dans n'importe quel sprint de v1.x** sans s
 
 ---
 
-*Document généré le 27 mai 2026 par revue agentique consolidée à partir des sources listées en en-tête + analyse des 31 projets `Exemples/` + audit SOLID ligne-par-ligne sur les classes principales d'EMT. Pour toute question, ouvrir une issue ou contacter l'équipe d'architecture RAMQ.*
+*Document généré le 27 mai 2026 par revue agentique consolidée à partir des sources listées en en-tête + analyse des 35 projets `Exemples/` + audit SOLID ligne-par-ligne sur les classes principales d'EMT. Pour toute question, ouvrir une issue ou contacter l'équipe d'architecture RAMQ.*
