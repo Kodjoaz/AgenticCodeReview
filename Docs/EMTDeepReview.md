@@ -40,8 +40,14 @@
 11. [Plan de résolution — priorisé et chiffré](#11-plan-de-résolution)
     - [11.13 Analyse des breaking changes — cas O3](#1113-analyse-des-breaking-changes--cas-o3)
 12. [Feuille de route — où va EMT](#12-feuille-de-route)
-13. [Glossaire](#13-glossaire)
-14. [Pour aller plus loin](#14-pour-aller-plus-loin)
+13. [Design For Operation — architecture observabilité enterprise](#13-design-for-operation--architecture-observabilité-enterprise)
+    - [13.4 ILogger vs OpenTelemetry — la nuance critique](#134-ilogger-vs-opentelemetry--la-nuance-critique)
+    - [13.5 Stratégie de filtrage à chaque étage](#135-stratégie-de-filtrage-à-chaque-étage--design-for-operation)
+    - [13.10 Workbooks et alertes](#1310-workbooks-et-alertes--livrables-opérationnels-recommandés)
+    - [13.11 Checklist pour démarrer](#1311-pour-démarrer--checklist-design-for-operation-pour-un-nouveau-domaine-ramq)
+    - [13.12 Plan d'implémentation DFO en 4 phases (8-10 semaines)](#1312-plan-dimplémentation-design-for-operation)
+14. [Glossaire](#14-glossaire)
+15. [Pour aller plus loin](#15-pour-aller-plus-loin)
 
 ---
 
@@ -1554,7 +1560,995 @@ Ces actions peuvent être livrées **dans n'importe quel sprint de v1.x** sans s
 
 ---
 
-## 13. Glossaire
+## 13. Design For Operation — architecture observabilité enterprise
+
+> **Audience :** SRE, Lead technique, développeurs (premier déploiement opérationnel).
+> **Pré-requis :** notions de base d'OpenTelemetry et d'Azure Monitor.
+> **Objectif de cette section :** présenter l'architecture Design For Operation cible pour EMT, expliquer la différence entre `ILogger` et OpenTelemetry, détailler comment les filtres opèrent à chaque étage du collecteur, et fournir la configuration Azure Monitor concrète pour les premières mises en production RAMQ.
+
+### 13.1 Qu'est-ce que « Design For Operation » dans le contexte EMT ?
+
+> 💡 **Définition simple :** *Design For Operation*, c'est concevoir le logiciel de telle sorte que **l'équipe d'exploitation puisse comprendre, mesurer et corriger un incident en production** sans deviner. Ce n'est pas un sujet d'observabilité technique, c'est une exigence métier : un dossier RAMQ bloqué doit pouvoir être expliqué à un agent CAI dans les 30 minutes.
+
+Concrètement, Design For Operation dans EMT signifie répondre à **5 questions opérationnelles** avec **5 piliers techniques** :
+
+| Question opérationnelle | Pilier EMT | Mécanisme technique |
+|---|---|---|
+| « **Où en est ce message ?** » | Distributed tracing | `ActivitySource` + W3C `traceparent` propagé |
+| « **Combien de messages échouent ?** » | Metrics | `System.Diagnostics.Metrics` + Azure Monitor |
+| « **Pourquoi celui-ci a échoué ?** » | Logs structurés | `ILogger` + scopes `BeginScope({MessageId, SessionId})` |
+| « **Cette opération a-t-elle été faite, à qui, quand ?** » | Journal A5 (audit légal) | `IJournalProvider` → Azure Table |
+| « **Le système est-il sain en ce moment ?** » | Health checks | `ServiceBusHealthCheck` + dashboard temps réel |
+
+Ces 5 piliers ne sont **pas équivalents**. Confondre logs et traces, ou journal et métriques, mène à des incidents impossibles à diagnostiquer. La sous-section §13.4 détaille leurs frontières.
+
+### 13.2 Architecture cible — schéma enterprise
+
+```
+                  ┌──────────────────────────────────────────┐
+                  │     Code applicatif RAMQ                  │
+                  │   (Producer, Consumer, Activity)          │
+                  └────────┬──────────┬──────────┬───────────┘
+                           │          │          │
+              ┌────────────▼┐ ┌───────▼───┐ ┌────▼──────────┐
+              │   ILogger    │ │ Activity  │ │ MetricsProv.  │
+              │ (logs)       │ │ Source    │ │ (System.      │
+              │              │ │ (traces)  │ │  Diagnostics. │
+              │              │ │           │ │  Metrics)     │
+              └────────┬─────┘ └─────┬─────┘ └────────┬──────┘
+                       │             │                │
+                       │   ┌─────────┴────────────────┘
+                       │   │
+                       ▼   ▼                              ┌──────────────────┐
+              ┌──────────────────────┐                    │  IJournalProvider│
+              │  OpenTelemetry SDK   │                    │  (Azure Table)   │
+              │  (Tracer/Meter/Log   │                    │  ← audit légal   │
+              │   Providers)         │                    │  ← découplé du   │
+              └──────────┬───────────┘                    │    chemin OTel   │
+                         │                                └────────┬─────────┘
+                         │ Pipeline interne :                       │
+                         │  ① Sampler (filtrage statistique)        │
+                         │  ② Processor (enrichissement,            │
+                         │    redaction PII, filtrage par tag)      │
+                         │  ③ Batch Exporter                        │
+                         ▼                                          │
+              ┌──────────────────────────┐                          │
+              │ Azure.Monitor.            │                          │
+              │ OpenTelemetry.Exporter   │ ← exporter Microsoft     │
+              └──────────┬───────────────┘                          │
+                         │ HTTPS / gRPC                              │
+                         ▼                                          ▼
+              ┌──────────────────────────┐         ┌──────────────────────┐
+              │ Application Insights      │         │ Azure Table Storage  │
+              │ (façade, workspace-based)│         │  TransitJournal      │
+              └──────────┬───────────────┘         │  (rétention 7 ans)   │
+                         │                          └──────────┬──────────┘
+                         ▼                                     │
+              ┌──────────────────────────┐                     │
+              │ Log Analytics Workspace  │ ◄─── union KQL ─────┘
+              │ (stockage + KQL)         │     (corrélation audit ↔ traces)
+              │  - dependencies          │
+              │  - customMetrics         │
+              │  - traces (logs)         │
+              │  - exceptions            │
+              └──────────┬───────────────┘
+                         │
+                         ▼
+              ┌──────────────────────────────────────┐
+              │  Azure Monitor — usages opérationnels │
+              │  • Application Map (graphe sagas)     │
+              │  • Live Metrics (latence < 1 s)        │
+              │  • Smart Detection (anomalies)         │
+              │  • Workbooks (dashboards RAMQ)         │
+              │  • Action Groups (alertes PagerDuty)   │
+              └──────────────────────────────────────┘
+```
+
+🟢 **Décision RAMQ : Azure Monitor (Application Insights workspace-based + Log Analytics Workspace) est le backend cible.** Le choix est définitif pour la v1.0. Pas de Grafana, Jaeger ou Prometheus en production — seulement comme outils dev locaux.
+
+### 13.3 Les composants Azure Monitor à utiliser et pourquoi
+
+> 💡 **Pour un junior — "Azure Monitor" n'est pas un seul produit.** C'est une famille de services qui se complètent. Voici lesquels EMT utilise et lesquels ignorer.
+
+| Service Azure Monitor | Rôle | Utilisé par EMT ? | Justification |
+|---|---|---|---|
+| **Application Insights (workspace-based)** | Façade SDK + UI (Application Map, Live Metrics, Smart Detection) | ✅ **Oui — pierre angulaire** | Reçoit les exports OTel via `Azure.Monitor.OpenTelemetry.Exporter`. Ne stocke rien (façade). |
+| **Log Analytics Workspace** | Stockage + moteur KQL | ✅ **Oui — automatiquement lié à App Insights** | C'est lui qui facture (Go ingérés). C'est lui qu'on requête en KQL. |
+| **Azure Monitor Metrics (Platform metrics)** | Métriques de la plateforme Azure (CPU, mémoire VM, queue length SB) | ✅ **Oui — auto-activé** | Compléter les métriques applicatives EMT avec les métriques infra (queue length, dead letter count Service Bus). |
+| **Azure Monitor Alerts** | Règles d'alerte sur métriques ou requêtes KQL | ✅ **Oui** | Brancher sur les seuils EMT documentés (cf. [`metrics.md`](../EnterpriseMessageTransit/docs/observability/metrics.md)). |
+| **Action Groups** | Routage d'alertes (PagerDuty, Teams, email) | ✅ **Oui** | Standard RAMQ. |
+| **Azure Monitor Workbooks** | Dashboards interactifs avec KQL | ✅ **Oui** | Recommandé pour les dashboards opérationnels EMT (voir §13.10). |
+| **Azure Dashboards (anciens)** | Dashboards simples | ⚠️ Non — préférer Workbooks | Workbooks sont plus expressifs et versionnables (JSON). |
+| **Azure Monitor Agent (AMA)** | Collecte de logs OS depuis VMs / VMSS | ❌ Non nécessaire pour Functions | Auto-activé sur Azure Functions via le runtime. |
+| **Diagnostic Settings** | Export de logs de ressources Azure (Service Bus, Storage…) vers Log Analytics | ✅ **Oui — à configurer** | Capture les logs Service Bus côté broker (throttling, dead-lettering serveur). Complète les métriques applicatives EMT. |
+| **OpenTelemetry Collector** (Microsoft hébergé ou self-hosted) | Sidecar de routage / filtrage avancé | ⚠️ **Optionnel** | Utile si on veut multi-destination (App Insights + Splunk RAMQ). Non requis en v1.0. |
+
+#### 13.3.1 Configuration Diagnostic Settings Service Bus — souvent oublié
+
+EMT instrumente le **côté applicatif**. Mais Service Bus lui-même émet des logs et métriques opérationnels (throttling, expiration de session, dead-lettering serveur) qui ne sont **pas** visibles côté EMT. Il faut activer les Diagnostic Settings :
+
+```bicep
+resource diagSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  scope: serviceBusNamespace
+  name: 'sb-to-loganalytics'
+  properties: {
+    workspaceId: logAnalyticsWorkspace.id
+    logs: [
+      { categoryGroup: 'allLogs', enabled: true }
+    ]
+    metrics: [
+      { category: 'AllMetrics', enabled: true }
+    ]
+  }
+}
+```
+
+Sans cette configuration, un message bloqué par throttling Service Bus apparaîtra comme un timeout côté EMT sans cause visible.
+
+### 13.4 ILogger vs OpenTelemetry — la nuance critique
+
+> 💡 **C'est probablement la confusion #1 d'un junior qui débute en observabilité.** Le code écrit `_logger.LogInformation(...)`, mais qu'est-ce qui se passe vraiment ? Est-ce que ça « part » dans Application Insights ? Sous quel nom de table ? Avec quels filtres ? La réponse demande de comprendre 3 couches.
+
+#### 13.4.0 Vision claire — la phrase de référence à mémoriser
+
+> 🧭 **`ILogger` est l'API qu'on écrit. OpenTelemetry est le pipeline qui transporte.** Ce sont **deux outils complémentaires**, pas concurrents.
+>
+> - On **écrit toujours** du code applicatif avec `ILogger<T>` injecté en DI. C'est l'abstraction Microsoft standard, totalement indépendante du backend.
+> - On **configure le transport** vers Azure Monitor une seule fois dans `Program.cs` via OpenTelemetry. À partir de là, **chaque `_logger.LogInformation()` devient automatiquement** un événement OTel qui voyage vers Application Insights, sans que le code applicatif ne le sache.
+> - Cette indépendance est **un atout DFO** : on peut tester en local avec `.AddConsoleExporter()`, déployer en prod avec `.AddAzureMonitorLogExporter()`, et le code applicatif **ne change jamais**.
+
+#### 13.4.0.bis Les trois signaux d'observabilité — frontières claires
+
+Avant de plonger dans le pipeline, il faut **distinguer les trois signaux** OpenTelemetry. Beaucoup de juniors croient qu'OpenTelemetry = traces. C'est faux : OTel a 3 piliers, et chacun a un usage précis.
+
+| Signal | API .NET | Question opérationnelle qu'il répond | Exemple dans EMT |
+|---|---|---|---|
+| **Logs** | `ILogger<T>` | « Pourquoi celui-ci a échoué ? » | `_logger.LogWarning("Journal failed, MessageId={Id}", id)` |
+| **Traces** (spans) | `ActivitySource` / `Activity` | « Où en est ce message, combien de temps a pris chaque étape ? » | `using var act = source.StartActivity("messaging.publish")` |
+| **Metrics** | `Meter` / `Counter<T>` / `Histogram<T>` | « Combien, à quelle vitesse, à quel taux ? » | `counter.Add(1, new TagList { ... })` |
+
+🟢 **Best practice #1 : choisir le bon signal selon la question.**
+- Pour **diagnostiquer un incident précis** → logs structurés avec `MessageId` corrélable.
+- Pour **comprendre la latence d'un parcours** → trace distribuée avec spans liés par `traceparent`.
+- Pour **alerter sur des taux et des tendances** → métriques avec faible cardinalité.
+
+🟠 **Anti-pattern fréquent à éviter :** émettre une métrique pour chaque erreur métier individuelle. Les métriques agrègent — si on met `MessageId` en tag, la cardinalité explose et Log Analytics refuse l'ingestion (limite : ~1000 valeurs distinctes par tag). **Pour les détails individuels, on utilise les logs.** Les métriques sont pour les **comptages agrégés**.
+
+#### 13.4.0.ter Le déclic à retenir
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│ Code applicatif (n'importe quelle classe RAMQ)                  │
+│   - Injecte ILogger<T>, ActivitySource, IMetricsProvider        │
+│   - Émet logs, spans, metrics SANS savoir où ça va              │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │ APIs BCL .NET (zéro dépendance OTel)
+                                 ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ Program.cs — point de wiring UNIQUE                              │
+│   builder.Services.AddOpenTelemetry()                            │
+│     .WithLogging(...)   ← bridge ILogger → OTel                  │
+│     .WithTracing(...)   ← branche ActivitySource → OTel          │
+│     .WithMetrics(...)   ← branche Meter → OTel                   │
+│     .AddAzureMonitorExporter()  ← destination = Azure Monitor    │
+└────────────────────────────────┬────────────────────────────────┘
+                                 │ HTTPS export batch
+                                 ▼
+                       Application Insights / Log Analytics
+```
+
+> ✅ **Vision claire RAMQ DFO :** **un seul fichier `Program.cs` configure tout**. Le reste du code applicatif utilise les APIs BCL .NET standard. Migrer demain vers un autre backend (Splunk, Datadog, Grafana Cloud) ne demande **qu'un changement de l'exporter**, pas une réécriture du code métier.
+
+#### 13.4.1 Les trois couches conceptuelles
+
+```
+┌────────────────────────────────────────────────────────────────┐
+│  COUCHE 1 — Code applicatif                                     │
+│  Ce qu'on écrit :                                                │
+│    _logger.LogInformation("Saga {Stage} for {DossierId}",       │
+│                            stage, dossierId);                    │
+└────────────────────────────────┬───────────────────────────────┘
+                                 │
+                                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│  COUCHE 2 — ILogger pipeline (Microsoft.Extensions.Logging)     │
+│  Le message devient un LogRecord structuré :                    │
+│    { categoryName: "...Producer",                               │
+│      eventId: 0,                                                 │
+│      logLevel: Information,                                      │
+│      messageTemplate: "Saga {Stage} for {DossierId}",          │
+│      attributes: { Stage="Validate", DossierId="D-001" },       │
+│      scopes: [ { MessageId="...", SessionId="..." } ] }         │
+│                                                                  │
+│  Filtres ILogger appliqués ICI (logLevel par catégorie) :      │
+│    appsettings.json → "Logging:LogLevel:RAMQ" = "Warning"      │
+│    → tout < Warning est jeté AVANT d'aller plus loin           │
+└────────────────────────────────┬───────────────────────────────┘
+                                 │ ← bridge OpenTelemetry
+                                 ▼
+┌────────────────────────────────────────────────────────────────┐
+│  COUCHE 3 — OpenTelemetry Logs pipeline (via bridge)            │
+│  Le LogRecord traverse le pipeline OTel :                       │
+│    ① LogProcessor (enrichment : ServiceName, ResourceAttrs)    │
+│    ② LogProcessor (redaction PII si configuré)                 │
+│    ③ Exporter → Azure.Monitor.OpenTelemetry.Exporter           │
+│                                                                  │
+│  Filtres OTel appliqués ICI :                                  │
+│    .AddOpenTelemetry(o => o.AddProcessor(monFiltreur))         │
+│    → un processor peut DROPPER un LogRecord après ILogger     │
+└────────────────────────────────┬───────────────────────────────┘
+                                 │
+                                 ▼ HTTPS
+                       Application Insights
+                                 │
+                                 ▼
+                       table `traces` dans Log Analytics
+                       (avec customDimensions = scopes + attrs)
+```
+
+#### 13.4.2 Les 4 filtres distincts à connaître
+
+Il y a **4 endroits** où un log peut être supprimé entre le code et Azure Monitor. Confondre ces 4 endroits est l'erreur classique :
+
+| # | Filtre | Où | Mécanisme | Exemple |
+|---|---|---|---|---|
+| **F1** | **ILogger LogLevel par catégorie** | `appsettings.json` ou `host.json` | `"Logging:LogLevel:<Category>": "Warning"` | Filtrer tout `Debug` de la lib EMT mais garder `Information` du code métier |
+| **F2** | **ILogger filter functions** | `Program.cs` | `.AddFilter("RAMQ.COM.EnterpriseMessageTransit", LogLevel.Warning)` | Idem F1, par code |
+| **F3** | **OTel Sampler (pour traces, pas pour logs)** | `Program.cs` OTel config | `.SetSampler(new TraceIdRatioBasedSampler(0.10))` | Garder 10 % des traces normales, 100 % des erreurs |
+| **F4** | **OTel Processor (custom)** | `Program.cs` OTel config | `.AddProcessor(new RedactionProcessor())` | Supprimer un attribut `data:secret=*` avant export |
+
+🟠 **Erreur classique #1 :** activer F3 (Sampler) sur les **traces** en pensant filtrer les **logs**. Le Sampler OTel ne s'applique **qu'aux traces** (spans). Pour les logs, c'est F1, F2, ou F4.
+
+🟠 **Erreur classique #2 :** baisser le LogLevel global à `Warning` (F1) en pensant économiser, et perdre tous les logs `Information` du code métier qui contiennent des `DossierId` utiles aux audits CAI.
+
+#### 13.4.3 Configuration recommandée pour les premières prods RAMQ
+
+```json
+// host.json (Azure Function) — recommandation v1.0
+{
+  "version": "2.0",
+  "telemetryMode": "OpenTelemetry",
+  "logging": {
+    "logLevel": {
+      "default": "Information",
+      "Host.General": "Warning",
+      "Host.Aggregator": "Warning",
+      "Microsoft.Azure.WebJobs.Hosting": "Warning",
+
+      // EMT lib : on garde Information pour la traçabilité
+      "RAMQ.COM.EnterpriseMessageTransit": "Information",
+
+      // Code métier RAMQ : Information (audits)
+      "RAMQ": "Information"
+    },
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": false,
+        "excludedTypes": "Request;Dependency"
+      }
+    }
+  }
+}
+```
+
+```csharp
+// Program.cs — OpenTelemetry pour Worker / BackgroundService
+builder.Services.AddOpenTelemetry()
+    .ConfigureResource(r => r.AddService(
+        serviceName: "RAMQ.Individu.ValiderAdresse",
+        serviceVersion: "1.0.0",
+        serviceInstanceId: Environment.MachineName))
+    .WithTracing(t => t
+        .AddSource("RAMQ.COM.EnterpriseMessageTransit")
+        .SetSampler(new PrioritizeErrorsSampler(ratio: 0.10))  // F3 : 10 % nominal, 100 % erreurs
+        .AddProcessor(new PiiRedactionProcessor())             // F4 : redaction tags PII
+        .AddAzureMonitorTraceExporter())
+    .WithMetrics(m => m
+        .AddMeter("RAMQ.COM.EnterpriseMessageTransit")
+        .AddAzureMonitorMetricExporter())
+    .WithLogging(l => l
+        .AddProcessor(new PiiRedactionProcessor())             // F4 sur logs aussi
+        .AddAzureMonitorLogExporter());
+```
+
+#### 13.4.4 Best practices ILogger + OpenTelemetry — checklist quotidienne RAMQ
+
+Ces best practices sont issues de l'audit ligne-par-ligne d'EMT et des conventions Microsoft pour Azure Monitor. Elles sont **opposables en revue de code**.
+
+##### BP-1 : toujours utiliser des **placeholders nommés** dans les messages de log
+
+```csharp
+// ❌ MAUVAIS — concatenation, attributs perdus en customDimensions
+_logger.LogInformation("Saga " + stage + " for " + dossierId);
+
+// ❌ MAUVAIS — interpolation, idem
+_logger.LogInformation($"Saga {stage} for {dossierId}");
+
+// ❌ MAUVAIS — placeholders positionnels, deviennent "arg0", "arg1" en customDim
+_logger.LogInformation("Saga {0} for {1}", stage, dossierId);
+
+// ✅ BON — placeholders nommés, deviennent customDimensions.Stage et .DossierId
+_logger.LogInformation("Saga {Stage} for {DossierId}", stage, dossierId);
+```
+
+**Pourquoi :** seul le format avec placeholders nommés permet la requête KQL `where customDimensions.DossierId == "D-001"`. Sans cela, l'attribut est inaccessible pour les recherches et les jointures.
+
+##### BP-2 : toujours envelopper avec `BeginScope` les blocs qui traitent **une unité de travail**
+
+```csharp
+// ✅ BON — tous les logs émis dans le bloc auront automatiquement
+//        MessageId, SessionId, CorrelationId en customDimensions
+using var scope = _logger.BeginScope(new Dictionary<string, object?>
+{
+    ["MessageId"]     = context.MessageId,
+    ["SessionId"]     = context.SessionId,
+    ["CorrelationId"] = context.CorrelationId
+});
+
+await ProcessAsync(context, ct);   // tous les LogXxx en interne héritent du scope
+```
+
+**Pourquoi :** sans scope, chaque log doit répéter `{MessageId}` dans son template. Avec scope, c'est automatique et impossible à oublier.
+
+🟠 **Trou identifié dans EMT (cf. §13.8 O2/O3) :** la lib EMT elle-même n'utilise pas `BeginScope`. Lot R13 corrige.
+
+##### BP-3 : utiliser des **`LoggerMessage` sources** pour le hot path
+
+Pour les méthodes appelées des milliers de fois par seconde (`SendAsync`, `DeserializeMessageAsync`), le boxing des paramètres lors de l'appel `LogInformation(string, params object[])` coûte cher. Solution : source generator `LoggerMessage`.
+
+```csharp
+// ❌ MOINS BON — boxing à chaque appel, ~150 ns
+_logger.LogInformation("Send completed for {Entity} in {DurationMs}ms", entity, durationMs);
+
+// ✅ MEILLEUR — zero allocation après génération, ~40 ns
+public static partial class LogMessages
+{
+    [LoggerMessage(EventId = 1001, Level = LogLevel.Information,
+                   Message = "Send completed for {Entity} in {DurationMs}ms")]
+    public static partial void SendCompleted(this ILogger logger, string entity, long durationMs);
+}
+
+// Appel :
+_logger.SendCompleted(entity, sw.ElapsedMilliseconds);
+```
+
+**Pourquoi :** sur un Producer publiant 10 000 msg/s, le gain cumulé est mesurable (et c'est la **pratique recommandée Microsoft** pour les libs performantes). Recommandation pour EMT : migrer progressivement les hot paths (`Producer.PublishCoreAsync`, `RetryPolicyHandler`) vers ce pattern (lot R16 nouveau, priorité 🟡).
+
+##### BP-4 : ne **jamais logger de PII en clair**
+
+```csharp
+// ❌ CRITIQUE — viole CAI / loi santé Québec
+_logger.LogInformation("Assuré {NAM} validé", assure.NumeroAssuranceMaladie);
+
+// ✅ BON — hash tronqué qui permet la corrélation sans révéler
+_logger.LogInformation("Assuré {NamHash} validé", HashTruncate(assure.NumeroAssuranceMaladie));
+
+// ✅ ENCORE MIEUX — identifiant interne non-PII
+_logger.LogInformation("Assuré {AssureInternalId} validé", assure.InternalId);
+```
+
+**Pourquoi :** une fois en prod, le log devient une ligne dans Log Analytics qui peut être requêtée par tout utilisateur ayant accès au workspace. RGPD/CAI exigent que les PII soient masqués **avant** export. Le `PiiRedactionProcessor` (cf. §13.5.1) est une assurance de dernière ligne, **pas une excuse pour logger en clair**.
+
+##### BP-5 : respecter la **hiérarchie des LogLevel**
+
+| Niveau | Quand l'utiliser | Volume attendu |
+|---|---|---|
+| `LogTrace` | Diagnostic ultra-détaillé (parsing, boucles internes). **Désactivé en prod.** | Énorme — dev only |
+| `LogDebug` | Détails développeur (paramètres reçus, branchements). **Désactivé en prod.** | Élevé — dev only |
+| `LogInformation` | Événement métier nominal (« message publié », « saga avancée »). | Modéré — gardé en prod |
+| `LogWarning` | Anomalie récupérée (échec journal A5, retry transitoire). | Faible |
+| `LogError` | Erreur applicative non récupérable (exception non gérée). | Très faible |
+| `LogCritical` | Panne système majeure (DI cassée, config manquante au démarrage). | Très rare |
+
+🟠 **Anti-pattern fréquent :** logger une erreur applicative attendue (ex. validation métier `"Dossier déjà traité"`) en `LogError`. Ces logs polluent les alertes et augmentent le coût Log Analytics. **`LogInformation` ou `LogWarning` sont appropriés**, `LogError` est réservé aux conditions inattendues.
+
+##### BP-6 : laisser le **`traceId` se propager automatiquement**
+
+```csharp
+// ✅ Aucun code requis — quand OTel Logs bridge est branché, tout log émis
+//   dans une portée Activity capture AUTOMATIQUEMENT traceId et spanId
+using var activity = MessagingActivitySource.Source.StartActivity("messaging.publish");
+_logger.LogInformation("Publishing {MessageId}", id);
+// ↑ Le log a déjà operation_Id = activity.TraceId en customDim
+```
+
+**Pourquoi :** c'est la magie du bridge OTel Logs. Le champ `operation_Id` dans Application Insights est rempli automatiquement, ce qui permet la jointure dans toutes les requêtes KQL. Ne **jamais** logger manuellement `TraceId` — c'est redondant et source d'incohérence.
+
+##### BP-7 : émettre une **métrique** chaque fois que vous émettez un log de Warning ou Error récurrent
+
+```csharp
+// ✅ Le log donne le détail, la métrique permet l'alerte
+catch (ServiceBusException ex) when (IsTransient(ex))
+{
+    _logger.LogWarning(ex, "Transient SB error on {Entity}", entity);
+    _metrics?.IncrementImmediateRetry(entity);   // métrique pour l'alerte
+    throw new ImmediateRetryException(...);
+}
+```
+
+**Pourquoi :** un log ne déclenche pas d'alerte (le requêtage KQL est coûteux). Une métrique avec faible cardinalité est conçue pour ça. **Les deux sont complémentaires** : log = forensic, metric = alerting.
+
+##### BP-8 : structurer les **scopes** comme un arbre
+
+```csharp
+// Niveau application (Function host) — scope racine
+using var appScope = _logger.BeginScope(new { ServiceName = "RAMQ.Individu" });
+
+// Niveau message (Producer/Consumer) — hérité automatiquement
+using var msgScope = _logger.BeginScope(new { MessageId = ctx.MessageId, SessionId = ctx.SessionId });
+
+// Niveau saga step (RoutingSlipExecutor) — hérité automatiquement
+using var stepScope = _logger.BeginScope(new { SlipId = slip.Id, StepName = step.Name });
+
+// À ce niveau, TOUT log inclut ServiceName + MessageId + SessionId + SlipId + StepName
+_logger.LogInformation("Step started");
+```
+
+**Pourquoi :** les scopes s'imbriquent. Plus on descend, plus le contexte est riche. C'est exactement ce qu'il faut pour une saga RAMQ traversant 5 étapes — chaque log à n'importe quel niveau contient toujours `SlipId` pour la jointure.
+
+##### BP-9 : **séparer logs métier et logs techniques**
+
+```csharp
+// Logs métier : événements compréhensibles par un agent CAI ou un auditeur
+_logger.LogInformation("Dossier {DossierId} validé par {ConsumerName}", id, consumer);
+
+// Logs techniques : détails infrastructure
+_logger.LogDebug("Sender cache hit for {Entity}", entity);
+```
+
+**Pourquoi :** un agent CAI qui investigue un dossier n'a pas besoin de voir les détails du cache Service Bus. Les logs métier doivent rester **lisibles en langage métier**. Les logs techniques peuvent partir en `LogDebug` (désactivé en prod) ou en `LogTrace`.
+
+##### BP-10 : tester la **catégorie de log** dans les tests unitaires
+
+```csharp
+// Pour un nouveau code qui ajoute du logging, vérifier la category :
+public class MyClass(ILogger<MyClass> logger)  // ← category = "Namespace.MyClass"
+
+// Dans appsettings.json, on peut alors filtrer précisément :
+"Logging:LogLevel:Namespace.MyClass": "Warning"
+```
+
+**Pourquoi :** la catégorie de log est le **levier de filtrage F1** (cf. §13.4.2). Si toutes les classes injectent `ILogger<MyDomain>` (au lieu de `ILogger<MyClass>`), on perd la granularité de filtrage. **Toujours injecter `ILogger<ClasseCourante>`**, jamais `ILogger`.
+
+### 13.4.5 Vision DFO — comment ces best practices se traduisent en valeur opérationnelle
+
+| Best practice | Valeur opérationnelle |
+|---|---|
+| BP-1 (placeholders nommés) | Permet la jointure KQL `traces × dependencies × customMetrics` par `DossierId` → un agent CAI reconstruit un dossier en 5 minutes. |
+| BP-2 (BeginScope) | Garantit que **chaque** log contient `MessageId` → aucun log orphelin, traçabilité 100 %. |
+| BP-3 (LoggerMessage) | Performance — permet de garder LogInformation en prod sans coût mesurable. |
+| BP-4 (no PII) | Conformité CAI/RGPD opposable. Évite incident réputationnel. |
+| BP-5 (LogLevel hiérarchie) | Coût Log Analytics maîtrisé. Alertes pertinentes. |
+| BP-6 (traceId auto) | Application Map Azure Monitor montre les sagas complètes sans effort. |
+| BP-7 (log + metric paire) | Alertes sur taux possibles. Forensic disponible quand l'alerte sonne. |
+| BP-8 (scopes en arbre) | Le contexte s'enrichit naturellement le long du parcours saga. |
+| BP-9 (logs métier vs technique) | Audit CAI possible sans bruit infrastructure. |
+| BP-10 (category granulaire) | Tuning fin du verbosity en prod sans recompilation. |
+
+### 13.5 Stratégie de filtrage à chaque étage — Design For Operation
+
+Le pipeline OTel a **trois étages où on peut filtrer**, chacun avec sa logique. Voici le tableau de décision opérationnel :
+
+| Étage | Type d'objet filtré | Qui décide | Quand l'utiliser |
+|---|---|---|---|
+| **ILogger LogLevel** (F1, F2) | LogRecord (logs) | Dev → config | Réduire le bruit *avant* qu'il atteigne OTel. Toujours en premier. |
+| **OTel Sampler** (F3) | Span (trace) | SRE → config OTel | Réduire le coût de **traces** (Log Analytics) sans perdre les erreurs. Sampling tête (head-based). |
+| **OTel Processor** (F4) | LogRecord + Span + Metric | Dev → code | Filtrage fin par tag, redaction PII, enrichissement. Sampling queue (tail-based) custom. |
+| **Diagnostic Settings sampling** | Catégorie de log (côté ressource Azure) | Ops Azure → portail | Filtrer les **logs de la plateforme** (Service Bus) avant ingestion Log Analytics. |
+| **Log Analytics Data Collection Rules (DCR)** | Tables Log Analytics | Ops Azure → portail | Filtrage final : transformer ou supprimer des rows à l'ingestion. Utile pour la conformité (PII dernière chance). |
+
+#### 13.5.1 Exemple de Processor custom pour la redaction PII
+
+```csharp
+public sealed class PiiRedactionProcessor : BaseProcessor<Activity>
+{
+    private static readonly string[] _piiTags = new[]
+    {
+        "messaging.message_id",  // peut contenir un identifiant assuré dans certains samples
+        "ramq.assure_id",
+        "ramq.nam"               // Numéro d'Assurance Maladie
+    };
+
+    public override void OnEnd(Activity activity)
+    {
+        foreach (var tagName in _piiTags)
+        {
+            var tag = activity.GetTagItem(tagName);
+            if (tag is string s && !string.IsNullOrEmpty(s))
+            {
+                // Hash SHA-256 tronqué — corrélation possible sans révélation
+                activity.SetTag(tagName, HashTruncate(s));
+            }
+        }
+    }
+
+    private static string HashTruncate(string input)
+    {
+        using var sha = System.Security.Cryptography.SHA256.Create();
+        var hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(input));
+        return Convert.ToHexString(hash).Substring(0, 16);  // 64 bits
+    }
+}
+```
+
+🟢 **Bonne pratique RAMQ :** même si EMT ne véhicule pas de PII dans ses spans par défaut, les **applications RAMQ** peuvent en injecter (ex. `activity.SetTag("ramq.assure_id", ...)`). Le processor est une assurance vie : il opère même si une équipe se trompe dans son code applicatif.
+
+### 13.6 La nuance pratique sur `_logger.LogInformation`
+
+Reprenons l'exemple type :
+
+```csharp
+_logger.LogInformation("Saga {Stage} for {DossierId}", stage, dossierId);
+```
+
+**Ce qui se passe réellement, étape par étape :**
+
+1. **Création du LogRecord** : ILogger construit un `LogRecord` avec :
+   - `categoryName` = nom de la classe qui a injecté `ILogger<T>` (ex. `RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer.Producer`)
+   - `level` = `Information`
+   - `messageTemplate` = `"Saga {Stage} for {DossierId}"`
+   - `attributes` = `{ Stage = "Validate", DossierId = "D-001" }`
+   - `scopes` = tous les `BeginScope` actifs (ex. `{ MessageId = "abc", SessionId = "D-001" }`)
+   - `traceId` / `spanId` = **automatiquement** capturé de l'`Activity.Current` ambient → c'est ce qui lie le log au span dans Azure Monitor.
+
+2. **Filtres F1/F2** : si `Logging.LogLevel.RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer = "Warning"`, ce log est **jeté ici**.
+
+3. **Bridge OTel** : si OTel Logs est activé (`.WithLogging(...)` dans `Program.cs`), le `LogRecord` est passé au pipeline OTel.
+
+4. **Processors OTel** : enrichissement (ServiceName), redaction PII (F4), filtrage personnalisé.
+
+5. **Exporter** : `Azure.Monitor.OpenTelemetry.Exporter` envoie en batch via HTTPS vers l'endpoint Application Insights.
+
+6. **Ingestion** : Application Insights stocke dans la table `traces` de Log Analytics avec :
+   - `timestamp` = horodatage source
+   - `message` = template rendu (`"Saga Validate for D-001"`)
+   - `severityLevel` = 1 (Information)
+   - `customDimensions` = `{ Stage, DossierId, MessageId, SessionId, traceId, spanId, ... }`
+
+7. **Requête KQL** : on peut désormais faire :
+
+```kusto
+traces
+| where customDimensions.DossierId == "D-001"
+| join kind=inner (dependencies | where customDimensions.DossierId == "D-001") on operation_Id
+| project timestamp, message, name, duration
+| order by timestamp asc
+```
+
+→ On obtient le **fil complet** d'un dossier dans toutes les apps RAMQ qui ont l'envoyé/reçu.
+
+> 💡 **Insight clé pour un junior :** un `_logger.LogInformation` **n'est jamais juste un log**. Il devient une ligne dans une base de données KQL géante, requêtable avec des jointures sur les `customDimensions`. C'est pour ça que **les noms de placeholders sont importants** (`{DossierId}` est mieux que `{0}` qui devient `arg0` en attribut). Et c'est pour ça que `BeginScope` est crucial : les attributs du scope sont automatiquement injectés dans **tous** les logs émis dans la portée du scope.
+
+### 13.7 Catalogue des spans, métriques et logs EMT — vue consolidée
+
+#### 13.7.1 Spans (traces)
+
+| Span | Émis par | ActivityKind | Tags clés |
+|---|---|---|---|
+| `messaging.publish` | `Producer.cs` | Producer | `messaging.system`, `messaging.destination`, `messaging.message_id`, `messaging.session_id` |
+| `messaging.send` | `AzureMessagingProvider.cs` | Producer | idem + `exception.*` si erreur |
+| `messaging.send.batch` | `AzureMessagingProvider.cs` | Producer | `messaging.batch.message_count` |
+| `messaging.consume` | `AzureConsumerTelemetry.cs` (via BaseConsumer) | Consumer | `messaging.correlation_id`, `messaging.consumer`, `messaging.target`, `messaging.action`, `messaging.status_code` |
+| `messaging.deserialize` | `AzureConsumerTelemetry.cs` | Consumer | `messaging.claimcheck`, `deserialization.failure_reason` |
+| `routing_slip.step` | `RoutingSlipExecutor.cs` | Internal | `slip.id`, `slip.name`, `slip.cursor`, `slip.step.name`, `slip.step.activity` |
+| `routing_slip.compensation` | `RoutingSlipExecutor.cs` | Internal | `slip.id`, `slip.compensation.reason` |
+| `messaging.claimcheck.upload` | `ClaimCheckPreparer.cs` | Internal | `messaging.claimcheck.size_bytes`, `messaging.claimcheck.reference` |
+
+#### 13.7.2 Métriques
+
+| Métrique | Type | Tags | Usage opérationnel |
+|---|---|---|---|
+| `messages_sent_total` | Counter | — | Volume |
+| `messages_received_total` | Counter | — | Volume |
+| `messages_dlq_total` | Counter | `entity`, `reason` | **🔴 Alerte si rate > 5/min** |
+| `send_duration_ms` | Histogram | — | Latence p99 |
+| `receive_duration_ms` | Histogram | — | Latence p99 |
+| `circuit_state` | Gauge | `entity` | **🔴 Alerte si ≥ 1 persistant 60 s** |
+| `circuit_transitions_total` | Counter | `entity`, `from`, `to` | Détection patterns dégradation |
+| `deserialization_failures_total` | Counter | `reason` | **🟠 Alerte si > 0 avec reason=Malformed** |
+| `claim_check_upload_duration_ms` | Histogram | — | Performance Blob |
+| `claim_check_download_duration_ms` | Histogram | — | Performance Blob |
+| `journal_write_duration_ms` | Histogram | — | Performance Table |
+| `duplicate_detected_total` | Counter | `entity` | Idempotence côté broker |
+| `active_sessions` | ObservableGauge | — | Saturation Service Bus |
+| `cached_senders` | ObservableGauge | — | Efficacité du pool |
+
+> 📂 **Catalogue complet et seuils détaillés :** voir [`metrics.md`](../EnterpriseMessageTransit/docs/observability/metrics.md).
+
+#### 13.7.3 Logs structurés
+
+| Émetteur | Niveau dominant | Scopes attendus |
+|---|---|---|
+| `Producer.cs` (7 appels) | Information / Warning (échec journal) | `{ MessageId, SessionId }` (depuis Activity) |
+| `RoutingSlipExecutor.cs` (13 appels) | Information / Warning / Error | `{ SlipId, StepName, Cursor }` |
+| `RetryPolicyHandler.cs` (8 appels) | Information / Warning / Error | `{ MessageId, Attempt, Reason }` |
+| `AzureMessagingProvider.cs` (4 appels) | Warning / Error | `{ Entity, MessageId }` |
+| `AzureJournalProvider.cs` (4 appels) | Warning si échec | `{ MessageId, CorrelationId }` |
+| **Samples Consumer** (19/19) | Information | `{ MessageId, SessionId }` via `Logger.BeginScope` |
+
+🟠 **Trou identifié :** la lib EMT **n'utilise pas elle-même `Logger.BeginScope`** — 0 occurrence dans le code lib. Les scopes ne sont posés que dans les samples. Conséquence : un log lib EMT n'a pas systématiquement `MessageId` en `customDimensions` (sauf si l'application appelante a déjà posé le scope plus haut).
+
+**Recommandation R13** (nouveau lot) : injecter systématiquement `BeginScope({ MessageId, SessionId, CorrelationId })` dans `Producer.PublishCoreAsync` et `BaseConsumer.DeserializeMessageAsync` pour garantir la corrélation cross-app.
+
+### 13.8 Audit ligne par ligne — recommandations stratégiques
+
+Cette sous-section liste les **gaps observabilité ligne par ligne** identifiés dans l'audit (état au 28 mai 2026).
+
+| # | Fichier:Ligne | Constat | Recommandation stratégique | Priorité |
+|---|---|---|---|---|
+| **O1** | `BaseConsumer.cs` (toutes lignes) | 0 occurrence `_logger.Log*` dans la lib EMT — délègue à `AzureConsumerTelemetry` | ✅ Volontaire (SRP). Garder. | 🟢 OK |
+| **O2** | `Producer.cs:173-175` | `LogWarning(jEx, "Journal failed (publish)")` mais **aucun scope** → log orphelin sans `MessageId` en customDim si l'appelant n'a pas posé de scope | Wrapper le bloc `try { await _journal... } catch { _logger.LogWarning }` dans un `using var s = _logger.BeginScope(new { context.MessageId, context.CorrelationId })` | 🟠 Majeur |
+| **O3** | `RetryPolicyHandler.cs` (8 logs) | Logs riches mais **aucun scope** | Idem O2 pour chaque appel | 🟠 Majeur |
+| **O4** | `AzureMessagingProvider.cs:140-141` | Span `messaging.send` créé mais **pas de propagation `traceparent`** dans `ApplicationProperties` | Implémenter W3C TraceContext propagation (lot R14 nouveau) — déjà documenté comme Phase 3 dans `tracing.md:139` | 🔴 **Critique** |
+| **O5** | `RoutingSlipExecutor.cs:122-124` | Span `routing_slip.step` parent du step suivant **non lié** car re-création d'`Activity` à chaque worker | Lier via `parentContext: ActivityContext.Parse(traceparent)` depuis SlipEnvelope.Header.TraceContext | 🔴 **Critique** |
+| **O6** | `JsonMessageSerializer.cs` (9 logs) | Logs sur désérialisation mais **niveau LogLevel.Error pour erreurs récupérables** | Repasser à `LogWarning` ; reserver `LogError` aux exceptions inattendues | 🟡 Mineur |
+| **O7** | `ClaimCheckPreparer.cs:57-59` | Span `messaging.claimcheck.upload` mais **pas de métrique `claim_check_uploads_total`** alors qu'`IncrementClaimCheckUploads` existe | Ajouter l'appel `_metrics?.IncrementClaimCheckUploads(...)` après upload réussi | 🟡 Mineur |
+| **O8** | Samples Consumer (19 fichiers) | Toutes utilisent `BeginScope({MessageId, SessionId})` ✅ | Bonne pratique — exemple à imiter. **Documenter** dans `CONTRIBUTING.md` côté samples. | 🟢 OK |
+| **O9** | Samples Activator (Azure Functions) | Aucun n'utilise `Logger.BeginScope` autour de `ConsumeAsync` | Ajouter scope englobant dans chaque Activator pour préserver la corrélation côté Function host | 🟠 Majeur |
+| **O10** | `RetryPolicyHandler.cs:447` | `ReferralCount` injecté dans `ApplicationProperties` mais **pas comme tag span** | Ajouter `activity?.SetTag("messaging.referral_count", referralCount)` lors du retry | 🟡 Mineur |
+| **O11** | `ServiceBusHealthCheck.cs` | Test connectivité SB ✅ mais ne vérifie pas `RequiresDuplicateDetection = true` | Étendre selon recommandation lot R4 (cf. §11.4) — idempotence triangle | 🟠 Majeur (déjà dans R4) |
+| **O12** | Aucun fichier | **Aucun Workbook Azure Monitor pré-livré** dans le repo | Créer `docs/observability/workbooks/emt-overview.workbook.json` (template) | 🟡 Mineur |
+| **O13** | Aucun fichier | Aucun template Bicep pour Diagnostic Settings Service Bus | Créer `docs/observability/bicep/diag-servicebus.bicep` (cf. §13.3.1) | 🟠 Majeur |
+| **O14** | Aucun sample | Aucun sample n'utilise `PiiRedactionProcessor` ou similaire | Documenter le pattern dans `azure-monitor.md` + sample dédié | 🟡 Mineur |
+| **O15** | `Producer.cs:163-175` | Journal A5 écrit **après** `SendAsync` → si journal échoue après envoi, message déjà publié, audit perdu | ✅ Volontaire (pattern A5 explicite). Garder. Compenser via outil de réconciliation périodique (lot R15 nouveau) | 🟡 Mineur |
+
+### 13.9 Plan d'action Design For Operation — nouveaux lots R13-R15
+
+Ajoutés au plan de résolution (§11) :
+
+#### Lot R13 — Scopes `BeginScope` systématiques dans la lib EMT
+
+**Origine :** §13.7.3 + §13.8 O2/O3/O9
+**Objectif :** garantir que **tout log émis depuis EMT inclut `MessageId`, `SessionId`, `CorrelationId`** en `customDimensions`, même si l'application appelante n'a pas posé de scope.
+
+**Livrables :**
+- Wrapper `using var scope = _logger.BeginScope(...)` dans :
+  - `Producer.PublishCoreAsync` (autour du bloc journal + send)
+  - `BaseConsumer.DeserializeMessageAsync` (déjà partiellement via Activity, à confirmer)
+  - `RetryPolicyHandler` (toutes les méthodes Handle*)
+  - `RoutingSlipExecutor.RunAsync`
+- Test unitaire qui vérifie que `_logger.LogWarning` émet bien `MessageId` en attributs (via `Microsoft.Extensions.Logging.Testing`).
+
+**Estimation :** 1 semaine. **Priorité :** 🟠 Majeur.
+
+#### Lot R14 — W3C TraceContext propagation Producer → Consumer
+
+**Origine :** §13.8 O4/O5 ; `tracing.md:139` (déjà identifié comme Phase 3)
+**Objectif :** lier les spans `messaging.publish` et `messaging.consume` dans **un seul arbre de trace distribuée** via `traceparent` injecté dans `ServiceBusMessage.ApplicationProperties`.
+
+**Livrables :**
+1. Dans `AzureMessagingProvider.SendAsync` : injecter `traceparent` (et `tracestate`) dans `ApplicationProperties` **avant** l'envoi.
+2. Dans `BaseConsumer.DeserializeMessageAsync` : lire `traceparent` depuis `ApplicationProperties` et créer le span `messaging.consume` avec `parentContext: ActivityContext.Parse(traceparent)`.
+3. Idem dans `RoutingSlipExecutor` : propager via `SlipEnvelope.Header.TraceContext` pour lier les étapes saga.
+4. Tests d'intégration sur Service Bus Emulator : un trace unique de Producer → Consumer → step suivant.
+
+**Estimation :** 2 semaines. **Priorité :** 🔴 **Critique** — sans cela, l'Application Map d'Azure Monitor montre des arbres déconnectés.
+
+#### Lot R15 — Réconciliation périodique des messages vs journal
+
+**Origine :** §13.8 O15 (pattern A5)
+**Objectif :** détecter les messages **publiés mais non journalisés** (échec d'écriture A5 après SendAsync réussi) pour garantir l'auditabilité légale CAI.
+
+**Livrables :**
+- Function Timer (1h) qui :
+  1. Lit les métriques `messages_sent_total` par entité sur la dernière heure.
+  2. Compte les entrées journal pour la même fenêtre.
+  3. Si delta > 0.1% → alerte + écriture d'une entrée journal compensatoire.
+- Dashboard Workbook montrant cette réconciliation.
+
+**Estimation :** 2 semaines. **Priorité :** 🟠 Majeur (conformité légale).
+
+### 13.10 Workbooks et alertes — livrables opérationnels recommandés
+
+Pour un premier déploiement RAMQ, **3 Workbooks Azure Monitor** sont à pré-livrer dans le repo (sous `docs/observability/workbooks/`) :
+
+#### Workbook 1 — EMT Overview
+
+```
+Sections :
+  1. Volume (sent / received / dlq)         — Time chart 24h
+  2. Latency (p50/p95/p99 send + receive)   — Time chart 24h  
+  3. Circuit breaker states                  — Table par entity, état actuel
+  4. Error budget (DLQ rate vs SLO)         — Gauge
+  5. Saga overview (slips actifs, stuck)    — Table
+```
+
+#### Workbook 2 — Saga Trace Explorer
+
+```
+Sections :
+  1. Saga list (sliding 7j)                  — Picker SlipId
+  2. Saga timeline                          — Gantt chart des spans routing_slip.step
+  3. Compensations triggered                 — Liste
+  4. Logs associés                          — KQL traces | join dependencies
+```
+
+#### Workbook 3 — FinOps / Coûts observabilité
+
+```
+Sections :
+  1. Volume Log Analytics par table         — bar chart (dependencies, customMetrics, traces)
+  2. Coût estimé / jour                     — calcul à partir du volume
+  3. Sampling effective rate                — comparaison Sampler vs ingéré
+  4. Top noisy categories                   — top 10 categoryName par volume
+```
+
+#### Alertes minimales — 6 règles à activer en prod RAMQ
+
+| # | Nom | Métrique | Seuil | Sévérité | Action Group |
+|---|---|---|---|---|---|
+| **A1** | Circuit Breaker Open | `circuit_state` ≥ 1 persistant 60 s | Persistant 60 s | 🔴 Critical | PagerDuty oncall |
+| **A2** | DLQ rate spike | `messages_dlq_total` rate > 5/min | 5 min glissantes | 🟠 High | Teams channel |
+| **A3** | Deserialization Malformed | `deserialization_failures_total{reason=Malformed}` > 0 | Toute occurrence | 🟠 High | Teams + créateur PR |
+| **A4** | Send latency p99 | `send_duration_ms` p99 > 1000 ms | Fenêtre 5 min | 🟡 Medium | Teams |
+| **A5** | Claim check slow | `claim_check_download_duration_ms` p99 > 2 s | Fenêtre 5 min | 🟡 Medium | Teams |
+| **A6** | Active sessions exhausted | `active_sessions` ≥ `MaxConcurrentSessions` × 0.9 | Fenêtre 1 min | 🟠 High | Teams |
+
+### 13.11 Pour démarrer — checklist Design For Operation pour un nouveau domaine RAMQ
+
+> 💡 **Pour un Lead technique qui démarre l'observabilité sur une nouvelle app RAMQ** — voici les 12 cases à cocher avant d'aller en prod.
+
+| ☑ | Action | Référence |
+|---|---|---|
+| ☐ | Application Insights workspace-based créé + lié à Log Analytics | §13.3 |
+| ☐ | `APPLICATIONINSIGHTS_CONNECTION_STRING` configurée en App Setting | §13.3 |
+| ☐ | NuGet `Azure.Monitor.OpenTelemetry.Exporter` ou `.AspNetCore` référencé | `azure-monitor.md:124` |
+| ☐ | `.AddSource("RAMQ.COM.EnterpriseMessageTransit")` + `.AddMeter(...)` dans Program.cs | `tracing.md:60` |
+| ☐ | `host.json` `logLevel` configuré (cf. §13.4.3) | §13.4.3 |
+| ☐ | Diagnostic Settings Service Bus activées vers le même workspace | §13.3.1 |
+| ☐ | Sampler `PrioritizeErrorsSampler(0.10)` configuré | §13.4.3 |
+| ☐ | `PiiRedactionProcessor` ajouté si l'app injecte des tags PII | §13.5.1 |
+| ☐ | 6 alertes minimales (A1-A6) déployées | §13.10 |
+| ☐ | 3 Workbooks pré-livrés importés dans le workspace | §13.10 |
+| ☐ | `ServiceBusHealthCheck` enregistré dans `/health` endpoint | §13.7.3 |
+| ☐ | Runbook équipe rédigé pour les alertes A1-A6 | À faire par équipe |
+
+### 13.12 Plan d'implémentation Design For Operation
+
+> **Objectif :** livrer une plateforme d'observabilité enterprise opérationnelle pour le **premier déploiement RAMQ** en 8-10 semaines, en 4 phases séquencées.
+>
+> **Hypothèses :**
+> - Équipe : 2 développeurs (1 Lead SRE + 1 dev backend) + 1 SRE Azure à mi-temps + 1 architecte en revue.
+> - Budget Azure : workspace Log Analytics dédié RAMQ-prod (tier Pay-As-You-Go pour démarrer).
+> - Pré-requis : ADR-001 (Service Bus only) signé ; tests EMT verts ; PullRequest CI bloquante en place.
+
+#### 13.12.1 Vue d'ensemble — 4 phases, 8-10 semaines
+
+```
+┌────────────────────────────────────────────────────────────────────┐
+│ PHASE DFO-1 — Socle infrastructure (2 semaines)                    │
+│   Objectif : Azure Monitor opérationnel + premier flux end-to-end  │
+│   Livrables : App Insights, Log Analytics, Bicep, exporter NuGet  │
+│   Sortie : un sample EMT émet logs+traces+metrics vers Azure Monitor│
+└──────────────────────────┬─────────────────────────────────────────┘
+                           │ dépend de la décision de workspace
+                           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ PHASE DFO-2 — Instrumentation correcte (3 semaines)                │
+│   Objectif : combler les gaps observabilité dans la lib EMT       │
+│   Livrables : Lots R13, R14, R15 (scopes, traceparent, audit A5)  │
+│   Sortie : Application Map montre les sagas en arbre complet      │
+└──────────────────────────┬─────────────────────────────────────────┘
+                           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ PHASE DFO-3 — Best practices et conformité (2 semaines)            │
+│   Objectif : sampler, processors PII, filtres LogLevel              │
+│   Livrables : PiiRedactionProcessor, sampler PrioritizeErrors,     │
+│              config templates host.json + Program.cs               │
+│   Sortie : conformité CAI/RGPD validée, FinOps sous 5 Go/jour      │
+└──────────────────────────┬─────────────────────────────────────────┘
+                           ▼
+┌────────────────────────────────────────────────────────────────────┐
+│ PHASE DFO-4 — Outillage opérationnel (2-3 semaines)                │
+│   Objectif : runbooks, dashboards, alertes, formation équipes     │
+│   Livrables : 3 Workbooks, 6 alertes, 1 runbook, 1 atelier 2h     │
+│   Sortie : équipes RAMQ autonomes sur diagnostic incidents        │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+#### 13.12.2 Phase DFO-1 — Socle infrastructure (semaines 1-2)
+
+**Objectif :** rendre Azure Monitor opérationnel pour EMT — un sample doit émettre logs + traces + metrics visibles dans le portail Application Insights.
+
+| # | Tâche | Livrable | Effort | Owner | Dépend de |
+|---|---|---|---|---|---|
+| **D1.1** | Créer le Log Analytics Workspace `ramq-emt-prod` (région Canada Est) | Workspace + retention 90j configurée | 0.5j | SRE Azure | Décision région (Architecte) |
+| **D1.2** | Créer l'Application Insights workspace-based lié à D1.1 | App Insights + connection string archivée en Key Vault | 0.5j | SRE Azure | D1.1 |
+| **D1.3** | Templates Bicep `infra/monitoring/{workspace,appinsights,diag-servicebus}.bicep` | 3 templates Bicep dans le repo | 2j | Dev backend | D1.1, D1.2 |
+| **D1.4** | Activer Diagnostic Settings sur le namespace Service Bus (logs + métriques platform → workspace D1.1) | Bicep `diag-servicebus.bicep` déployé | 0.5j | SRE Azure | D1.1, D1.3 |
+| **D1.5** | Ajouter `Azure.Monitor.OpenTelemetry.AspNetCore` (ou `.Exporter`) aux samples cible | NuGet référencé dans 2 samples pilotes | 0.5j | Dev backend | — |
+| **D1.6** | Wiring Program.cs OTel (Tracing + Metrics + Logging) dans le 1er sample pilote | `Program.cs` template documenté + sample qui marche en local et en cloud | 1j | Dev backend | D1.5, D1.2 |
+| **D1.7** | Smoke test bout-en-bout : publier un message, vérifier que span + log + metric apparaissent dans Application Insights | 1 capture d'écran + checklist verte | 0.5j | Dev backend + Lead SRE | D1.6 |
+| **D1.8** | RBAC : configurer rôles `Log Analytics Reader` / `Application Insights Component Contributor` pour les équipes RAMQ | Tableau d'attribution des rôles | 1j | SRE Azure | D1.1 |
+
+**Critères de sortie de DFO-1 :**
+- ☐ Application Map affiche un sample EMT et ses dépendances Service Bus
+- ☐ Une requête KQL `dependencies | where name == "messaging.publish"` retourne des résultats
+- ☐ Une requête KQL `customMetrics | where name == "messages_sent_total"` retourne des résultats
+- ☐ Une requête KQL `traces | where customDimensions.MessageId == "<id-réel>"` retourne au moins le log de PublishAsync
+- ☐ Bicep templates committés et déployables via pipeline DevOps
+
+**Risques DFO-1 et mitigations :**
+
+| Risque | Probabilité | Impact | Mitigation |
+|---|---|---|---|
+| Quota App Insights atteint en dev (sampling agressif Microsoft) | 🟡 Moyenne | Faible | Tier ingestion à 5 Go/jour gratuit, suffisant en dev/preprod |
+| Latence d'ingestion 2-5 min déroute l'équipe | 🟠 Élevée | Faible | Documenter et utiliser Live Metrics pour le retour rapide |
+| Connection string fuite dans un git commit | 🔴 Faible | Critique | Pré-commit hook + Key Vault systématique + rotation si fuite |
+
+#### 13.12.3 Phase DFO-2 — Instrumentation correcte (semaines 3-5)
+
+**Objectif :** combler les gaps observabilité de la lib EMT — les 3 lots majeurs R13, R14, R15.
+
+| # | Tâche | Livrable | Effort | Owner | Dépend de |
+|---|---|---|---|---|---|
+| **D2.1** | **Lot R13** : `BeginScope` systématiques dans `Producer`, `BaseConsumer`, `RetryPolicyHandler`, `RoutingSlipExecutor` | PR avec scopes ajoutés + tests `Microsoft.Extensions.Logging.Testing` | 1 sem | Dev backend | DFO-1 |
+| **D2.2** | **Lot R14 partie A** : injection `traceparent` dans `ApplicationProperties` côté `AzureMessagingProvider.SendAsync` + `SendBatchAsync` | PR Producer-side propagation | 4j | Dev backend | DFO-1 |
+| **D2.3** | **Lot R14 partie B** : lecture `traceparent` + création span lié dans `BaseConsumer.DeserializeMessageAsync` | PR Consumer-side propagation | 3j | Dev backend | D2.2 |
+| **D2.4** | **Lot R14 partie C** : propagation cross-saga via `SlipEnvelope.Header.TraceContext` dans `RoutingSlipExecutor` | PR saga propagation | 3j | Dev backend | D2.3 |
+| **D2.5** | Tests d'intégration Service Bus Emulator : un trace unique Producer → Consumer → step suivant visible dans Application Map | Tests dans `EnterpriseMessageTransit.Tests/Integration/` | 3j | Dev backend | D2.4 |
+| **D2.6** | **Lot R15** : Function Timer 1h pour réconciliation `messages_sent_total` vs journal A5 + alerte si delta > 0.1 % | Function `ReconciliationFunction` + KQL alert | 1 sem | Lead SRE | DFO-1 + Lot R7 livré |
+| **D2.7** | Mise à jour `MessagingActivitySource.cs` documentation XML (semantic conventions OpenTelemetry Messaging 1.24) | PR avec docs + lien vers spec | 1j | Dev backend | — |
+
+**Critères de sortie de DFO-2 :**
+- ☐ Application Map RAMQ affiche un parcours saga complet en arbre (Producer → Consumer → step suivant) avec **un seul traceId**
+- ☐ Tous les logs `ILogger` émis depuis la lib EMT contiennent `MessageId` en `customDimensions` (test KQL)
+- ☐ Function Timer R15 tourne et publie sa métrique `journal_reconciliation_delta`
+- ☐ Tests d'intégration Service Bus Emulator passent en CI
+
+**Risques DFO-2 et mitigations :**
+
+| Risque | Probabilité | Impact | Mitigation |
+|---|---|---|---|
+| Breaking change involontaire sur format `traceparent` (binary breaking pour messages en transit) | 🟡 Moyenne | Élevé | Fenêtre dual-format : code consumer lit `traceparent` si présent, ignore si absent. Pas de retrait avant 1 release |
+| Effet de bord sur perf hot path | 🟡 Moyenne | Moyen | Bench BenchmarkDotNet avant/après — exigence < 5 % régression |
+| Mauvaise propagation = arbres déconnectés (silencieux) | 🟠 Élevée | Élevé | Test d'intégration explicite qui vérifie `parentSpanId` non nul |
+
+#### 13.12.4 Phase DFO-3 — Best practices et conformité (semaines 6-7)
+
+**Objectif :** appliquer les best practices BP-1 à BP-10 systématiquement et garantir la conformité CAI/RGPD.
+
+| # | Tâche | Livrable | Effort | Owner | Dépend de |
+|---|---|---|---|---|---|
+| **D3.1** | Implémenter `PrioritizeErrorsSampler` (10 % nominal, 100 % erreurs) dans un assembly utilitaire `RAMQ.Observability.Sampling` | Lib + tests unitaires | 2j | Dev backend | DFO-2 |
+| **D3.2** | Implémenter `PiiRedactionProcessor` configurable via JSON (liste de tags PII à hasher) | Lib + tests + doc | 3j | Dev backend | DFO-2 |
+| **D3.3** | Template `Program.cs` enterprise recommandé (3 variantes : Azure Function, BackgroundService AKS, ASP.NET Core API) | 3 fichiers template dans `docs/observability/templates/` | 2j | Dev backend | D3.1, D3.2 |
+| **D3.4** | Template `host.json` enterprise avec `logLevel` recommandé (cf. §13.4.3) | 1 fichier template | 0.5j | Dev backend | — |
+| **D3.5** | Migration des hot paths EMT vers `LoggerMessage` source generator (BP-3) — `Producer.PublishCoreAsync` + `RetryPolicyHandler` | PR avec `LogMessages.cs` partial + bench montrant gain | 1 sem | Dev backend | DFO-2 |
+| **D3.6** | Audit PII : scanner le code RAMQ pour détecter les logs/spans susceptibles de contenir `NAM`, `AssureId`, `DossierId` | Rapport d'audit + ADR-009 « Catalogue PII RAMQ » | 3j | Lead SRE + Architecte | D3.2 |
+| **D3.7** | Validation FinOps : projection volume Log Analytics sur 1 mois prod simulée. Si > 5 Go/jour → activer sampling 10 %, sinon laisser à 100 % | Rapport FinOps + décision sampling documentée | 2j | Lead SRE | DFO-2 + 2 sem de données |
+| **D3.8** | CI : analyzer Roslyn maison qui warne si un `_logger.LogXxx` n'utilise pas de placeholders nommés (BP-1) | Analyzer NuGet interne | 3j | Dev backend | — |
+
+**Critères de sortie de DFO-3 :**
+- ☐ `PrioritizeErrorsSampler` déployé dans le 1er sample pilote, ratio observé en prod
+- ☐ `PiiRedactionProcessor` configuré avec la liste PII RAMQ (ADR-009)
+- ☐ 3 templates `Program.cs` publiés dans la doc et utilisés par au moins 1 nouveau projet
+- ☐ Bench `LoggerMessage` montre gain ≥ 70 % sur `Producer.PublishCoreAsync`
+- ☐ Volume Log Analytics projeté ≤ 5 Go/jour (tier gratuit) sur le 1er déploiement
+
+**Risques DFO-3 et mitigations :**
+
+| Risque | Probabilité | Impact | Mitigation |
+|---|---|---|---|
+| Sampler 10 % cache des bugs rares mais critiques | 🟠 Élevée | Élevé | Toujours 100 % sur erreurs (sampler custom), métriques toujours à 100 % (non sampled) |
+| Liste PII RAMQ incomplète → fuite réglementaire | 🟡 Moyenne | Critique | Audit PII confié à un architecte senior + relecture juridique RAMQ |
+| Analyzer Roslyn cause faux positifs et frustre l'équipe | 🟡 Moyenne | Faible | Mode `info` initialement, escalade vers `warning` après 2 sprints |
+
+#### 13.12.5 Phase DFO-4 — Outillage opérationnel (semaines 8-10)
+
+**Objectif :** rendre les équipes RAMQ autonomes pour diagnostiquer les incidents — runbook + Workbooks + alertes + formation.
+
+| # | Tâche | Livrable | Effort | Owner | Dépend de |
+|---|---|---|---|---|---|
+| **D4.1** | Créer le Workbook **EMT Overview** (cf. §13.10) | JSON Workbook committé dans `docs/observability/workbooks/` | 2j | Lead SRE | DFO-2 |
+| **D4.2** | Créer le Workbook **Saga Trace Explorer** | JSON Workbook | 3j | Lead SRE | DFO-2 |
+| **D4.3** | Créer le Workbook **FinOps observabilité** | JSON Workbook | 1.5j | Lead SRE | DFO-3 |
+| **D4.4** | Déployer les 6 alertes minimales A1-A6 (cf. §13.10) via Bicep | Bicep `infra/monitoring/alerts.bicep` | 2j | Lead SRE + SRE Azure | D4.1, A1-A6 seuils confirmés |
+| **D4.5** | Configurer les Action Groups : PagerDuty pour 🔴 Critical, Teams pour 🟠 High, email pour 🟡 Medium | Action Groups Bicep + tests | 1j | SRE Azure | D4.4 |
+| **D4.6** | Rédiger le runbook `docs/observability/runbooks/emt-incidents.md` : pour chaque alerte A1-A6 → symptômes, requêtes KQL d'investigation, actions correctives | 1 fichier markdown de référence | 1 sem | Lead SRE + Dev backend | DFO-3 |
+| **D4.7** | Atelier formation 2h pour les équipes RAMQ : « Diagnostic d'un incident EMT en 15 minutes » avec exercices KQL | Slides + enregistrement + 3 exercices pratiques | 3j | Lead SRE + Architecte | D4.6 |
+| **D4.8** | Migration progressive des autres samples vers la nouvelle stack DFO | PR par sample (cadence 1/semaine) | continu | Dev backend | DFO-3 |
+| **D4.9** | Smoke test post-déploiement : provoquer 3 incidents simulés (DLQ spike, circuit open, deserialization malformed) et vérifier alertes A2/A1/A3 | Rapport de validation | 2j | Lead SRE | D4.4, D4.5 |
+
+**Critères de sortie de DFO-4 (= prêt pour production) :**
+- ☐ 3 Workbooks Azure Monitor importés et utilisés par 2 équipes RAMQ distinctes
+- ☐ 6 alertes A1-A6 actives, routées via Action Groups
+- ☐ Runbook référencé dans la procédure d'astreinte RAMQ
+- ☐ Atelier formation tenu (≥ 80 % participation)
+- ☐ Smoke test « 3 incidents simulés » : alerte déclenchée en < 5 min pour chacun
+
+**Risques DFO-4 et mitigations :**
+
+| Risque | Probabilité | Impact | Mitigation |
+|---|---|---|---|
+| Alert fatigue (trop d'alertes → équipe ignore) | 🟠 Élevée | Élevé | Démarrer avec les 6 seules, mesurer le taux de faux positifs avant d'ajouter |
+| Adoption des Workbooks lente | 🟡 Moyenne | Moyen | Atelier formation + championing 1-2 développeurs « observability champions » par équipe |
+| Runbook incomplet sur incident inédit | 🟡 Moyenne | Moyen | Post-mortem systématique → mise à jour du runbook après chaque incident |
+
+#### 13.12.6 Tableau de synthèse — découpage par sprint
+
+| Sprint | Phase | Lots traités | Effort total | Livrables clés |
+|---|---|---|---|---|
+| **S1** (sem 1-2) | DFO-1 | Infra Azure Monitor | 6.5j-dev + 3j-SRE | Workspace, App Insights, Bicep, 1 sample qui émet |
+| **S2** (sem 3-4) | DFO-2 (partie A) | R13 + R14-A | 1.5 sem-dev | BeginScope partout + traceparent côté Producer |
+| **S3** (sem 4-5) | DFO-2 (partie B) | R14-B + R14-C + R15 | 2 sem-dev + 1 sem-SRE | Consumer + saga propagation + reconciliation |
+| **S4** (sem 6-7) | DFO-3 | BP-1 à BP-10 | 3 sem-dev + 1 sem-SRE | Sampler, processor PII, templates, audit PII |
+| **S5** (sem 8-9) | DFO-4 (partie A) | Workbooks + alertes | 1.5 sem-SRE + 1 sem-dev | 3 Workbooks, 6 alertes, Action Groups |
+| **S6** (sem 9-10) | DFO-4 (partie B) | Runbook + formation | 1 sem-SRE + 0.5 sem-architecte | Runbook, atelier, smoke test |
+
+**Effort total agrégé :**
+- Dev backend : ~8 semaines/personne
+- Lead SRE : ~5 semaines/personne
+- SRE Azure : ~2 semaines/personne (mi-temps × 4 sem)
+- Architecte : ~1 semaine/personne (revues + audit PII)
+
+**Capacité requise :** 2 devs backend + 1 Lead SRE + 1 SRE Azure mi-temps + 1 Architecte 20 %  = ~16 personnes-semaines sur 10 semaines calendaires.
+
+#### 13.12.7 Dépendances avec les autres lots du plan (§11)
+
+| Lot DFO | Bloqué par | Bloque |
+|---|---|---|
+| DFO-1 | — | Tous les autres lots DFO |
+| DFO-2 (R13/R14) | DFO-1 | DFO-3 (templates utilisent les scopes), DFO-4 (Workbooks utilisent les traces) |
+| DFO-3 | DFO-2 | DFO-4 (templates de référence dans le runbook) |
+| DFO-4 | DFO-2, DFO-3 | — (livraison finale) |
+| R7 (lot §11.7 — métriques manquantes) | — | DFO-2.6 (R15 réconciliation utilise une métrique) |
+| R4 (lot §11.4 — triangle idempotence) | DFO-1 | DFO-4.6 (runbook duplicate_detected) |
+| R3 (lot §11.3 — R/R) | déjà livré | — |
+
+> 🧭 **Séquencing recommandé :** démarrer DFO-1 dès que possible, en parallèle des lots R1 (tests F6/F10) et R2 (sample Claim Check). Les lots R4 (idempotence triangle) et R7 (métriques manquantes) doivent être livrés **avant ou pendant** DFO-2 pour ne pas devoir refactorer le runbook ensuite.
+
+#### 13.12.8 Plan de gestion du changement — communication équipes RAMQ
+
+| Semaine | Communication | Cible | Format |
+|---|---|---|---|
+| S1 (kickoff) | « EMT entre dans son ère opérationnelle — DFO en 4 phases » | Toutes équipes RAMQ | Email + 30 min Town Hall |
+| S2 | « Comment écrire un log qui aide vraiment (BP-1 à BP-10) » | Devs backend RAMQ | Blog interne + brown bag 30 min |
+| S4 | « Premier sample en prod avec Azure Monitor — démo live » | Toutes équipes | Demo Teams 45 min |
+| S6 | « Politique PII RAMQ pour les logs et traces » | Toutes équipes + RGPD officer | Doc + atelier 1h |
+| S8 | « Comment utiliser les Workbooks pour diagnostiquer » | Devs + Ops | Atelier 2h hands-on |
+| S10 | « DFO v1.0 prêt pour prod — qui adopte le mois prochain ? » | Lead techniques équipes | Steering 1h |
+
+#### 13.12.9 Critères de succès post-déploiement (3 mois après DFO-4)
+
+À mesurer 3 mois après la fin de DFO-4, idéalement automatisé via un Workbook KPI.
+
+| KPI | Cible | Méthode de mesure |
+|---|---|---|
+| **MTTR incident EMT** (Mean Time To Resolution) | < 30 min | Logs incidents équipe astreinte |
+| **Pourcentage d'incidents diagnostiqués avec uniquement le runbook** | ≥ 70 % | Post-mortem flag |
+| **Coût Log Analytics / mois** | ≤ 200 $ CAD pour 1er déploiement | Facturation Azure |
+| **Alertes faux positifs / total alertes** | ≤ 15 % | Post-mortem flag |
+| **Application Map montre les sagas complètes** | 100 % des sagas testées | Inspection visuelle hebdo |
+| **Taux d'adoption Workbooks** | ≥ 2 équipes / semaine utilisent les Workbooks | Audit log workspace |
+| **Conformité PII (aucun NAM en clair en KQL)** | 100 % | Requête KQL automatique hebdo |
+
+#### 13.12.10 Stratégie de roll-out par domaine RAMQ
+
+Une fois DFO v1.0 prêt (fin S10), le déploiement aux différents domaines RAMQ se fait par **vagues** :
+
+| Vague | Domaine pilote | Critère de passage à la vague suivante |
+|---|---|---|
+| **V1** (mois 1) | 1 domaine pilote (le moins critique — ex. Notification) | 2 semaines sans incident production lié à observabilité |
+| **V2** (mois 2-3) | 2-3 domaines de complexité moyenne | MTTR mesuré ≤ 30 min sur 5 incidents successifs |
+| **V3** (mois 4-6) | Tous les domaines restants | Pas de retour critique des Lead techniques sur la stack |
+| **V4** (mois 6+) | Refactor des apps non-EMT pour utiliser le même stack | Décision steering |
+
+> 💡 **Pour un Lead technique RAMQ :** la check-list §13.11 (« 12 cases à cocher ») est votre point d'entrée pour la vague V1. Suivre l'ordre strict. Le runbook DFO-4 (D4.6) couvre les 6 alertes — toute alerte non couverte demande un post-mortem et une mise à jour du runbook.
+
+### 13.13 Liens vers la doc EMT existante
+
+| Document EMT | Couverture |
+|---|---|
+| [`docs/observability/tracing.md`](../EnterpriseMessageTransit/docs/observability/tracing.md) | Spans, tags, propagation W3C, requêtes KQL traces |
+| [`docs/observability/metrics.md`](../EnterpriseMessageTransit/docs/observability/metrics.md) | Catalogue 18 métriques, seuils alertes, KQL |
+| [`docs/observability/azure-monitor.md`](../EnterpriseMessageTransit/docs/observability/azure-monitor.md) | Application Insights workspace-based, FinOps, sampling |
+| [`docs/failure-modes.md`](../EnterpriseMessageTransit/docs/failure-modes.md) | Modes de défaillance et runbook |
+| [`docs/operational-envelope.md`](../EnterpriseMessageTransit/docs/operational-envelope.md) | SLOs chiffrés, capacité |
+
+---
+
+## 14. Glossaire
 
 | Terme | Définition pédagogique |
 |---|---|
@@ -1589,7 +2583,7 @@ Ces actions peuvent être livrées **dans n'importe quel sprint de v1.x** sans s
 
 ---
 
-## 14. Pour aller plus loin
+## 15. Pour aller plus loin
 
 ### Ordre de lecture recommandé
 
