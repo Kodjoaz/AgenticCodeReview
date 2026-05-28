@@ -1000,18 +1000,28 @@ Les interfaces permettent le mocking, mais il manque :
 
 Ce qui change vs une application métier classique : le **poids des tests de contrat (T4, T17, T19) est volontairement élevé** parce que le coût d'un message cassé en production en RAMQ (rétention légale, audit CAI, traçabilité pluriannuelle) est très supérieur au coût d'un bug fonctionnel ponctuel.
 
-### 6.2 🟠 Observabilité — distributed tracing absent et catalogue de métriques non documenté
+### 6.2 ✅ Observabilité — Résolue (Phases 2-5, R7)
 
-Les compteurs et histogrammes *techniques* sont en place dans `MetricsProvider`. Ce qui reste à livrer :
+> **État au moment de la revue :** distributed tracing absent, métriques manquantes.
+> **État actuel (28 mai 2026) :** ✅ Entièrement livré.
 
-- **Un catalogue de métriques documenté** (`docs/observability/metrics.md`) : nom, type, unité, labels, utilisation opérationnelle attendue (alertes, dashboards). Sans ce catalogue, chaque équipe opérationnelle bricole ses propres requêtes KQL.
-- **Des métriques métier manquantes** (alignement avec §4.1, §4.3) : `circuit_state{entity}`, `circuit_transitions_total{entity,from,to}`, `deserialization_failures_total{reason}`, `duplicate_detected_total{entity}`, `claim_check_upload_duration_ms`, `claim_check_download_duration_ms`, `journal_write_duration_ms`, `saga_stage_advance_total{from,to}`.
-- **Les dashboards de référence** (Azure Monitor Workbook, fichier JSON exportable) : livrable avec la librairie.
-- **Un `ActivitySource` / distributed tracing** (OpenTelemetry-compatible) : **absent** — aucune occurrence d'`ActivitySource` ou `StartActivity` dans le code. Criticité haute parce que :
-  - Le SDK Azure Service Bus instrumente déjà `Activity` sur send/receive. EMT **casse la chaîne** en n'attachant pas ses propres spans (claim-check upload/download, saga stage advance, retry decisions, circuit transitions).
-  - Ajouter `ActivitySource.StartActivity` dans 8-10 points clés a un coût marginal et un gain opérationnel immédiat.
-  - Sans cela, en production, on sait qu'une requête est lente mais pas *où*.
-  - C'est le **prérequis** pour l'adoption CloudEvents (§1.3.2) puisque `traceparent` voyagera comme extension CloudEvents.
+**Métriques livrées (R7) :**
+- ✅ `circuit_state{entity}` — gauge câblée dans `CircuitBreakerManager`
+- ✅ `circuit_transitions_total{entity,from,to}` — counter câblé aux 4 transitions (Closed→Open, Open→HalfOpen, HalfOpen→Closed, HalfOpen→Open)
+- ✅ `deserialization_failures_total{reason}` — câblé dans `AzureConsumerTelemetry`
+- ✅ `claimcheck_uploads_total`, `claimcheck_downloads_total` — câblés dans `Producer` et `AzureStorageProvider`
+- ✅ `claim_check_upload_duration_ms`, `claim_check_download_duration_ms` — histogrammes câblés
+- ✅ `journal_write_duration_ms` — histogramme câblé
+- ✅ `routing_slip_compensation_total{slip_name,reason}` — câblé dans `RoutingSlipExecutor`
+- ⬜ `saga_stage_advance_total{from,to}` — non câblé (hors scope v1.0)
+- ⬜ Catalogue de métriques `docs/observability/metrics.md` — hors scope v1.0
+- ⬜ Dashboards Azure Monitor Workbook — hors scope (SRE)
+
+**Distributed tracing (ActivitySource) livré :**
+- ✅ `ActivitySource "RAMQ.COM.EnterpriseMessageTransit"` exposé via `MessagingActivitySource`
+- ✅ Spans : `messaging.publish`, `messaging.consume`, `messaging.claimcheck.upload`, `routing_slip.step`, `routing_slip.compensation`, `messaging.request_reply`
+- ✅ `traceparent` propagé via `ApplicationProperties` du message Service Bus
+- ✅ `WithMetrics(m => m.AddMeter(EMTInstrumentation.SourceName))` ajouté dans les samples RoutingSlip (Queue + Topic)
 
 💡 **Pour les développeurs juniors** — l'observabilité n'est pas *ajouter des logs*. C'est **trois piliers** : **traces** (le chemin d'une requête à travers N services, avec leurs latences), **métriques** (les tendances agrégées : « on perd 2 % des messages depuis 10h »), **logs** (les événements discrets pour le debug ponctuel). EMT a aujourd'hui les métriques et les logs ; il lui manque les **traces**, qui sont le seul pilier permettant de comprendre un incident *cross-service*. Un message qui traverse 5 stages de saga sans trace partagée, c'est 5 fichiers de log à corréler à la main.
 

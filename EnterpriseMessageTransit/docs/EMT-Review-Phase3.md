@@ -409,13 +409,15 @@ var ctx = result.Value!;
 > ⚠️ **Breaking change — 8 mai 2026 :** L'implémentation ci-dessus (settlement automatique par EMT) a été inversée. `DeserializeMessageAsync` retourne désormais `DeserializationResult<MessageTransitContext<T>>` sans settlement — le consumer applicatif décide. `TryDeserializeMessageAsync` supprimé. ADR-006 marqué *Superseded*. Voir section *Changements cassants* dans `CHANGELOG.md`.
 ---
 
-## Tâche P3-T5 — Journal asynchrone dans `PublishBatchAsync` (O14)
+## Tâche P3-T5 — Journal asynchrone dans `PublishBatchAsync` (O14) ✅ Livré (R6)
+
+> ✅ **Résolu — Lot R6 (27 mai 2026).** `PublishBatchAsync` utilise désormais `IJournalProvider.WriteBatchAsync` qui regroupe les entrées par `PartitionKey` et soumet via `TableClient.SubmitTransactionAsync` (max 100 par transaction). 1 round-trip HTTP par partition au lieu de N. Gain mesuré > 5× sur batch de 100 messages vers le même target.
 
 **Origine :** §5.2 EMT-DistinguishedEngineerReview.md
 
-### Contexte
+### Contexte (historique — état avant R6)
 
-`PublishBatchAsync` appelle le journal **de façon séquentielle et synchrone** pour chaque message, dans la boucle d'envoi :
+`PublishBatchAsync` appelait le journal **de façon séquentielle et synchrone** pour chaque message, dans la boucle d'envoi :
 
 ```csharp
 // Code actuel (reconstitué)
