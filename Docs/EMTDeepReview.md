@@ -276,28 +276,95 @@ await _producer.PublishAsync(ctx, new PublishOptions
 
 ### 6.3 Routing Slip (saga)
 
-Voir [§6.3 ci-dessous](#63-routing-slip-saga) pour le détail complet. Architecture en 3 acteurs :
+#### Qu'est-ce qu'une saga dans cette solution ?
+
+Dans EMT, une **saga** est un processus métier distribué qui traverse plusieurs services de façon séquentielle, avec compensation automatique en cas d'échec. Ce n'est pas un orchestrateur central (pas de Durable Functions, pas de base d'état partagée) — c'est un **Routing Slip** : **l'itinéraire complet est embarqué dans le message lui-même** (le `SlipEnvelope`), et chaque étape avance le curseur avant de transmettre au suivant.
+
+> 💡 **Pourquoi ce choix ?** RAMQ a des domaines cloisonnés avec des identités managées distinctes et des RBAC scopés. Un orchestrateur central devrait avoir accès à tous les domaines — ce qui viole la sécurité. Avec le Routing Slip, chaque worker ne connaît que sa propre queue et son propre domaine.
+
+#### Les 3 acteurs du Routing Slip
 
 ```
-ACTIVATEUR → construit le SlipEnvelope avec RoutingSlipBuilder + publie
-ROUTING SLIP EXECUTOR (interne) → avance le curseur, publie au suivant
-ACTIVITÉ → POCO IRoutingSlipActivity<TArgs>, zéro dépendance EMT
+ACTIVATEUR (Azure Function HTTP)
+  → construit le SlipEnvelope via RoutingSlipBuilder
+  → définit les étapes : nom, target (queue/topic), arguments typés
+  → publie sur la première queue
+
+ROUTING SLIP EXECUTOR (interne EMT — RoutingSlipExecutor<TArgs>)
+  → désérialise l'enveloppe et les arguments de l'étape courante
+  → appelle l'activité POCO : ExecuteAsync(ActivityContext<TArgs>, ct)
+  → selon le résultat :
+       Next        → avance le curseur, enrichit les Variables, publie à l'étape suivante
+       Complete    → complète le message (fin normale)
+       Fault       → DLQ + déclenche la compensation LIFO
+       RetryImmediate / RetryExponential → lève l'exception EMT correspondante
+
+ACTIVITÉ (IRoutingSlipActivity<TArgs> — POCO testable, zéro dépendance EMT)
+  → reçoit ActivityContext<TArgs> (arguments de l'étape + variables partagées)
+  → exécute la logique métier
+  → retourne ActivityResult
 ```
 
-Activité = un POCO testable :
+#### Compensation (LIFO)
+
+Si une étape retourne `ActivityResult.Fault(ex)`, le mécanisme de compensation remonte l'itinéraire en sens inverse et appelle `CompensateAsync` sur chaque étape déjà complétée :
+
+```
+Étapes :  [ReserverVoiture ✅] → [ReserverHotel ✅] → [ReserverVol ❌ Fault]
+Compensation LIFO :  ReserverHotel.CompensateAsync → ReserverVoiture.CompensateAsync
+```
+
+#### Structure du message — `SlipEnvelope`
 
 ```csharp
-public class ValiderAdmissibiliteActivity : IRoutingSlipActivity<ValiderArgs>
+public class SlipEnvelope
 {
-    public async Task<ActivityResult> ExecuteAsync(ActivityContext<ValiderArgs> ctx, CancellationToken ct)
-    {
-        var response = await _api.ValiderAsync(...);
-        if (!response.IsValid)
-            return ActivityResult.Fault(new ValidationException(response.ErrorMessage));
-        return ActivityResult.Next(vars => vars["DateValidation"] = response.ValidatedAt);
-    }
+    public SlipHeader Header { get; init; }          // SlipId, SlipName, CorrelationId
+    public IReadOnlyList<SlipStep> Steps { get; init; } // étapes avec Arguments typés
+    public int Cursor { get; init; }                  // index étape courante
+    public Dictionary<string, JsonElement> Variables { get; init; } // contexte partagé
 }
 ```
+
+`Variables` est le **porte-clés partagé** entre les étapes : une étape peut enrichir les variables (`ActivityResult.Next(vars => vars["IdDossier"] = id)`) et les étapes suivantes les lire via `ctx.Variables`.
+
+#### Construction d'un slip (exemple réservation)
+
+```csharp
+var slip = new RoutingSlipBuilder("ReservationVoyage")
+    .AddStep<ReserverVoitureArgs>("ReserverVoiture", args => { args.VehiculeType = "SUV"; })
+    .AddStep<ReserverHotelArgs>  ("ReserverHotel",   args => { args.NbNuits = 3; })
+    .AddStep<ReserverVolArgs>    ("ReserverVol",      args => { args.Destination = "YUL"; })
+    .Build(correlationId: sessionId);
+
+await _producer.PublishAsync(new MessageTransitContext<SlipEnvelope> { Message = slip }, null, ct);
+```
+
+#### Activité — POCO testable
+
+```csharp
+public class ReserverHotelActivity : IRoutingSlipActivity<ReserverHotelArgs>
+{
+    public async Task<ActivityResult> ExecuteAsync(ActivityContext<ReserverHotelArgs> ctx, CancellationToken ct)
+    {
+        var confirmation = await _hotelApi.ReserverAsync(ctx.Arguments.NbNuits, ct);
+        if (!confirmation.IsSuccess)
+            return ActivityResult.Fault(new HotelIndisponibleException(confirmation.Reason));
+
+        // Enrichit les variables pour les étapes suivantes
+        return ActivityResult.Next(vars => vars["ConfirmationHotel"] = confirmation.NumeroRef);
+    }
+
+    public Task CompensateAsync(ActivityContext<ReserverHotelArgs> ctx, CancellationToken ct)
+        => _hotelApi.AnnulerReservationAsync(ctx.Variables["ConfirmationHotel"], ct);
+}
+```
+
+#### Observabilité (R7 livré)
+
+- Span OTel `routing_slip.step` avec tags `slip.id`, `slip.name`, `slip.step`, `slip.cursor`, `slip.total`.
+- Counter `routing_slip_compensation_total{slip_name, reason}` incrémenté sur chaque `FaultResult`.
+- Voir [§8.6](#86-saga--compensation) pour le tableau de vérification complet.
 
 ### 6.4 Request / Reply
 
@@ -628,15 +695,15 @@ public abstract class BaseConsumer<TMessage> : BaseMessageTransit<TMessage>, IMe
 
 **Symptôme :** une classe qui change pour 6 raisons différentes (changer de format de sérialisation, changer le mécanisme de settlement, ajouter un tag OTel, ajouter une métrique…) — chacune indépendante.
 
-🧭 **Refactor proposé (lot R8 du plan) :**
+🧭 **Refactor appliqué par R8 :**
 
 ```csharp
 public abstract class BaseConsumer<TMessage> : IMessageConsumer<TMessage>
 {
-    // Délégation pure
+    // Délégation pure — interfaces fines (R9 + R8)
     private readonly IMessageDeserializer _deserializer;
-    private readonly IConsumerSettlement _settlement;
-    private readonly IConsumerTelemetry _telemetry;
+    private readonly IMessageSettler     _settler;
+    private readonly IConsumerTelemetry  _telemetry;   // IConsumerTelemetry livré R8
 
     // Le BaseConsumer ne fait que le glue, pas de mécanique interne.
 }
@@ -1027,27 +1094,15 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 **Origine :** §9.2 SRP violation S1.
 **Objectif :** appliquer SRP au `BaseConsumer<T>` pour qu'il ne fasse que « consommer ».
 
-**Livrables :**
-1. Nouvelle interface interne `IConsumerSettlement` :
-   ```csharp
-   internal interface IConsumerSettlement {
-       Task CompleteAsync(CancellationToken ct);
-       Task DeadLetterAsync(Exception ex, CancellationToken ct);
-       Task ImmediateRetryAsync(ImmediateRetryException ex, CancellationToken ct);
-       Task ExponentialRetryAsync(ExponentialRetryException ex, CancellationToken ct);
-   }
-   ```
-2. `AzureConsumerSettlement` implémente cette interface.
-3. `BaseConsumer<T>` injecte `IConsumerSettlement` au lieu d'appeler directement `MessagingProvider.CompleteMessageAsync`.
-4. Nouvelle interface `IConsumerTelemetry` regroupant les `SetTag` OTel + métriques de réception.
-
 **Livrables réalisés :**
-- `IConsumerTelemetry` (internal) + `AzureConsumerTelemetry` — encapsule les spans OTel + métriques.
+- `IConsumerTelemetry` (internal) + `AzureConsumerTelemetry` — encapsule les spans OTel + métriques de réception.
 - `ConsumeScope` (internal) — gère les activités `messaging.consume` + `messaging.deserialize`.
 - `BaseConsumer<T>` : suppression de `protected MessagingProvider` ; délégation via `IMessageReceiver`, `IMessageSettler`, `IMessageDeserializer`, `IMessagingEndpointResolver`, `IConsumerTelemetry`.
 - Réduit de ~200 lignes à ~115 lignes ; constructor backward-compatible (accepte toujours `IMessagingProvider`).
 
-**Critère de sortie :** `BaseConsumer<T>` réduit de ~200 lignes à ~80 lignes ; classe testable avec mocks `IConsumerSettlement` + `IConsumerTelemetry`.
+> ⚠️ **Note :** L'interface `IConsumerSettlement` et la classe `AzureConsumerSettlement` décrites dans le plan initial n'ont **pas été créées**. Le settlement est délégué directement via `IMessageSettler` (livré par R9), ce qui atteint le même objectif SRP sans couche supplémentaire.
+
+**Critère de sortie :** `BaseConsumer<T>` réduit de ~200 à ~115 lignes ; settlement via `IMessageSettler` + telemetry via `IConsumerTelemetry` — tous deux mockables en test.
 **Estimation :** 2-3 semaines (1 dev + 1 revue).
 **Risque :** 🟠 Moyen — touche l'API héritée (potentiel breaking change pour consumers existants).
 **Priorité :** 🟡 **Mineur** — qualité interne, pas impact métier.
@@ -1453,7 +1508,7 @@ Ces actions peuvent être livrées **dans n'importe quel sprint de v1.x** sans s
 5. **L'idempotence repose sur un triangle** : infra + EMT + métier. Sans validation infrastructurelle (lot R4), le triangle est incomplet — risque réel de doublons métier.
 6. **Le pattern Request/Reply est opérationnel** — lot R3 livré. `IRequestReplyClient<TRequest,TResponse>` séparé de `IMessageProducer<T>`, samples refondus de bout en bout (C1/C2/C3/I5 résolus).
 7. **SOLID est partiellement résolu** : R8/R9 livrés. Modèle de déploiement clarifié — **Producer** est multi-hôte (AzFunc / AKS / ARO) ; **Consumer** est exclusivement Azure Functions. DIP sur le Consumer-adapter (R10) reste hors scope v1.0.
-8. **Les 26 samples sont la documentation vivante.** Les samples R/R (anciennement cassés) sont désormais fonctionnels (R3). Trous pédagogiques restants : Claim Check actif (R2), métriques OTel (R8 livré, à illustrer), tests d'activités (R11).
+8. **Les 31 samples sont la documentation vivante.** Les samples R/R (anciennement cassés) sont désormais fonctionnels (R3). Trous pédagogiques restants : Claim Check actif (R2), tests d'activités (R11).
 9. **Phase 6 est entièrement hors scope.** Phase 6 = support multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents). Aucun de ces volets n'est prévu dans cette phase du projet. Seul Azure Service Bus est dans le scope.
 10. **Le plan de résolution R1-R12** chiffre 9-12 semaines en parallèle (3-4 devs) pour atteindre une v1.0 stable production-ready, avec critères d'acceptation explicites en [§11.11](#1111-critères-dacceptation-v10-stable).
 
