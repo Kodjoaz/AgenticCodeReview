@@ -167,8 +167,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                 var journalEntry = JournalEntry.ForPublish(
                     consumer ?? "(none)",
                     action ?? "(none)",
-                    context.MessageId ?? string.Empty,
-                    context.SessionId ?? string.Empty,
+                    context.MessageId    ?? string.Empty,
+                    context.CorrelationId ?? string.Empty,
                     resolvedTarget ?? string.Empty,
                     context.SessionId,
                     Config.AppSettings?.ApplicationName,
@@ -311,9 +311,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                 var journalEntries = contextsList.Select(ctx => JournalEntry.ForPublish(
                     consumer ?? "(none)",
                     action   ?? "(none)",
-                    ctx.MessageId   ?? string.Empty,
-                    ctx.SessionId   ?? string.Empty,
-                    resolvedTarget  ?? string.Empty,
+                    ctx.MessageId    ?? string.Empty,
+                    ctx.CorrelationId ?? string.Empty,
+                    resolvedTarget   ?? string.Empty,
                     ctx.SessionId,
                     Config.AppSettings?.ApplicationName,
                     _systemClock.UtcNow.UtcDateTime)).ToList();
