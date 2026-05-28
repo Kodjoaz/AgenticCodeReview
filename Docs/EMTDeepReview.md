@@ -511,11 +511,11 @@ Points techniques remarquables :
 | **S-1** | Aucun sample ne démontre **Claim Check actif** (envoi d'une PJ > 256 Ko et téléchargement côté worker). C'est un trou pédagogique majeur. | 🟠 Majeur |
 | **S-2** | Aucun sample ne démontre le **Circuit Breaker en action** (injection de panne, ouverture, fermeture). Pattern implémenté mais non illustré. | 🟡 Mineur |
 | **S-3** | ~~`Queue.RequestReply` est inutilisable en l'état.~~ ✅ **Résolu R3** — C1/C2/C3/I5 corrigés, 4 projets compilent et fonctionnent. | 🟢 Résolu |
-| **S-4** | Plusieurs samples copient/collent le même `Program.cs` (wiring DI). Pas de helper `services.AddEMTSample()` partagé. | 🟡 Mineur |
+| **S-4** | ~~Plusieurs samples copient/collent le même `Program.cs`.~~ ✅ **Résolu R12** — `AddEMTSampleProducerDefaults` + `AddEMTSampleConsumerDefaults` dans `RAMQ.Samples.MessageTransitHelper`, appliqués sur 10 samples. | 🟢 Résolu |
 | **S-5** | Aucun sample ne démontre **`IRoutingSlipActivity` testé en isolation** (objectif phare de la v2.0). Pas de projet `*.Tests` côté samples. | 🟠 Majeur |
 | **S-6** | `RAMQ.Samples.ConfigurationService` et `RAMQ.Samples.MessageTransitHelper` exposent une API commune sans contrat versionné. Risque de dérive entre samples. | 🟡 Mineur |
 | **S-7** | Aucun `docker-compose` n'est fourni pour exécuter les samples localement (Service Bus Emulator + Azurite). Cf. P4-T1 livré dans le projet EMT.Tests, à répliquer pour les samples. | 🟡 Mineur |
-| **S-8** | Aucun sample ne montre les **métriques OTel** émises (counters `messages_sent_total`, histograms `send_duration_ms`). | 🟡 Mineur |
+| **S-8** | Aucun sample ne montre les **métriques OTel** émises (counters `messages_sent_total`, histograms `send_duration_ms`). Aucun sample n'enregistre `IMetricsProvider` ni ne câble `WithMetrics` dans `AddOpenTelemetry`. | 🟡 Mineur — ouvert |
 
 🟢 **Points forts à préserver :**
 - Cohérence du naming `RAMQ.Samples.<Pattern>.<Role>` — lisibilité immédiate.
