@@ -752,24 +752,26 @@ C'est **le sujet O3 bloquant de la DE Review**. Statut actuel : **mitigé en Pha
 
 il est techniquement et politiquement **plus efficace de les regrouper en une seule bascule MAJOR (Phase 6)** plutôt que de faire deux ruptures coup-sur-coup. Détail complet de l'analyse des breaking changes en [§11.13](#1113-analyse-des-breaking-changes--cas-o3).
 
-#### 🟠 Violation S3 — `Producer<T>` mélange 5 responsabilités
+#### 🟠 Violation S3 — `Producer<T>` mélange 5 responsabilités — Ouverte
 
-[`Messaging/Producer/Producer.cs:22-200+`](../EnterpriseMessageTransit/Messaging/Producer/Producer.cs)
+[`Messaging/Producer/Producer.cs`](../EnterpriseMessageTransit/Messaging/Producer/Producer.cs) — 509 lignes
 
 ```csharp
 public class Producer<TMessage> : BaseMessageTransit<TMessage>, IMessageProducer<TMessage>, IProducerPatterns
 {
-    // R1: Orchestration publish            → PublishAsync, PublishCoreAsync
-    // R2: Préparation Claim Check          → PrepareClaimCheckAsync (L49-58)
-    // R3: Journal A5                       → _journal.WriteRecordAsync (L173-175)
-    // R4: Télémétrie OTel                  → MessagingActivitySource.Source.StartActivity (L141)
-    // R5: Compensation Blob orphelin       → StorageProvider.DeleteAsync sur erreur (L199+)
-    // R6: Mapping context → response       → MapToResponseContext (héritée)
-    // R7: Pattern Request/Reply            → implémente IProducerPatterns (autre fichier partial?)
+    // R1: Orchestration publish        → PublishAsync, PublishBatchAsync, PublishCoreAsync
+    // R2: Préparation Claim Check      → PrepareClaimCheckAsync
+    // R3: Journal A5                   → _journal.WriteRecordAsync / WriteBatchAsync
+    // R4: Télémétrie OTel              → MessagingActivitySource.Source.StartActivity
+    // R5: Compensation Blob orphelin   → StorageProvider.DeleteAsync sur erreur send
 }
 ```
 
-**Implémente DEUX interfaces** (`IMessageProducer<T>` + `IProducerPatterns`) — déjà signalé comme violation ISP par revue Senior §2.2.
+**Améliorations apportées (ne résout pas S3 structurellement) :**
+- ✅ **R9** : `Producer<T>` injecte `IMessagePublisher` + `IMessagingEndpointResolver` (interfaces fines) — plus de dépendance sur le fat `IMessagingProvider`.
+- ✅ **R3** : `IProducerPatterns` est `internal` et ne contient plus que `PrepareClaimCheckAsync`. Le Request/Reply a été sorti vers `IRequestReplyClient<TRequest,TResponse>`.
+
+**Ce qui reste ouvert :** les 5 responsabilités coexistent dans la même classe. La séparation complète (ex. `ClaimCheckOrchestrator`, `PublishJournalDecorator`) implique des breaking changes sur le constructeur public — hors scope v1.0.
 
 #### 🟠 Violation S4 — `AzureMessagingProvider` est une god-class
 
