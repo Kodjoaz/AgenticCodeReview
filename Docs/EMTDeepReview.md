@@ -731,7 +731,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 
 | Axe | Verdict | Évidence |
 |---|---|---|
-| Implémentation | 🟢 **Complet** | `TransportSettings.RequiresDuplicateDetection` (défaut `false`) livré — déclenche validation au démarrage via `IdempotenceValidationService` + `ServiceBusHealthCheck.ValidateIdempotenceAsync`. `EnforceIdempotentPublish` conservé pour compat. |
+| Implémentation | 🟢 **Complet** | `TransportSettings.RequiresDuplicateDetection` (défaut `false`) — déclenche validation au démarrage via `IdempotenceValidationService` + `ServiceBusHealthCheck.ValidateIdempotenceAsync`. |
 | Complétude | 🟡 Partielle | Validation infra ✅ livrée ; guidance `MessageId` déterministe + sample dédié (lot R4 partiel) restants |
 | Testabilité | 🟢 Bon | `ValidateIdempotenceCoreAsync` internal testable sans SDK Azure ; seam de test injecté |
 | Observabilité | 🟡 Partielle | Counter `duplicate_detected_total` dans `IMetricsProvider` mais non câblé (broker ne notifie pas les doublons filtrés) |

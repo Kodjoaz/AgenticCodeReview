@@ -19,7 +19,8 @@
         "Target": "claimcheck-pdf-queue",
         "Endpoint": {
           "EntityName": "sbq-claimcheck-pdf",
-          "EntityType": "Queue"
+          "EntityType": "Queue",
+          "RequiresDuplicateDetection": true
         }
       }
     ],
