@@ -1,7 +1,7 @@
 # EMT Deep Review — Comprendre Enterprise Message Transit de A à Z
 
 > **Audience cible :** développeur junior arrivant sur le projet RAMQ et devant comprendre la librairie `EnterpriseMessageTransit` (EMT) **et tous les exemples du dossier `Exemples/`** sans pré-requis.
-> **Objectif :** synthétiser dans un seul document toutes les revues effectuées sur la librairie (Senior, Lead, Distinguished, Phases 1-5, EMT 1.0, Request/Reply, Routing-Slip), inventorier les **26 projets exemples**, vérifier le respect des **principes SOLID ligne par ligne**, l'intégrité de **chaque pattern enterprise**, et fournir un **plan de résolution chiffré et priorisé**.
+> **Objectif :** synthétiser dans un seul document toutes les revues effectuées sur la librairie (Senior, Lead, Distinguished, Phases 1-5, EMT 1.0, Request/Reply, Routing-Slip), inventorier les **31 projets exemples**, vérifier le respect des **principes SOLID ligne par ligne**, l'intégrité de **chaque pattern enterprise**, et fournir un **plan de résolution chiffré et priorisé**.
 > **Sources consolidées :**
 > - [EMT-SeniorEngineerReview.md](../EnterpriseMessageTransit/docs/EMT-SeniorEngineerReview.md) — revue ligne-à-ligne du code Producer
 > - [EMT-LeadEngineerReview.md](../EnterpriseMessageTransit/docs/EMT-LeadEngineerReview.md) — conception locale, SRP, performance
@@ -10,7 +10,7 @@
 > - [architecture-routing-slip.md](../EnterpriseMessageTransit/docs/architecture-routing-slip.md) — refonte saga v2.0
 > - [EMT1.0Review.md](EMT1.0Review.md) — revue v0.9.0 (Routing Slip v2.0 livré)
 > - [EMT1.0-RequestReply.md](EMT1.0-RequestReply.md) — pattern Request/Reply partiel
-> - [Exemples/](../Exemples/) — 26 projets de démonstration
+> - [Exemples/](../Exemples/) — 31 projets de démonstration
 >
 > **Périmètre — clarification du scope :**
 > 🚫 **Phase 6 entièrement hors scope :** Phase 6 = support multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents). Ce volet n'est pas prévu dans cette phase de projet.
@@ -33,7 +33,7 @@
 4. [Cartographie du code source — où est quoi](#4-cartographie-du-code-source)
 5. [Flux d'exécution pas-à-pas](#5-flux-dexécution-pas-à-pas)
 6. [Les patterns expliqués en profondeur](#6-les-patterns-expliqués-en-profondeur)
-7. [Inventaire des exemples — 26 projets dans `Exemples/`](#7-inventaire-des-exemples)
+7. [Inventaire des exemples — 31 projets dans `Exemples/`](#7-inventaire-des-exemples-31-projets-dans-exemples)
 8. [Vérification des patterns enterprise — état actuel](#8-vérification-des-patterns-enterprise)
 9. [Audit SOLID — ligne par ligne](#9-audit-solid--ligne-par-ligne)
 10. [Récapitulatif des revues — corrigé et restant](#10-récapitulatif-des-revues)
@@ -352,9 +352,9 @@ Audit Azure Table avec `JournalEntry.ForPublish/ForRetry/ForDLQ/ForRequestReply`
 
 ---
 
-## 7. Inventaire des exemples
+## 7. Inventaire des exemples — 31 projets dans `Exemples/`
 
-Le dossier [`Exemples/`](../Exemples/) contient **26 projets** qui démontrent les patterns EMT en conditions réelles. Compris dans leur ensemble, ils forment la documentation vivante de la librairie.
+Le dossier [`Exemples/`](../Exemples/) contient **31 projets** qui démontrent les patterns EMT en conditions réelles. Compris dans leur ensemble, ils forment la documentation vivante de la librairie.
 
 ### 7.1 Tableau récapitulatif des samples
 
@@ -384,7 +384,13 @@ Le dossier [`Exemples/`](../Exemples/) contient **26 projets** qui démontrent l
 | 22 | `RAMQ.Samples.Topic.PubSub.Consumer` | Consumer `BaseConsumer<T>` pour topic | Topic PubSub (consumer) | v2.0 | 🟢 Active |
 | 23 | `RAMQ.Samples.Topic.RoutingSlip.Booking.Activateur` | HTTP trigger → SlipEnvelope sur Topic | Routing Slip Topic | v2.0 | 🟢 Active |
 | 24 | `RAMQ.Samples.Topic.RoutingSlip.Booking.Worker` | Workers sur subscriptions de topic | Routing Slip Topic | v2.0 | 🟢 Active |
-| 25 | `RAMQ.Samples.Queue.TDF.SeqCon` | Orchestrateur TDF (stateful, audit + corrélation séquentielle) | TDF / Sequential Correlation | v2.0 | 🟢 Active (récents fix telemetry & settlement) |
+| 25 | `RAMQ.Samples.Queue.TDF.Integration.Producer` | Azure Function HTTP — expose `/tdf/transaction/initial` et `/tdf/transaction/correlation` ; publie `TdfTransactionCommand` via `AddProducer<T>()` | TDF / Sequential Convoy (producer) | v2.0 | 🟢 Active |
+| 26 | `RAMQ.Samples.Queue.TDF.Integration.Frontend` | `BackgroundService` (client de test) — génère des transactions TDF complètes toutes les 5 min, appelle le Producer via `ITdfProducerHttpClient` (Refit) | TDF / Sequential Convoy (client) | v2.0 | 🟢 Active |
+| 27 | `RAMQ.Samples.Queue.TDF.Integration.Subscriber` | Azure Function `ServiceBusTrigger` session-aware — dispatche vers Durable Orchestrator (`tdf.envoi` → StartOrchestration, `tdf.correller` → RaiseEvent) | TDF / Sequential Convoy (dispatcher) | v2.0 | 🟢 Active |
+| 28 | `RAMQ.Samples.Queue.TDF.Integration.Consumer` | Lib partagée — `TdfSeqConConsumer : BaseConsumer<TdfTransactionCommand>` avec logique validation + enrichissement + appel HOA5 réutilisée par Subscriber | TDF / Sequential Convoy (consumer lib) | v2.0 | 🟢 Active |
+| 29 | `RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator` | Durable Functions — machine à états Sequential Convoy : attend `tdf.envoi`, timeout configurable, signal `CorrellerEnvoyer`, audit activity, custom status OTel | TDF / Sequential Convoy (orchestrateur) | v2.0 | 🟢 Active |
+| 30 | `RAMQ.Samples.Queue.HOA5.Consumer` | Azure Function `BaseConsumer<CorrelationResultMessage>` — reçoit le résultat de corrélation publié par l'orchestrateur et appelle l'API Backend HOA5 | TDF / Sequential Convoy (consumer HOA5) | v2.0 | 🟢 Active |
+| 31 | `RAMQ.Samples.Queue.HOA5.Integration.Backend` | Azure Function HTTP Backend — expose les endpoints métier HOA5 (`InscrireSuiviFichCornl`, etc.) appelés par `HOA5.Consumer` via Refit | TDF / Sequential Convoy (backend HOA5) | v2.0 | 🟢 Active |
 
 ### 7.2 Trois familles de samples — guide de lecture
 
@@ -404,16 +410,32 @@ Le dossier [`Exemples/`](../Exemples/) contient **26 projets** qui démontrent l
    - `Consumer` : répond via `IMessageProducer<ReplyMessage>` injecté — plus de `ServiceBusSender` brut par message (C2 résolu).
    - Voir [§6.4](#64-request--reply) et [§11.3](#113-lot-r3--refonte-intégrale-du-pattern-request-reply--livré) pour le détail.
 
-### 7.3 Famille `Queue.TDF.SeqCon` — cas avancé
+### 7.3 Famille `Queue.TDF.Integration` — architecture Sequential Convoy complète
 
-`TDF` (Traitement Différé Fiable) démontre la **séquentialité corrélée** (un orchestrateur stateful qui reçoit des réponses asynchrones avec corrélation par `CorrelationId`). C'est le cas le plus avancé du repo — il combine :
+`TDF` (Traitement Différé Fiable) démontre le pattern **Sequential Convoy** avec Durable Functions : un orchestrateur stateful attend deux messages corrélés par session, avec timeout configurable et compensation. C'est le cas le plus avancé du repo — **7 projets** couvrant la chaîne complète Frontend → Producer → Subscriber → Orchestrateur → Consumer → Backend HOA5.
 
-- Sessions Service Bus pour FIFO par dossier.
-- Audit table custom (`CorrelationAuditRecord`).
-- Pattern Saga avec timeout par étape.
-- `IDFOWorkerOptions` (renommé récemment depuis `WorkerOptions` — voir commit `1e275d9`).
+```
+Frontend (BackgroundService client de test)
+  ↓ HTTP POST → Producer (Azure Function HTTP)
+Producer → publie TdfTransactionCommand (session-enabled)
+  ↓ Service Bus Queue (sbq-tdf-seqcon-session)
+Subscriber (ServiceBusTrigger session-aware)
+  ├─ step=tdf.envoi  → StartOrchestrationAsync (InstanceId = SessionId)
+  └─ step=tdf.correller → RaiseEventAsync("CorrellerEnvoyer")
+       ↓
+DurableOrchestrator (Sequential Convoy + timeout + audit)
+       ↓ publie TransactionCorrelationResult
+HOA5.Consumer (BaseConsumer) → appel HTTP → HOA5.Integration.Backend
+```
 
-💡 **Pour un junior :** ne commencez pas par TDF. Lisez d'abord `Queue.Simple`, puis `Queue.RoutingSlip.Booking`, puis seulement TDF.
+Points techniques remarquables :
+- **Sessions Service Bus** pour FIFO par dossier — `IsSessionsEnabled = true`.
+- **Idempotence orchestrateur** : `InstanceId = SessionId` empêche les doublons Durable.
+- **Observabilité trois niveaux** : logging replay-safe (no side-effects in orchestrator), Custom Status, Activity `RecordAuditActivity`.
+- **Découplage Frontend/Producer** : Frontend appelle le Producer via `ITdfProducerHttpClient` (Refit) — jamais directement Service Bus.
+- **`TdfSeqConConsumer`** hérite de `BaseConsumer<TdfTransactionCommand>` — réutilisé par injection dans Subscriber.
+
+💡 **Pour un junior :** ne commencez pas par TDF. Lisez d'abord `Queue.Simple`, puis `Queue.RoutingSlip.Booking`, puis seulement TDF.Integration.
 
 ### 7.4 Observations transverses sur les samples
 
@@ -1437,4 +1459,4 @@ Ces actions peuvent être livrées **dans n'importe quel sprint de v1.x** sans s
 
 ---
 
-*Document généré le 27 mai 2026 par revue agentique consolidée à partir des sources listées en en-tête + analyse des 26 projets `Exemples/` + audit SOLID ligne-par-ligne sur les classes principales d'EMT. Pour toute question, ouvrir une issue ou contacter l'équipe d'architecture RAMQ.*
+*Document généré le 27 mai 2026 par revue agentique consolidée à partir des sources listées en en-tête + analyse des 31 projets `Exemples/` + audit SOLID ligne-par-ligne sur les classes principales d'EMT. Pour toute question, ouvrir une issue ou contacter l'équipe d'architecture RAMQ.*
