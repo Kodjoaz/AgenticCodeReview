@@ -56,7 +56,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration
             foreach (var entry in endpoints)
             {
                 var transport = entry.Endpoint;
-                if (transport is null || !transport.EnforceIdempotentPublish)
+                if (transport is null || (!transport.EnforceIdempotentPublish && !transport.RequiresDuplicateDetection))
                     continue;
 
                 _logger.LogInformation(

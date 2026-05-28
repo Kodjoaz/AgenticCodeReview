@@ -137,8 +137,8 @@ public class ServiceBusHealthCheck
         var hasDuplicateDetection = await getHasDuplicateDetection(cancellationToken);
         if (!hasDuplicateDetection)
             throw new ConfigurationException(
-                $"L'entité '{entityName}' n'a pas RequiresDuplicateDetection activé. " +
-                $"Activez RequiresDuplicateDetection sur l'entité Service Bus, " +
-                $"ou désactivez EnforceIdempotentPublish dans TransportSettings.");
+                $"L'entité '{entityName}' n'a pas RequiresDuplicateDetection activé côté Service Bus. " +
+                $"Activez RequiresDuplicateDetection sur l'entité Service Bus (Bicep/Terraform), " +
+                $"ou désactivez RequiresDuplicateDetection (et EnforceIdempotentPublish) dans TransportSettings.");
     }
 }

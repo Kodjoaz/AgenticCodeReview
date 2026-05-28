@@ -33,6 +33,20 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration
         public bool EnforceIdempotentPublish { get; init; } = false;
 
         /// <summary>
+        /// Indique que cette entité Service Bus doit avoir <c>RequiresDuplicateDetection = true</c>
+        /// configurée côté broker. Lorsque <c>true</c>, EMT vérifie cette contrainte au démarrage
+        /// via <see cref="IdempotenceValidationService"/> et lève une
+        /// <see cref="Exceptions.ConfigurationException"/> si la propriété n'est pas activée.
+        /// <para>
+        /// Différence avec <see cref="EnforceIdempotentPublish"/> : même sémantique, nom plus
+        /// explicite aligné sur la propriété Azure Service Bus. Les deux flags déclenchent le même
+        /// check — utiliser <c>RequiresDuplicateDetection</c> pour les nouveaux endpoints.
+        /// </para>
+        /// Défaut : <c>false</c>.
+        /// </summary>
+        public bool RequiresDuplicateDetection { get; init; } = false;
+
+        /// <summary>
         /// Taille maximale autorisée pour le corps d'un message individuel dans un batch, en Ko.
         /// Utilisé dans <c>PublishBatchAsync</c> pour détecter les messages individuellement trop volumineux
         /// avant l'envoi atomique, avec suggestion d'utiliser le pattern Claim-Check.

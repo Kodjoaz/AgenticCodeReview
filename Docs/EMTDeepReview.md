@@ -656,15 +656,26 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 
 | Axe | Verdict | Évidence |
 |---|---|---|
-| Implémentation | 🟡 Partielle | EMT garantit `MessageId` présent ; régénère `MessageId` sur retry exponentiel sans session (✅ — évite rejet duplicate detection) ; `CorrelationId` immuable préservé |
-| Complétude | 🟠 Triangle incomplet | Manque validation infrastructurelle `RequiresDuplicateDetection` au démarrage (lot R4) |
-| Testabilité | 🟢 Bon | Sample TDF démontre l'audit de corrélation |
+| Implémentation | 🟢 **Complet** | `TransportSettings.RequiresDuplicateDetection` (défaut `false`) livré — déclenche validation au démarrage via `IdempotenceValidationService` + `ServiceBusHealthCheck.ValidateIdempotenceAsync`. `EnforceIdempotentPublish` conservé pour compat. |
+| Complétude | 🟡 Partielle | Validation infra ✅ livrée ; guidance `MessageId` déterministe + sample dédié (lot R4 partiel) restants |
+| Testabilité | 🟢 Bon | `ValidateIdempotenceCoreAsync` internal testable sans SDK Azure ; seam de test injecté |
 | Observabilité | 🟡 Partielle | Counter `duplicate_detected_total` dans `IMetricsProvider` mais non câblé (broker ne notifie pas les doublons filtrés) |
 | Documentation | 🟢 Bon | [idempotence.md](../EnterpriseMessageTransit/docs/idempotence.md) + §6.5 |
 
 > ⚠️ **Invariant de traçabilité :** utiliser `CorrelationId` (immuable) pour corréler un message et ses retries — pas `MessageId` (régénéré à chaque retry exponentiel sans session). Voir [§6.5](#65-idempotence-et-duplicate-detection) pour le détail.
 
-🟠 **À compléter (lot R4) :** ajouter un check au démarrage qui interroge Service Bus pour vérifier que les entités ont `RequiresDuplicateDetection = true` avec une fenêtre suffisante.
+**Utilisation dans `appsettings.json` :**
+```json
+"Endpoints": [{
+  "Target": "mon-endpoint",
+  "Endpoint": {
+    "EntityName": "sbq-mon-entite",
+    "EntityType": "Queue",
+    "RequiresDuplicateDetection": true
+  }
+}]
+```
+Au démarrage, EMT interroge l'API d'administration Service Bus. Si `RequiresDuplicateDetection` n'est pas activé sur l'entité → `ConfigurationException` avant d'accepter du trafic (fast-fail).
 
 ### 8.10 Récapitulatif des patterns
 
