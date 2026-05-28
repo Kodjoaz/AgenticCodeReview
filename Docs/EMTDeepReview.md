@@ -13,8 +13,8 @@
 > - [Exemples/](../Exemples/) — 26 projets de démonstration
 >
 > **Périmètre — clarification du scope :**
-> 🚫 **Hors scope :** Kafka / Confluent multi-broker integration (Phase 6 partiel — uniquement le volet multi-broker).
-> ✅ **Dans le scope :** Service Bus, multi-hôte **Producer** (AzFunc / AKS / ARO), CloudEvents, scission en assemblies, RabbitMQ (si nécessaire pour partenaires AMQP).
+> 🚫 **Phase 6 entièrement hors scope :** Phase 6 = support multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents). Ce volet n'est pas prévu dans cette phase de projet.
+> ✅ **Dans le scope :** Service Bus uniquement. Multi-hôte **Producer** (AzFunc / AKS / ARO). **Consumer** : Azure Functions exclusivement.
 
 > ⚠️ **Contrainte de déploiement actuelle :**
 > - **Producer** : peut être hébergé dans **Azure Functions, AKS ou ARO** (containers). `Producer<T>` n'a aucune dépendance sur `Microsoft.Azure.Functions.Worker` après R9.
@@ -629,7 +629,7 @@ Cumule **3 rôles** :
 
 C'est **le sujet O3 bloquant de la DE Review** (Phase 1, mitigé par le test snapshot Verify.Xunit).
 
-🧭 **Refactor proposé :** séparer en `MessageEnvelope` (record sérialisé) + `MessageTransitContext<T>` (runtime + behavior). Reporté en Phase 6 (hors scope partiel) car nécessite migration coordonnée.
+🧭 **Refactor proposé :** séparer en `MessageEnvelope` (record sérialisé) + `MessageTransitContext<T>` (runtime + behavior). Reporté — hors scope v1.0 (Phase 6 = multi-broker, non prévu).
 
 #### 🟠 Violation S3 — `Producer<T>` mélange 5 responsabilités
 
@@ -736,7 +736,7 @@ Tant que ce couplage existe dans l'assembly principal, **le Consumer EMT est uti
 > - **Producer** (`Producer<T>`, `IMessagePublisher`) : **aucune dépendance** sur `Microsoft.Azure.Functions.Worker` après R9. Un Producer peut être instancié dans n'importe quel hôte .NET — Azure Function, AKS `BackgroundService`, ARO, ASP.NET Core, Worker Service.
 > - **Consumer** (`BaseConsumer<T>`, `AzureFunctionMessagingAdapter`) : dépend de `ServiceBusReceivedMessage` et `ServiceBusMessageActions` du package `Microsoft.Azure.Functions.Worker.Extensions.ServiceBus`. **Hébergement exclusif en Azure Functions.** Le découplage Consumer multi-hôte reste hors scope v1.0 (R10).
 
-🚫 **R10 hors scope :** tous les **consumers** EMT sont et resteront hébergés en Azure Functions Isolated Worker. La dépendance `Microsoft.Azure.Functions.Worker` sur l'adapter Consumer ne pose pas de problème dans ce contexte. Si un cas d'usage Consumer sur AKS/ARO émerge, ce lot sera réévalué en Phase 6.
+🚫 **R10 hors scope :** tous les **consumers** EMT sont et resteront hébergés en Azure Functions Isolated Worker dans cette phase de projet. La dépendance `Microsoft.Azure.Functions.Worker` sur l'adapter Consumer ne pose pas de problème dans ce contexte. Le découplage Consumer multi-hôte n'est pas prévu (Phase 6 = multi-broker = hors scope).
 
 #### ✅ Violation D2 — **Résolu par R9**
 
@@ -1044,7 +1044,7 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 
 > **Décision (2026-05-28) :** R10 est explicitement **hors scope pour le Consumer**. Clarification du modèle de déploiement v1.0 :
 > - **Producer** (`Producer<T>`, `IMessagePublisher`) : **multi-hôte**. Peut tourner dans une Azure Function, un container AKS, ARO, ou un Worker Service ASP.NET Core. Aucune dépendance sur `Microsoft.Azure.Functions.Worker` après R9.
-> - **Consumer** (`BaseConsumer<T>`, `AzureFunctionMessagingAdapter`) : **exclusivement Azure Functions** Isolated Worker. Dépend de `ServiceBusReceivedMessage` / `ServiceBusMessageActions`. Le découplage n'apporte pas de valeur car aucun Consumer n'est prévu sur AKS/ARO. Si un cas d'usage concret émerge, ce lot sera réévalué en Phase 6.
+> - **Consumer** (`BaseConsumer<T>`, `AzureFunctionMessagingAdapter`) : **exclusivement Azure Functions** Isolated Worker. Dépend de `ServiceBusReceivedMessage` / `ServiceBusMessageActions`. Le découplage n'apporte pas de valeur car aucun Consumer n'est prévu sur AKS/ARO. Phase 6 (multi-broker) est hors scope — ce lot reste non prévu.
 
 **Critère de sortie :** assembly principal n'a plus de référence à `Microsoft.Azure.Functions.Worker` (test NetArchTest).
 **Estimation :** 4-5 semaines (1 senior).
@@ -1140,9 +1140,9 @@ Pour que EMT soit considérée v1.0 production-ready :
 
 | Sujet | Raison | Fenêtre |
 |---|---|---|
-| **Kafka / Confluent** | Hors scope sur décision utilisateur. | Indéfini (re-évaluer si cas d'usage non-Azure concret) |
-| **R10 (sortir adapter Functions — Consumer)** | **Producer** déjà multi-hôte (AzFunc/AKS/ARO) après R9. **Consumer** exclusivement Azure Functions — le découplage Consumer multi-hôte n'apporte pas de valeur aujourd'hui. | Phase 6 si cas d'usage Consumer AKS/ARO concret |
-| **CloudEvents 1.0** | À évaluer en Phase 6 si besoin d'interop externe. | v2.0+ |
+| **Phase 6 entière (multi-broker)** | Phase 6 = Kafka / Confluent / RabbitMQ / CloudEvents. Décision explicite : hors scope. Aucun de ces volets n'est prévu dans cette phase du projet. | 🚫 Non prévu |
+| **R10 (sortir adapter Functions — Consumer)** | **Producer** déjà multi-hôte (AzFunc/AKS/ARO) après R9. **Consumer** exclusivement Azure Functions — le découplage Consumer multi-hôte n'apporte pas de valeur aujourd'hui. | 🚫 Non prévu |
+| **CloudEvents 1.0** | Fait partie de Phase 6 (multi-broker) — hors scope. | 🚫 Non prévu |
 | **Scission complète en 10 packages NuGet** | Big-bang risqué ; à séquencer par vagues si besoin. | v2.0+ |
 
 ---
@@ -1171,7 +1171,7 @@ Pour que EMT soit considérée v1.0 production-ready :
 └─────────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────────┐
-│ PHASE 5 — Routing Slip natif v2.0 (6-10 sem.)         🔄 En cours  │
+│ PHASE 5 — Routing Slip natif v2.0                        ✅ Livrée  │
 │ Breaking change MAJOR — IRoutingSlipActivity, SlipEnvelope          │
 └─────────────────────────────────────────────────────────────────────┘
                               │
@@ -1187,23 +1187,24 @@ Pour que EMT soit considérée v1.0 production-ready :
 └─────────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────────┐
-│ PHASE 6 — CloudEvents + Consumer multi-hôte (10-16 sem.) ⛾ Cond.  │
-│ ✅ Dans le scope : Consumer AKS/ARO (BackgroundService) · CloudEvents│
-│ ℹ️  Producer multi-hôte déjà livré (R9) — hors scope de cette phase │
-│ 🚫 HORS SCOPE  : Kafka / Confluent — ne PAS implémenter ce volet   │
-│ ⚠️ Démarrer SEULEMENT si cas d'usage Consumer AKS/ARO concret       │
+│ PHASE 6 — Multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents) │
+│                                              🚫 HORS SCOPE          │
+│ Phase 6 entière = support multi-broker — NON PRÉVU dans ce projet   │
+│ Kafka / Confluent / RabbitMQ / CloudEvents — ne PAS implémenter     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### 12.1 Position du scope sur le Phase 6
+### 12.1 Position du scope sur la Phase 6
 
-> 🚫 **Out-of-scope confirmé :** Kafka / Confluent multi-broker integration.
-> Tous les ADRs et plans qui prévoient `RAMQ.Integration.Transport.Kafka` sont **gelés**.
+> 🚫 **Phase 6 entièrement hors scope.**
+> Phase 6 = support multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents). Ce volet est **non prévu** dans cette phase du projet.
 >
-> ✅ **In-scope (si Phase 6 activée) :**
-> - CloudEvents 1.0 comme `MessageEnvelope` (interop Event Grid, EventBridge).
-> - Scission en assemblies pour le **Consumer** multi-hôte (AKS / ARO via `BackgroundService`). Le Producer est déjà multi-hôte après R9.
-> - RabbitMQ **seulement si** un partenaire RAMQ l'exige (AMQP 0.9.1 ou 1.0).
+> - Kafka / Confluent : 🚫 hors scope — `RAMQ.Integration.Transport.Kafka` **gelé**.
+> - RabbitMQ : 🚫 hors scope — aucun partenaire RAMQ n'exige AMQP à ce stade.
+> - CloudEvents 1.0 : 🚫 hors scope — rattaché à Phase 6 multi-broker.
+> - Consumer multi-hôte (AKS/ARO) : 🚫 hors scope (R10) — Consumer exclusivement Azure Functions.
+>
+> **Seul broker supporté : Azure Service Bus.** Toute évolution multi-broker nécessitera une décision de phase future explicite.
 
 ---
 
@@ -1219,7 +1220,7 @@ Pour que EMT soit considérée v1.0 production-ready :
 | **Captive dependency** | Anti-pattern : Scoped consommé par Singleton — Scoped devient effectivement Singleton. |
 | **Circuit Breaker** | Après N échecs, on coupe le circuit. États Closed/Open/HalfOpen. |
 | **Claim Check** | Payload > 256 Ko → upload Blob, message porte juste la référence. |
-| **CloudEvents 1.0** | Standard CNCF d'enveloppe portable. Évaluer en Phase 6 (in scope). |
+| **CloudEvents 1.0** | Standard CNCF d'enveloppe portable. 🚫 Non prévu — Phase 6 = multi-broker, hors scope. |
 | **CorrelationId** | Identifiant immuable propagé bout-en-bout, survit aux retries. |
 | **DLQ (Dead Letter Queue)** | File spéciale Service Bus pour les messages morts. À monitorer en production. |
 | **Endpoint** | Cible logique (Target) + détails transport (EntityName, EntityType, Subscription). |
@@ -1295,7 +1296,7 @@ Pour que EMT soit considérée v1.0 production-ready :
 6. **Le pattern Request/Reply est cassé** dans les samples actuels. Lot R3 prioritaire avant qu'un junior n'en hérite et l'utilise mal.
 7. **SOLID est partiellement résolu** : R8/R9 livrés. Modèle de déploiement clarifié — **Producer** est multi-hôte (AzFunc / AKS / ARO) ; **Consumer** est exclusivement Azure Functions. DIP sur le Consumer-adapter (R10) reste hors scope v1.0.
 8. **Les 26 samples sont la documentation vivante**, mais 3 sont cassés (R/R) et plusieurs ont des trous pédagogiques majeurs (Claim Check actif, métriques OTel, tests d'activités). Lots R2, R11, R12.
-9. **Kafka / Confluent est explicitement hors scope.** Tous les autres axes de Phase 6 (CloudEvents, scission multi-hôte, RabbitMQ partenaire) restent envisageables si besoin.
+9. **Phase 6 est entièrement hors scope.** Phase 6 = support multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents). Aucun de ces volets n'est prévu dans cette phase du projet. Seul Azure Service Bus est dans le scope.
 10. **Le plan de résolution R1-R12** chiffre 9-12 semaines en parallèle (3-4 devs) pour atteindre une v1.0 stable production-ready, avec critères d'acceptation explicites en [§11.11](#1111-critères-dacceptation-v10-stable).
 
 ---
