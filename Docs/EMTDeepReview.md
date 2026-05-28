@@ -873,11 +873,21 @@ Tant que ce couplage existe dans l'assembly principal, **le Consumer EMT est uti
 
 `Producer<T>` injecte maintenant `IMessagePublisher` + `IMessagingEndpointResolver` — seules les abstractions dont il a besoin. Plus de dépendance à `IMessagingProvider` fat dans le producteur.
 
-#### 🟠 Violation D3 — `ConfigureAzureProviders()` codéfault `ManagedIdentityCredential`
+#### ✅ Violation D3 — **Résolu**
 
 [`Configuration/Extensions/ConfigurerProviders.cs`](../EnterpriseMessageTransit/Configuration/Extensions/ConfigurerProviders.cs)
 
-Le wiring DI registre `new ServiceBusClient(namespace, new ManagedIdentityCredential())` en défaut implicite. Pas de moyen de tester localement sans avoir cette credential. La revue Request/Reply (I4) signale qu'il faut accepter une `TokenCredential` en paramètre — c'est la bonne pratique.
+`ConfigureAzureProviders()` accepte un `TokenCredential?` optionnel. En production (Azure Functions / AKS), aucun credential passé → `ManagedIdentityCredential` par défaut (1 round-trip IMDS, sans overhead de chaîne). En développement local, l'appelant passe `new VisualStudioCredential()` :
+
+```csharp
+// Production (Azure) — ManagedIdentityCredential par défaut
+services.ConfigureAzureProviders();
+
+// Dev local — credential explicite
+services.ConfigureAzureProviders(new VisualStudioCredential());
+```
+
+Tous les samples EMT utilisent `AddEMTSampleProducerDefaults(config, new VisualStudioCredential())` (R12).
 
 ### 9.7 Résumé SOLID — verdict par classe
 
