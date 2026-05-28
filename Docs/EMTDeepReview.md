@@ -38,6 +38,7 @@
 9. [Audit SOLID — ligne par ligne](#9-audit-solid--ligne-par-ligne)
 10. [Récapitulatif des revues — corrigé et restant](#10-récapitulatif-des-revues)
 11. [Plan de résolution — priorisé et chiffré](#11-plan-de-résolution)
+    - [11.13 Analyse des breaking changes — cas O3](#1113-analyse-des-breaking-changes--cas-o3)
 12. [Feuille de route — où va EMT](#12-feuille-de-route)
 13. [Glossaire](#13-glossaire)
 14. [Pour aller plus loin](#14-pour-aller-plus-loin)
@@ -241,7 +242,9 @@ public class MessageTransitContext<TMessage> where TMessage : class
 }
 ```
 
-💡 **Pourquoi `[JsonIgnore]` sur certains champs ?** Le `MessageTransitContext<T>` est à la fois un **contrat sérialisé** (voyage entre services) et un **objet runtime** (utilisé pendant une invocation). Mélange dangereux dénoncé en O3 (Distinguished) ; protégé par un test snapshot Verify.Xunit depuis la Phase 1.
+💡 **Pourquoi `[JsonIgnore]` sur certains champs ?** Le `MessageTransitContext<T>` est à la fois un **contrat sérialisé** (voyage entre services) et un **objet runtime** (utilisé pendant une invocation). Mélange dangereux dénoncé en O3 (Distinguished).
+
+⚠️ **Statut honnête : mitigé, pas résolu.** La Phase 1 a livré un **filet de sécurité** (test snapshot Verify.Xunit) qui détecte les régressions accidentelles du format JSON, mais **le design lui-même n'est pas refondu** — la classe joue toujours trois rôles incompatibles (contrat sérialisé, état runtime, comportement). La séparation `MessageEnvelope` (record sérialisé) / `MessageTransitContext<T>` (runtime + behavior) reste recommandée par DE Review §3.1, mais elle est **alignée sur la Phase 6** car elle provoquerait des breaking changes structurels (source + binaire + wire format) qu'il faut séquencer avec l'éventuelle adoption de CloudEvents. Voir [§11.13](#1113-analyse-des-breaking-changes--cas-o3) pour l'analyse détaillée.
 
 #### Producer<T> et BaseConsumer<T>
 
@@ -368,10 +371,10 @@ Le dossier [`Exemples/`](../Exemples/) contient **26 projets** qui démontrent l
 | 9 | `RAMQ.Samples.Queue.MultiTarget.Producer` | Producer avec multiple `AddProducer<T>("target")` | Queue MultiTarget | v2.0 | 🟢 Active |
 | 10 | `RAMQ.Samples.Queue.MultiTarget.Worker` | Worker recevant message typé | Queue MultiTarget | v2.0 | 🟢 Active |
 | 11 | `RAMQ.Samples.Queue.MultiTarget.Consumer` | Consumer dérivé par target | Queue MultiTarget | v2.0 | 🟢 Active |
-| 12 | `RAMQ.Samples.Queue.RequestReply.Message` | RequestMessage + ReplyMessage records | Request/Reply | n/a | 🟡 Récents fix UTF-8 |
-| 13 | `RAMQ.Samples.Queue.RequestReply.Activator` | HTTP trigger (requester) | Request/Reply (requester) | v2.0 partial | 🔴 **BROKEN** (Activator.cs encodage corrompu, ne compile pas) |
-| 14 | `RAMQ.Samples.Queue.RequestReply.Worker` | Worker (responder) | Request/Reply (worker) | v2.0 | 🔴 **BROKEN** — Program.cs ne register pas `ServiceBusClient` |
-| 15 | `RAMQ.Samples.Queue.RequestReply.Consumer` | RequestReplyConsumer:BaseConsumer | Request/Reply (consumer) | v2.0 | 🔴 **BROKEN** — bypass infra EMT pour la réponse (C2) |
+| 12 | `RAMQ.Samples.Queue.RequestReply.Message` | RequestMessage + ReplyMessage records | Request/Reply | n/a | 🟢 Active |
+| 13 | `RAMQ.Samples.Queue.RequestReply.Activator` | Azure Function `ServiceBusTrigger` (côté **responder**) — désérialise + délègue au Consumer | Request/Reply (responder) | v2.0 | 🟢 Active — encodage UTF-8 propre, plus de cast Service Bus brut |
+| 14 | `RAMQ.Samples.Queue.RequestReply.Worker` | `BackgroundService` (côté **requester**) — appelle `IRequestReplyClient<,>.GetResponseAsync`, gère recovery offline | Request/Reply (requester) | v2.0 | 🟢 Active — `AddRequestReplyClient<,>` + helper `AddEMTSampleProducerDefaults` |
+| 15 | `RAMQ.Samples.Queue.RequestReply.Consumer` | `RequestReplyConsumer : BaseConsumer<RequestMessage>` — répond via `IMessageProducer<ReplyMessage>` injecté | Request/Reply (consumer) | v2.0 | 🟢 Active — bypass infra EMT supprimé (C2 résolu), `IMessageProducer<ReplyMessage>` injecté en DI |
 | 16 | `RAMQ.Samples.RoutingSlip.Booking.Message` | Args records (Car/Hotel/Flight) | Routing Slip | n/a | 🟢 Active |
 | 17 | `RAMQ.Samples.Queue.RoutingSlip.Booking.Activateur` | HTTP trigger → construit SlipEnvelope | Routing Slip Queue (activateur) | v2.0 | 🟢 Active (référence) |
 | 18 | `RAMQ.Samples.Queue.RoutingSlip.Booking.Worker` | Worker queue + 3 `IRoutingSlipActivity<TArgs>` | Routing Slip Queue (worker) | v2.0 | 🟢 Active (référence) |
@@ -627,9 +630,16 @@ Cumule **3 rôles** :
 2. **État runtime** (ignoré JSON) : `TransportMessage`, `SerializedPayload`, `IsClaimCheckApplied`.
 3. **Comportement** : `GetVariable<T>`, `CopyWithResponse`, `GetMessageToken`, `GetApplicationPropertyValue`.
 
-C'est **le sujet O3 bloquant de la DE Review** (Phase 1, mitigé par le test snapshot Verify.Xunit).
+C'est **le sujet O3 bloquant de la DE Review**. Statut actuel : **mitigé en Phase 1** (test snapshot Verify.Xunit empêche les régressions involontaires) mais **pas résolu structurellement** — la classe joue toujours 3 rôles incompatibles.
 
-🧭 **Refactor proposé :** séparer en `MessageEnvelope` (record sérialisé) + `MessageTransitContext<T>` (runtime + behavior). Reporté — hors scope v1.0 (Phase 6 = multi-broker, non prévu).
+🧭 **Refactor proposé :** séparer en `MessageEnvelope` (record sérialisé) + `MessageTransitContext<T>` (runtime + behavior).
+
+⛾ **Alignement explicite Phase 6.** La résolution complète déclenche des breaking changes en cascade (source sur les call sites Producer, binaire sur tous les consommateurs, et potentiellement wire format si le JSON change). Comme ces breaking changes :
+- sont du même ordre de grandeur que ceux d'une adoption éventuelle de CloudEvents 1.0,
+- exigent une fenêtre de lecture dual-format pendant la transition (pour les messages en DLQ/replay/saga en vol),
+- demandent une coordination multi-équipes (toutes les apps RAMQ consommatrices),
+
+il est techniquement et politiquement **plus efficace de les regrouper en une seule bascule MAJOR (Phase 6)** plutôt que de faire deux ruptures coup-sur-coup. Détail complet de l'analyse des breaking changes en [§11.13](#1113-analyse-des-breaking-changes--cas-o3).
 
 #### 🟠 Violation S3 — `Producer<T>` mélange 5 responsabilités
 
@@ -1144,6 +1154,132 @@ Pour que EMT soit considérée v1.0 production-ready :
 | **R10 (sortir adapter Functions — Consumer)** | **Producer** déjà multi-hôte (AzFunc/AKS/ARO) après R9. **Consumer** exclusivement Azure Functions — le découplage Consumer multi-hôte n'apporte pas de valeur aujourd'hui. | 🚫 Non prévu |
 | **CloudEvents 1.0** | Fait partie de Phase 6 (multi-broker) — hors scope. | 🚫 Non prévu |
 | **Scission complète en 10 packages NuGet** | Big-bang risqué ; à séquencer par vagues si besoin. | v2.0+ |
+| **Séparation `MessageEnvelope` / `MessageTransitContext<T>` (O3 structurel)** | Breaking changes en cascade — à grouper avec la bascule MAJOR de Phase 6 (cf. §11.13). | Phase 6 |
+
+---
+
+### 11.13 Analyse des breaking changes — cas O3
+
+> **Question abordée :** la mitigation de O3 (test snapshot Verify.Xunit, livré en Phase 1) suffit-elle, ou doit-on aller jusqu'à la séparation structurelle `MessageEnvelope` / `MessageTransitContext<T>` ? Et si oui, qu'est-ce que ça casse ?
+
+#### 11.13.1 Trois niveaux de résolution possibles
+
+| Niveau | Action | Source break | Wire break | Binary break | Statut |
+|---|---|---|---|---|---|
+| **N1 — Mitigation** | Tests snapshot Verify.Xunit + doc XML + `<remarks>` sur `[JsonIgnore]` | ❌ Aucun | ❌ Aucun | ❌ Aucun | ✅ **Livré (Phase 1)** |
+| **N2 — Additif** | Introduire `MessageEnvelope` à côté ; `MessageTransitContext<T>` délègue en interne ; nouvelles surcharges `PublishAsync(MessageEnvelope, …)` ; ancien API marqué `[Obsolete]` | 🟡 Warnings uniquement | ❌ Aucun (même JSON) | ❌ Aucun | À éviter — voir §11.13.5 |
+| **N3 — Séparation stricte** | Suppression progressive de `MessageTransitContext<T>` au profit de `MessageEnvelope` + wrapper minimal | 🔴 Oui (call sites Producer) | 🟠 Possible (selon choix sérialisation) | 🔴 Oui (ABI assembly) | ⛾ **Phase 6 uniquement** |
+
+#### 11.13.2 Détail des breaking changes du niveau N3
+
+**Source breaks** — call sites Producer aujourd'hui :
+
+```csharp
+var ctx = new MessageTransitContext<DemandeValidation>
+{
+    MessageId = Guid.NewGuid().ToString("N"),
+    SessionId = dossierId,
+    Variables = new Dictionary<string, object> { ["k"] = "v" },
+    Message   = new DemandeValidation { ... }
+};
+await _producer.PublishAsync(ctx, ...);
+```
+
+Deviennent :
+
+```csharp
+var envelope = new MessageEnvelope { MessageId = ..., SessionId = ..., Variables = ... };
+var ctx = new MessageTransitContext<DemandeValidation>(envelope, new DemandeValidation { ... });
+await _producer.PublishAsync(ctx, ...);
+```
+
+→ Estimation : **80-200 call sites à migrer** côté samples + apps RAMQ consommatrices. Chaque équipe applicative doit produire un PR.
+
+**Binary breaks :**
+- Toute application compilée contre l'ancien assembly ne se charge pas avec le nouveau.
+- Tous les sous-packages NuGet doivent bumper en MAJOR.
+- `PublicAPI.Shipped.txt` change radicalement.
+
+**Wire breaks (le plus dangereux) — silencieux :**
+
+Si la sérialisation JSON change (ex. wrapping CloudEvents) :
+
+```json
+// AVANT (v1.x)
+{ "MessageId": "...", "Message": { "DossierId": "D-001" } }
+
+// APRÈS (v2.0 si CloudEvents)
+{ "specversion": "1.0", "id": "...", "data": { "DossierId": "D-001" } }
+```
+
+Conséquences si non-géré :
+- **Tous les messages déjà publiés mais non encore consommés** (en queue, en session active, en DLQ) deviennent illisibles.
+- **Tous les replays depuis archive** (audit CAI, reprise post-incident) deviennent illisibles.
+- **Aucune exception bruyante** : la désérialisation retourne `MessageId = null`, le consumer DLQ tout, et l'équipe découvre 3 jours plus tard que 50 000 messages ont été perdus silencieusement.
+
+#### 11.13.3 Le piège des sagas en vol
+
+Une saga RAMQ peut durer plusieurs heures à plusieurs jours (attente d'un domaine lent, replay manuel après incident). Pendant une transition N3 mal gérée :
+
+```
+T0     : Worker v_old publie SlipEnvelope v1 → queue intermédiaire
+T0+2h  : Déploiement v_new (format changé)
+T0+3h  : Worker v_new lit SlipEnvelope v1 → ne désérialise pas → DLQ silencieux
+         ⚠ Saga échoue au milieu, après que les compensateurs des étapes
+           précédentes ne soient plus accessibles
+```
+
+C'est pour cette raison que tout passage à N3 exige :
+1. Une **période de lecture dual-format** (le consumer comprend l'ancien ET le nouveau pendant N semaines),
+2. Un **drain de DLQ** avant le bump MAJOR,
+3. Un **gel des replays** depuis archive pendant la transition,
+4. Un **freeze des sagas longues** ou des protocoles d'attente / pré-conversion.
+
+#### 11.13.4 Pourquoi grouper avec Phase 6
+
+Le coût opérationnel d'un breaking change wire-format est dominé par les **points 1-4 ci-dessus**, pas par le code lui-même. Si on accepte cette douleur **deux fois** (une fois pour O3, une fois pour CloudEvents/multi-broker), on paie le prix double inutilement.
+
+D'où la position retenue :
+
+> **Toute résolution structurelle de O3 (niveau N3) sera groupée avec la prochaine bascule MAJOR Phase 6.** Tant que Phase 6 n'est pas activée (cas d'usage non-Azure concret + ADR-001 révisé), **rester en N1**. Le filet de sécurité Verify.Xunit est suffisant pour les régressions accidentelles.
+
+#### 11.13.5 Pourquoi N2 (additif) n'est pas une bonne idée intermédiaire
+
+À première vue, N2 semble alléchant : ajouter `MessageEnvelope` sans rien casser. En pratique :
+
+| Problème | Détail |
+|---|---|
+| **Deux APIs publiques en parallèle** | Les nouveaux call sites utilisent `MessageEnvelope`, les anciens `MessageTransitContext<T>`. Le code base perd en cohérence pendant des mois. |
+| **`[Obsolete]` mal supporté pour les types** | Warning sur un constructeur ou setter, mais pas sur un object initializer `{ ... }`. Plusieurs équipes ne migreront jamais avant qu'on retire le type. |
+| **Double maintenance du test snapshot** | Il faut tester les deux formats sérialisés à chaque PR. La complexité monte. |
+| **Pas de gain conceptuel** | Le développeur qui lit `MessageTransitContext<T>` continue à voir un god-object qui « contient » un envelope — c'est pire pédagogiquement qu'aujourd'hui. |
+| **Le breaking inéluctable est juste reporté** | On finit quand même par retirer l'ancien type un jour ; on a juste payé un cycle de release supplémentaire pour rien. |
+
+Conclusion : **soit on reste en N1 (suffit aujourd'hui), soit on saute directement en N3 (lors d'une bascule MAJOR groupée).** N2 cumule les coûts des deux sans les bénéfices.
+
+#### 11.13.6 Ce qui reste accessible sans breaking change
+
+Si le problème de lisibilité du god-object devient gênant **avant** Phase 6, voici des micro-améliorations qui n'introduisent **aucun breaking change** :
+
+| Action | Impact | Bénéfice |
+|---|---|---|
+| Ajouter `<remarks>` XML doc sur `MessageTransitContext<T>` listant explicitement les 3 rôles et leur frontière `[JsonIgnore]` | ❌ Aucun | Lisibilité immédiate dans l'IntelliSense |
+| Analyzer Roslyn maison qui warne si quelqu'un ajoute une propriété publique sans `[JsonIgnore]` ou sans mise à jour du test snapshot | ❌ Aucun | Filet de sécurité au moment du PR (avant CI) |
+| Versionner le test snapshot par schéma : `envelope-v1.verified.txt`, `envelope-v2.verified.txt` quand la v2 viendra | ❌ Aucun | Documente la stratégie de versioning attendue |
+| Passer `IsClaimCheckApplied`, `SerializedPayload`, `TransportMessage` en `internal set` (au lieu de `public set`) | 🟡 Mineur (source seul) | Empêche un consumer applicatif de muter ces champs runtime par erreur |
+| Extraire `GetVariable<T>`, `CopyWithResponse`, `GetMessageToken` dans `MessageTransitContextExtensions` | 🟡 Mineur (warnings d'usage) | Sépare comportement de donnée sans casser |
+
+Ces actions peuvent être livrées **dans n'importe quel sprint de v1.x** sans surcoût et sans rupture, et elles préparent terrain pour Phase 6.
+
+#### 11.13.7 Recommandation finale
+
+| Horizon | Action |
+|---|---|
+| **Maintenant (v1.0)** | Rester en **N1**. Garder le filet snapshot. Appliquer optionnellement les micro-améliorations §11.13.6. |
+| **v1.1 – v1.x** | Idem N1. Ne **pas** introduire N2. |
+| **Phase 6 (si activée)** | Bascule en **N3** groupée avec CloudEvents et/ou nouveau transport. Plan de migration explicite avec lecture dual-format, drain DLQ, freeze sagas. |
+
+> 🧭 **Position politique :** la résolution de O3 n'est pas un bug à fixer en urgence — c'est une **dette de conception consciente** dont le coût de remboursement est élevé mais finançable lors de la prochaine bascule MAJOR. Le filet de sécurité Verify.Xunit transforme une dette dangereuse (régression silencieuse possible) en une dette gérable (impossible de la creuser sans alerte CI).
 
 ---
 
@@ -1290,7 +1426,7 @@ Pour que EMT soit considérée v1.0 production-ready :
 
 1. **EMT est une lib plateforme interne RAMQ**, pas un produit générique. Ses patterns reflètent les contraintes réglementaires (santé, CAI) et techniques (WCF legacy) de RAMQ.
 2. **Trois produits sont superposés** dans un seul assembly : SDK abstrait (P1), adapter Azure Functions opinioné (P2), moteur Routing Slip RAMQ (P3).
-3. **Le `MessageTransitContext<T>` est le pivot.** Un test snapshot Verify.Xunit protège son format contre les régressions silencieuses.
+3. **Le `MessageTransitContext<T>` est le pivot — mais c'est un god-object.** Le filet snapshot Verify.Xunit (Phase 1) empêche les régressions silencieuses, mais le mélange « contrat sérialisé + état runtime + comportement » n'est **pas** structurellement résolu. La séparation `MessageEnvelope` / `MessageTransitContext<T>` est **alignée sur Phase 6** pour grouper le breaking change avec une éventuelle adoption CloudEvents (cf. [§11.13](#1113-analyse-des-breaking-changes--cas-o3)).
 4. **Le Routing Slip v2.0** est livré et constitue **la référence SOLID** de la lib — c'est le sous-système le mieux conçu. Tous les refactors futurs doivent s'en inspirer.
 5. **L'idempotence repose sur un triangle** : infra + EMT + métier. Sans validation infrastructurelle (lot R4), le triangle est incomplet — risque réel de doublons métier.
 6. **Le pattern Request/Reply est cassé** dans les samples actuels. Lot R3 prioritaire avant qu'un junior n'en hérite et l'utilise mal.
