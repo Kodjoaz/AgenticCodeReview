@@ -515,7 +515,7 @@ Points techniques remarquables :
 | **S-5** | Aucun sample ne démontre **`IRoutingSlipActivity` testé en isolation** (objectif phare de la v2.0). Pas de projet `*.Tests` côté samples. | 🟠 Majeur |
 | **S-6** | `RAMQ.Samples.ConfigurationService` et `RAMQ.Samples.MessageTransitHelper` exposent une API commune sans contrat versionné. Risque de dérive entre samples. | 🟡 Mineur |
 | **S-7** | Aucun `docker-compose` n'est fourni pour exécuter les samples localement (Service Bus Emulator + Azurite). Cf. P4-T1 livré dans le projet EMT.Tests, à répliquer pour les samples. | 🟡 Mineur |
-| **S-8** | Aucun sample ne montre les **métriques OTel** émises (counters `messages_sent_total`, histograms `send_duration_ms`). Aucun sample n'enregistre `IMetricsProvider` ni ne câble `WithMetrics` dans `AddOpenTelemetry`. | 🟡 Mineur — ouvert |
+| **S-8** | ~~Aucun sample ne montre les métriques OTel.~~ ✅ **Résolu** — `.WithMetrics(m => m.AddMeter(EMTInstrumentation.SourceName))` ajouté dans les 3 samples RoutingSlip (Queue Activateur, Queue Worker, Topic Worker). `IMetricsProvider` déjà enregistré par `ConfigureAzureProviders`. | 🟢 Résolu |
 
 🟢 **Points forts à préserver :**
 - Cohérence du naming `RAMQ.Samples.<Pattern>.<Role>` — lisibilité immédiate.

@@ -5,6 +5,7 @@ using Microsoft.Azure.Functions.Worker.OpenTelemetry;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Telemetry;
@@ -36,6 +37,12 @@ var builder = new HostBuilder()
                 t.AddHttpClientInstrumentation();
                 if (!string.IsNullOrWhiteSpace(otlpEndpoint))
                     t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
+            })
+            .WithMetrics(m =>
+            {
+                m.AddMeter(EMTInstrumentation.SourceName);
+                if (!string.IsNullOrWhiteSpace(otlpEndpoint))
+                    m.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
             })
             .UseFunctionsWorkerDefaults();
 
