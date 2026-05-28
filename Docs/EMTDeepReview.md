@@ -690,7 +690,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 
 | Principe | Verdict global | Note |
 |---|---|---|
-| **S** — Single Responsibility | 🟡 **Partiellement résolu** | S1 (BaseConsumer) résolu par R8 ; S3/S4 restants |
+| **S** — Single Responsibility | 🟡 **Partiellement résolu** | S1 résolu R8 ; S3 résolu (IClaimCheckPreparer) ; S4 (AzureMessagingProvider) restant |
 | **O** — Open / Closed | ✅ **Résolu** | R9 : 5 interfaces fines permettent l'extension sans modifier `IMessagingProvider` |
 | **L** — Liskov Substitution | 🟡 **OK avec marker interfaces** | Hiérarchie de config saine mais marqueur inutile |
 | **I** — Interface Segregation | ✅ **Résolu** | R9 : `IMessagePublisher`, `IMessageReceiver`, `IMessageSettler`, `IMessagingEndpointResolver`, `IMessageDeserializer` |
@@ -752,26 +752,33 @@ C'est **le sujet O3 bloquant de la DE Review**. Statut actuel : **mitigé en Pha
 
 il est techniquement et politiquement **plus efficace de les regrouper en une seule bascule MAJOR (Phase 6)** plutôt que de faire deux ruptures coup-sur-coup. Détail complet de l'analyse des breaking changes en [§11.13](#1113-analyse-des-breaking-changes--cas-o3).
 
-#### 🟠 Violation S3 — `Producer<T>` mélange 5 responsabilités — Ouverte
+#### ✅ Violation S3 — **Résolu**
 
-[`Messaging/Producer/Producer.cs`](../EnterpriseMessageTransit/Messaging/Producer/Producer.cs) — 509 lignes
+[`Messaging/Producer/Producer.cs`](../EnterpriseMessageTransit/Messaging/Producer/Producer.cs)
+
+La responsabilité Claim Check (R2) a été extraite dans un service dédié `IClaimCheckPreparer` / `ClaimCheckPreparer` :
 
 ```csharp
-public class Producer<TMessage> : BaseMessageTransit<TMessage>, IMessageProducer<TMessage>, IProducerPatterns
+// Avant : Producer<T> orchestrait lui-même l'upload blob, les tokens, les métriques
+// Après : délégation propre
+public class Producer<TMessage> : BaseMessageTransit<TMessage>, IMessageProducer<TMessage>
 {
-    // R1: Orchestration publish        → PublishAsync, PublishBatchAsync, PublishCoreAsync
-    // R2: Préparation Claim Check      → PrepareClaimCheckAsync
-    // R3: Journal A5                   → _journal.WriteRecordAsync / WriteBatchAsync
-    // R4: Télémétrie OTel              → MessagingActivitySource.Source.StartActivity
-    // R5: Compensation Blob orphelin   → StorageProvider.DeleteAsync sur erreur send
+    private readonly IClaimCheckPreparer _claimCheckPreparer;  // ← R2 sorti
+    // R1: Orchestration publish    → PublishAsync, PublishBatchAsync
+    // R3: Journal A5               → _journal (délégué à IJournalProvider)
+    // R4: Télémétrie OTel          → MessagingActivitySource (cross-cutting)
+    // R5: Compensation Blob        → StorageProvider.DeleteAsync (compensation send failure)
 }
 ```
 
-**Améliorations apportées (ne résout pas S3 structurellement) :**
-- ✅ **R9** : `Producer<T>` injecte `IMessagePublisher` + `IMessagingEndpointResolver` (interfaces fines) — plus de dépendance sur le fat `IMessagingProvider`.
-- ✅ **R3** : `IProducerPatterns` est `internal` et ne contient plus que `PrepareClaimCheckAsync`. Le Request/Reply a été sorti vers `IRequestReplyClient<TRequest,TResponse>`.
+**Changements livrés :**
+- `IClaimCheckPreparer` (public interface) + `ClaimCheckPreparer` (internal sealed) extraits dans `Messaging/Producer/`
+- `IProducerPatterns` supprimé — `Producer<T>` n'implémente plus qu'une seule interface publique
+- `PrepareContextWithTokensAsync` et `NormalizeBlobReference` retirés de `Producer<T>` (~100 lignes supprimées)
+- `ClaimCheckPreparer` enregistré en DI (`AddScoped<IClaimCheckPreparer, ClaimCheckPreparer>()`)
+- `Producer<T>` : 509 lignes → ~390 lignes
 
-**Ce qui reste ouvert :** les 5 responsabilités coexistent dans la même classe. La séparation complète (ex. `ClaimCheckOrchestrator`, `PublishJournalDecorator`) implique des breaking changes sur le constructeur public — hors scope v1.0.
+**Responsabilités restantes dans `Producer<T>` :** R1 (orchestration), R3 (journal — déjà délégué), R4 (OTel — cross-cutting), R5 (compensation blob orphelin sur erreur send). Ces 4 responsabilités sont cohérentes dans un orchestrateur de publication.
 
 #### 🟠 Violation S4 — `AzureMessagingProvider` est une god-class
 

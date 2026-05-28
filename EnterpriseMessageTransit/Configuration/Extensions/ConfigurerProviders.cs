@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure.Functions;
 using RAMQ.COM.EnterpriseMessageTransit.Serialization;
 
@@ -100,6 +101,10 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
             // --- Singleton : IMetricsProvider ------------------------------------------------
             // Expose des compteurs, histogrammes et jauges pour la monitoring avec OpenTelemetry
             services.AddSingleton<IMetricsProvider, MetricsProvider>();
+
+            // --- Scoped : IClaimCheckPreparer ------------------------------------------------
+            // Scoped car utilise IStorageProvider (Scoped) et IMessageSerializer (Singleton).
+            services.AddScoped<IClaimCheckPreparer, ClaimCheckPreparer>();
 
             // --- Singleton : CircuitBreakerManager -------------------------------------------
             // Un circuit breaker par entité Service Bus. Ouvre le circuit après N échecs consécutifs

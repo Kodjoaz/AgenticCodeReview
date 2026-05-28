@@ -19,12 +19,13 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
     /// Producer multi Target permettant de publier des messages de différents types spécifiques dans différentes entités.
     /// </summary>
     /// <typeparam name="TMessage">Représente le contenu de l'événement</typeparam>
-    public class Producer<TMessage> : BaseMessageTransit<TMessage>, IMessageProducer<TMessage>, IProducerPatterns where TMessage : class
+    public class Producer<TMessage> : BaseMessageTransit<TMessage>, IMessageProducer<TMessage> where TMessage : class
     {
         private readonly IMessagePublisher _publisher;
         private readonly IMessagingEndpointResolver _resolver;
         private readonly IJournalProvider _journal;
         private readonly ISystemClock _systemClock;
+        private readonly IClaimCheckPreparer _claimCheckPreparer;
         private readonly IMessageTargetMap? _targetMap;
         private readonly IMetricsProvider? _metrics;
 
@@ -37,27 +38,18 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             IMessageSerializer serializer,
             IStorageProvider storageProvider,
             ISystemClock systemClock,
+            IClaimCheckPreparer claimCheckPreparer,
             IMessageTargetMap? targetMap = null,
             IMetricsProvider? metrics = null)
             : base(logger, config, serializer, storageProvider)
         {
-            _publisher = publisher ?? throw new ArgumentNullException(nameof(publisher));
-            _resolver  = resolver  ?? throw new ArgumentNullException(nameof(resolver));
-            _journal = journal ?? throw new ArgumentNullException(nameof(journal));
-            _systemClock = systemClock ?? throw new ArgumentNullException(nameof(systemClock));
-            _targetMap = targetMap;
-            _metrics = metrics;
-        }
-
-        public async Task PrepareClaimCheckAsync<TAnyMessage>(
-            MessageTransitContext<TAnyMessage> context,
-            Stream? fileStream,
-            string? originalFileName,
-            bool forceClaimcheck,
-            CancellationToken cancellationToken)
-            where TAnyMessage : class
-        {
-            await PrepareContextWithTokensAsync(context, fileStream, originalFileName, forceClaimcheck, cancellationToken);
+            _publisher          = publisher          ?? throw new ArgumentNullException(nameof(publisher));
+            _resolver           = resolver           ?? throw new ArgumentNullException(nameof(resolver));
+            _journal            = journal            ?? throw new ArgumentNullException(nameof(journal));
+            _systemClock        = systemClock        ?? throw new ArgumentNullException(nameof(systemClock));
+            _claimCheckPreparer = claimCheckPreparer ?? throw new ArgumentNullException(nameof(claimCheckPreparer));
+            _targetMap          = targetMap;
+            _metrics            = metrics;
         }
 
         /// <summary>
@@ -120,7 +112,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             // Architecture cible : le Producer ne renseigne plus Consumer/Action.
             // Les propriétés doivent déjà être présentes dans le contexte (préparées par le RoutingSlipBuilder/Executor).
 
-            await PrepareClaimCheckAsync(
+            await _claimCheckPreparer.PrepareAsync(
                 context,
                 claimCheckOptions.FileStream,
                 claimCheckOptions.OriginalFileName,
@@ -396,114 +388,5 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
             return (consumer, action);
         }
 
-        protected async Task PrepareContextWithTokensAsync<TAnyMessage>(
-            MessageTransitContext<TAnyMessage> context,
-            Stream? fileStream,
-            string? originalFileName,
-            bool forceClaimcheck,
-            CancellationToken cancellationToken = default)
-            where TAnyMessage : class
-        {
-            context.Tokens ??= new List<TokenMessage>();
-
-            // Serialize once and reuse the result to avoid double work.
-            string serialized = Serializer.Serialize(context);
-            long size = System.Text.Encoding.UTF8.GetByteCount(serialized);
-
-            if (RequiresClaimCheck((int)size, forceClaimcheck))
-            {
-                string? fileName = string.IsNullOrWhiteSpace(context.MessageId)
-                    ? $"{Guid.NewGuid():N}.json"
-                    : $"{context.MessageId}.json";
-
-                using var uploadActivity = MessagingActivitySource.Source.StartActivity(
-                    "messaging.claimcheck.upload",
-                    ActivityKind.Internal);
-                uploadActivity?.SetTag("messaging.message_id",            context.MessageId);
-                uploadActivity?.SetTag("messaging.claimcheck.blob",       fileName);
-                uploadActivity?.SetTag("messaging.claimcheck.size_bytes", size);
-
-                string? url;
-                var uploadSw = System.Diagnostics.Stopwatch.StartNew();
-                try
-                {
-                    url = await StorageProvider.UploadAsync(serialized, fileName, cancellationToken);
-                    uploadSw.Stop();
-                    uploadActivity?.SetStatus(ActivityStatusCode.Ok);
-                    _metrics?.RecordClaimCheckUploadDuration(uploadSw.Elapsed.TotalMilliseconds, fileName);
-                    _metrics?.IncrementClaimCheckUploads(fileName);
-                }
-                catch (Exception ex)
-                {
-                    uploadActivity?.SetStatus(ActivityStatusCode.Error, ex.Message);
-                    uploadActivity?.SetTag("exception.type",    ex.GetType().FullName);
-                    uploadActivity?.SetTag("exception.message", ex.Message);
-                    throw;
-                }
-
-                var reference = NormalizeBlobReference(url) ?? url ?? string.Empty;
-                uploadActivity?.SetTag("messaging.claimcheck.reference", reference);
-                context.Tokens.Add(new TokenMessage
-                {
-                    Kind        = TokenKind.Message,
-                    ContentType = "application/json",
-                    Reference   = reference,
-                    SizeBytes   = size
-                });
-                // Remove message payload to keep the in-flight context light.
-                context.Message = default;
-                context.SerializedPayload = null; // already uploaded; don't keep in-memory payload
-                context.IsClaimCheckApplied = true;
-            }
-            else
-            {
-                // No claim-check applied: cache the serialized payload so callers can reuse it
-                // and avoid serializing the context again before sending.
-                context.SerializedPayload = serialized;
-                context.IsClaimCheckApplied = false;
-            }
-
-            if (fileStream != null && !string.IsNullOrWhiteSpace(originalFileName))
-            {
-                string? url = await StorageProvider.UploadAsync(fileStream, originalFileName, cancellationToken);
-                var reference = NormalizeBlobReference(url) ?? url ?? string.Empty;
-
-                long sizeBytes;
-                try { sizeBytes = fileStream.Length; }
-                catch (Exception ex)
-                {
-                    Logger.LogWarning(ex, "PrepareContextWithTokensAsync: unable to determine fileStream.Length; using -1 as fallback.");
-                    sizeBytes = -1;
-                }
-
-                context.Tokens.Add(new TokenMessage
-                {
-                    Kind        = TokenKind.File,
-                    ContentType = "application/octet-stream",
-                    Reference   = reference,
-                    SizeBytes   = sizeBytes
-                });
-            }
-        }
-
-        private static string? NormalizeBlobReference(string? raw)
-        {
-            if (string.IsNullOrWhiteSpace(raw)) return raw;
-            raw = raw.Trim();
-
-            if (Uri.TryCreate(raw, UriKind.Absolute, out var uri))
-            {
-                var path = uri.AbsolutePath.TrimStart('/');
-                var segments = path.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries);
-                if (segments.Length >= 2)
-                {
-                    var container = segments[0];
-                    var blobName = string.Join("/", segments.Skip(1));
-                    return $"{container}/{blobName}";
-                }
-                return path;
-            }
-            return raw;
-        }
     }
 }
