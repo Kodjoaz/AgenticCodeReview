@@ -14,7 +14,11 @@
 >
 > **Périmètre — clarification du scope :**
 > 🚫 **Hors scope :** Kafka / Confluent multi-broker integration (Phase 6 partiel — uniquement le volet multi-broker).
-> ✅ **Dans le scope :** Service Bus, multi-hôte (Functions / AKS / ARO), CloudEvents, scission en assemblies, RabbitMQ (si nécessaire pour partenaires AMQP).
+> ✅ **Dans le scope :** Service Bus, multi-hôte **Producer** (AzFunc / AKS / ARO), CloudEvents, scission en assemblies, RabbitMQ (si nécessaire pour partenaires AMQP).
+
+> ⚠️ **Contrainte de déploiement actuelle :**
+> - **Producer** : peut être hébergé dans **Azure Functions, AKS ou ARO** (containers). `Producer<T>` n'a aucune dépendance sur `Microsoft.Azure.Functions.Worker` après R9.
+> - **Consumer** : hébergé **exclusivement en Azure Functions** Isolated Worker. `BaseConsumer<T>` + `AzureFunctionMessagingAdapter` dépendent de `ServiceBusReceivedMessage` / `ServiceBusMessageActions` (Azure Functions Worker). Le découplage Consumer multi-hôte est hors scope v1.0 (cf. R10).
 >
 > **Conventions :** 🔴 Bloquant · 🟠 Majeur · 🟡 Mineur · 🟢 Positif · 💡 Pédagogie junior · 🧭 Orientation stratégique
 > **Date :** 27 mai 2026
@@ -88,10 +92,9 @@ EMT n'est pas une librairie monolithique, c'est en réalité **trois produits im
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│  Application cliente — Azure Function, ASP.NET Core, BackgroundService │
-│  Producer  → IMessageProducer<T>                                       │
-│  Consumer  → BaseConsumer<T>                                           │
-│  Activité  → IRoutingSlipActivity<TArgs>                               │
+│  Producer  → Azure Function · AKS · ARO (BackgroundService / ASP.NET) │
+│  Consumer  → Azure Function UNIQUEMENT (ServiceBusTrigger Worker)      │
+│  Activité  → Azure Function UNIQUEMENT (IRoutingSlipActivity<TArgs>)   │
 └─────────────────────────────┬────────────────────────────────────────┘
                               │ DI
                               ▼
@@ -577,7 +580,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | **O** — Open / Closed | ✅ **Résolu** | R9 : 5 interfaces fines permettent l'extension sans modifier `IMessagingProvider` |
 | **L** — Liskov Substitution | 🟡 **OK avec marker interfaces** | Hiérarchie de config saine mais marqueur inutile |
 | **I** — Interface Segregation | ✅ **Résolu** | R9 : `IMessagePublisher`, `IMessageReceiver`, `IMessageSettler`, `IMessagingEndpointResolver`, `IMessageDeserializer` |
-| **D** — Dependency Inversion | 🟠 **Hors scope v1.0** | R10 hors scope — tous les consumers sont hébergés en Azure Functions |
+| **D** — Dependency Inversion | 🟠 **Partiel** | Producer ✅ multi-hôte (R9) ; Consumer 🚫 hors scope R10 — exclusivement Azure Functions |
 
 ### 9.2 SRP — Single Responsibility Principle
 
@@ -727,9 +730,13 @@ using Microsoft.Azure.Functions.Worker;            // ← couplage runtime hôte
 using Microsoft.Azure.Functions.Worker.ServiceBus; // ← idem
 ```
 
-Tant que ce couplage existe dans l'assembly principal, **EMT est utilisable uniquement depuis une Azure Function**. Un Worker Service `BackgroundService` sur AKS / ARO ne peut pas consommer cet adapter.
+Tant que ce couplage existe dans l'assembly principal, **le Consumer EMT est utilisable uniquement depuis une Azure Function**. Un Worker Service `BackgroundService` sur AKS / ARO ne peut pas utiliser `AzureFunctionMessagingAdapter`.
 
-🚫 **R10 hors scope :** tous les consumers EMT sont hébergés en Azure Functions — la dépendance `Microsoft.Azure.Functions.Worker` ne pose pas de problème dans ce contexte. Le découplage multi-hôte (AKS/ARO) est reporté en Phase 6 si un cas d'usage concret émerge.
+> ⚠️ **Distinction Producer / Consumer :**
+> - **Producer** (`Producer<T>`, `IMessagePublisher`) : **aucune dépendance** sur `Microsoft.Azure.Functions.Worker` après R9. Un Producer peut être instancié dans n'importe quel hôte .NET — Azure Function, AKS `BackgroundService`, ARO, ASP.NET Core, Worker Service.
+> - **Consumer** (`BaseConsumer<T>`, `AzureFunctionMessagingAdapter`) : dépend de `ServiceBusReceivedMessage` et `ServiceBusMessageActions` du package `Microsoft.Azure.Functions.Worker.Extensions.ServiceBus`. **Hébergement exclusif en Azure Functions.** Le découplage Consumer multi-hôte reste hors scope v1.0 (R10).
+
+🚫 **R10 hors scope :** tous les **consumers** EMT sont et resteront hébergés en Azure Functions Isolated Worker. La dépendance `Microsoft.Azure.Functions.Worker` sur l'adapter Consumer ne pose pas de problème dans ce contexte. Si un cas d'usage Consumer sur AKS/ARO émerge, ce lot sera réévalué en Phase 6.
 
 #### ✅ Violation D2 — **Résolu par R9**
 
@@ -796,7 +803,7 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 | O3, O18 | ✅ Livrés | Tests snapshot + gouvernance (Phase 1) |
 | O2, O4, O5, O6, O7, O12, O13, O16, O17, O19, O20 | ✅ Livrés Phase 2 | |
 | O8, O9, O10, O11, O14, O15 | ✅ Livrés Phase 3 | |
-| O5 (couplage Functions Worker) | 🚫 **Hors scope** | R10 annulé — Azure Functions uniquement (décision 2026-05-28) |
+| O5 (couplage Functions Worker) | 🟡 **Partiel** | Producer ✅ multi-hôte après R9 ; Consumer 🚫 hors scope R10 — AzFunc uniquement (décision 2026-05-28) |
 | O9 (idempotence triangle complet) | 🟠 **Restant** | Validation infra dans HealthCheck (lot R4) |
 | O4 (BaseConsumer god) | ✅ **Résolu** | v2.0 a sorti la saga ; R8 délègue settlement+telemetry via `IConsumerTelemetry` + interfaces fines |
 
@@ -1030,12 +1037,14 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 **Risque :** 🟠 Moyen — breaking change MINOR si bien communiqué.
 **Priorité :** 🟡 **Mineur** — qualité interne ; à coordonner avec R8.
 
-### 11.10 Lot R10 — DIP : sortir `AzureFunctionMessagingAdapter` en assembly hosting 🚫 Hors scope
+### 11.10 Lot R10 — DIP : sortir `AzureFunctionMessagingAdapter` en assembly hosting 🚫 Hors scope (Consumer)
 
 **Origine :** §9.6 D1 ; DE Review §3.3 ; ADR-001 (multi-hôte).
-**Objectif initial :** rendre EMT utilisable depuis AKS / ARO via `BackgroundService` sans forcer la dépendance `Microsoft.Azure.Functions.Worker`.
+**Objectif initial :** rendre le Consumer EMT utilisable depuis AKS / ARO via `BackgroundService` sans forcer la dépendance `Microsoft.Azure.Functions.Worker`.
 
-> **Décision (2026-05-28) :** R10 est explicitement **hors scope**. Tous les consumers EMT sont et resteront hébergés en Azure Functions Isolated Worker. Le découplage multi-hôte n'apporte pas de valeur dans ce contexte. Si un cas d'usage AKS/ARO concret émerge, ce lot sera réévalué en Phase 6.
+> **Décision (2026-05-28) :** R10 est explicitement **hors scope pour le Consumer**. Clarification du modèle de déploiement v1.0 :
+> - **Producer** (`Producer<T>`, `IMessagePublisher`) : **multi-hôte**. Peut tourner dans une Azure Function, un container AKS, ARO, ou un Worker Service ASP.NET Core. Aucune dépendance sur `Microsoft.Azure.Functions.Worker` après R9.
+> - **Consumer** (`BaseConsumer<T>`, `AzureFunctionMessagingAdapter`) : **exclusivement Azure Functions** Isolated Worker. Dépend de `ServiceBusReceivedMessage` / `ServiceBusMessageActions`. Le découplage n'apporte pas de valeur car aucun Consumer n'est prévu sur AKS/ARO. Si un cas d'usage concret émerge, ce lot sera réévalué en Phase 6.
 
 **Critère de sortie :** assembly principal n'a plus de référence à `Microsoft.Azure.Functions.Worker` (test NetArchTest).
 **Estimation :** 4-5 semaines (1 senior).
@@ -1087,7 +1096,7 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 | **R7** | Métriques manquantes | 1 sem. | 🟠 Majeur | R1 | ✅ **Livré** |
 | **R8** | SRP BaseConsumer | 2-3 sem. | 🟡 Mineur | R1, R9 | ✅ **Livré** |
 | **R9** | ISP/OCP scission IMessagingProvider | 3-4 sem. | 🟡 Mineur | R1 | ✅ **Livré** |
-| **R10** | DIP sortir adapter Functions | 4-5 sem. | 🟠 Majeur | R1, R9 | 🚫 **Hors scope** — Azure Functions uniquement |
+| **R10** | DIP sortir adapter Functions (Consumer) | 4-5 sem. | 🟠 Majeur | R1, R9 | 🚫 **Hors scope** — Consumer AzFunc uniquement ; Producer déjà multi-hôte (R9) |
 | **R11** | Tests samples | 3 sem. | 🟠 Majeur | R1 | ⬜ À démarrer |
 | **R12** | Helper DI samples | 1 sem. | 🟡 Mineur | R11 | ✅ **Livré** |
 
@@ -1132,7 +1141,7 @@ Pour que EMT soit considérée v1.0 production-ready :
 | Sujet | Raison | Fenêtre |
 |---|---|---|
 | **Kafka / Confluent** | Hors scope sur décision utilisateur. | Indéfini (re-évaluer si cas d'usage non-Azure concret) |
-| **R10 (sortir adapter Functions)** | Tous les consumers sont hébergés en Azure Functions — le découplage multi-hôte n'apporte pas de valeur aujourd'hui. | Phase 6 si cas d'usage AKS/ARO concret |
+| **R10 (sortir adapter Functions — Consumer)** | **Producer** déjà multi-hôte (AzFunc/AKS/ARO) après R9. **Consumer** exclusivement Azure Functions — le découplage Consumer multi-hôte n'apporte pas de valeur aujourd'hui. | Phase 6 si cas d'usage Consumer AKS/ARO concret |
 | **CloudEvents 1.0** | À évaluer en Phase 6 si besoin d'interop externe. | v2.0+ |
 | **Scission complète en 10 packages NuGet** | Big-bang risqué ; à séquencer par vagues si besoin. | v2.0+ |
 
@@ -1174,14 +1183,15 @@ Pour que EMT soit considérée v1.0 production-ready :
 ┌─────────────────────────────────────────────────────────────────────┐
 │ V1.1 — SOLID Refactors (R8, R9, R12)                    ✅ Livré   │
 │ BaseConsumer SRP · Scission IMessagingProvider · Helper DI samples  │
-│ R10 (sortie adapter Functions) — 🚫 Hors scope Azure Functions      │
+│ R10 (Consumer adapter Functions) — 🚫 Hors scope ; Producer multi-hôte ✅│
 └─────────────────────────────────────────────────────────────────────┘
                               │
 ┌─────────────────────────────────────────────────────────────────────┐
-│ PHASE 6 — CloudEvents + Multi-hôte (10-16 sem.)         ⛾ Cond.    │
-│ ✅ Dans le scope : AKS / ARO / ASP.NET Core hosting · CloudEvents   │
+│ PHASE 6 — CloudEvents + Consumer multi-hôte (10-16 sem.) ⛾ Cond.  │
+│ ✅ Dans le scope : Consumer AKS/ARO (BackgroundService) · CloudEvents│
+│ ℹ️  Producer multi-hôte déjà livré (R9) — hors scope de cette phase │
 │ 🚫 HORS SCOPE  : Kafka / Confluent — ne PAS implémenter ce volet   │
-│ ⚠️ Démarrer SEULEMENT si cas d'usage non-Azure concret              │
+│ ⚠️ Démarrer SEULEMENT si cas d'usage Consumer AKS/ARO concret       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1192,7 +1202,7 @@ Pour que EMT soit considérée v1.0 production-ready :
 >
 > ✅ **In-scope (si Phase 6 activée) :**
 > - CloudEvents 1.0 comme `MessageEnvelope` (interop Event Grid, EventBridge).
-> - Scission en assemblies pour le multi-hôte (Functions / AKS / ARO via `BackgroundService`).
+> - Scission en assemblies pour le **Consumer** multi-hôte (AKS / ARO via `BackgroundService`). Le Producer est déjà multi-hôte après R9.
 > - RabbitMQ **seulement si** un partenaire RAMQ l'exige (AMQP 0.9.1 ou 1.0).
 
 ---
@@ -1283,7 +1293,7 @@ Pour que EMT soit considérée v1.0 production-ready :
 4. **Le Routing Slip v2.0** est livré et constitue **la référence SOLID** de la lib — c'est le sous-système le mieux conçu. Tous les refactors futurs doivent s'en inspirer.
 5. **L'idempotence repose sur un triangle** : infra + EMT + métier. Sans validation infrastructurelle (lot R4), le triangle est incomplet — risque réel de doublons métier.
 6. **Le pattern Request/Reply est cassé** dans les samples actuels. Lot R3 prioritaire avant qu'un junior n'en hérite et l'utilise mal.
-7. **SOLID est partiellement violé** : 5 violations majeures (SRP sur BaseConsumer/Producer/MessageTransitContext/AzureMessagingProvider ; OCP+ISP sur IMessagingProvider ; DIP sur l'adapter Functions). Lots R8-R10 prévus pour v1.1.
+7. **SOLID est partiellement résolu** : R8/R9 livrés. Modèle de déploiement clarifié — **Producer** est multi-hôte (AzFunc / AKS / ARO) ; **Consumer** est exclusivement Azure Functions. DIP sur le Consumer-adapter (R10) reste hors scope v1.0.
 8. **Les 26 samples sont la documentation vivante**, mais 3 sont cassés (R/R) et plusieurs ont des trous pédagogiques majeurs (Claim Check actif, métriques OTel, tests d'activités). Lots R2, R11, R12.
 9. **Kafka / Confluent est explicitement hors scope.** Tous les autres axes de Phase 6 (CloudEvents, scission multi-hôte, RabbitMQ partenaire) restent envisageables si besoin.
 10. **Le plan de résolution R1-R12** chiffre 9-12 semaines en parallèle (3-4 devs) pour atteindre une v1.0 stable production-ready, avec critères d'acceptation explicites en [§11.11](#1111-critères-dacceptation-v10-stable).
