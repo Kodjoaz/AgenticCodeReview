@@ -1,4 +1,4 @@
-namespace RAMQ.Samples.Queue.ClaimCheck.PDF.Message
+namespace RAMQ.Samples.Queue.ClaimCheck.Message
 {
     /// <summary>
     /// Métadonnées d'un rapport PDF médical publié via Claim Check.

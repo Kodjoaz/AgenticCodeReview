@@ -3,11 +3,11 @@ using Microsoft.Azure.Functions.Worker.Http;
 using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer;
-using RAMQ.Samples.Queue.ClaimCheck.PDF.Message;
+using RAMQ.Samples.Queue.ClaimCheck.Message;
 using System.Net;
 using System.Text;
 
-namespace RAMQ.Samples.Queue.ClaimCheck.PDF.Worker
+namespace RAMQ.Samples.Queue.ClaimCheck.Worker
 {
     /// <summary>
     /// HTTP trigger — publie un rapport PDF via le pattern Claim Check.

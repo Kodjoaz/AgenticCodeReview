@@ -478,10 +478,10 @@ Le dossier [`Exemples/`](../Exemples/) contient **35 projets** qui démontrent l
 | 29 | `RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator` | Durable Functions — machine à états Sequential Convoy : attend `tdf.envoi`, timeout configurable, signal `CorrellerEnvoyer`, audit activity, custom status OTel | TDF / Sequential Convoy (orchestrateur) | v2.0 | 🟢 Active |
 | 30 | `RAMQ.Samples.Queue.HOA5.Consumer` | Azure Function `BaseConsumer<CorrelationResultMessage>` — reçoit le résultat de corrélation publié par l'orchestrateur et appelle l'API Backend HOA5 | TDF / Sequential Convoy (consumer HOA5) | v2.0 | 🟢 Active |
 | 31 | `RAMQ.Samples.Queue.HOA5.Integration.Backend` | Azure Function HTTP Backend — expose les endpoints métier HOA5 (`InscrireSuiviFichCornl`, etc.) appelés par `HOA5.Consumer` via Refit | TDF / Sequential Convoy (backend HOA5) | v2.0 | 🟢 Active |
-| 32 | `RAMQ.Samples.Queue.ClaimCheck.PDF.Message` | DTO `PdfRapportMessage` (métadonnées : RapportId, PatientId, TypeRapport, FileName, TailleOctets) | Claim Check | n/a | 🟢 Active |
-| 33 | `RAMQ.Samples.Queue.ClaimCheck.PDF.Worker` | Azure Function HTTP — 3 cas : gros message JSON (> 256 Ko auto), pièce jointe binaire (`WithAttachment`), message léger inline | Claim Check (producteur) | v2.0 | 🟢 Active |
-| 34 | `RAMQ.Samples.Queue.ClaimCheck.PDF.Consumer` | Lib `ClaimCheckPdfConsumer : BaseConsumer<PdfRapportMessage>` — Option A (référence blob → API downstream) + Option B (download inline via `IStorageProvider`) | Claim Check (consumer lib) | v2.0 | 🟢 Active |
-| 35 | `RAMQ.Samples.Queue.ClaimCheck.PDF.Activator` | Azure Function `ServiceBusTrigger` — reçoit les messages de la queue `sbq-claimcheck-pdf` et délègue à `ClaimCheckPdfConsumer` | Claim Check (trigger) | v2.0 | 🟢 Active |
+| 32 | `RAMQ.Samples.Queue.ClaimCheck.Message` | DTO `RapportMessage` (métadonnées : RapportId, PatientId, TypeRapport, FileName, TailleOctets) | Claim Check | n/a | 🟢 Active |
+| 33 | `RAMQ.Samples.Queue.ClaimCheck.Worker` | Azure Function HTTP — 3 cas : gros message JSON (> 256 Ko auto), pièce jointe binaire (`WithAttachment`), message léger inline | Claim Check (producteur) | v2.0 | 🟢 Active |
+| 34 | `RAMQ.Samples.Queue.ClaimCheck.Consumer` | Lib `ClaimCheckConsumer : BaseConsumer<RapportMessage>` — Option A (référence blob → API downstream) + Option B (download inline via `IStorageProvider`) | Claim Check (consumer lib) | v2.0 | 🟢 Active |
+| 35 | `RAMQ.Samples.Queue.ClaimCheck.Activator` | Azure Function `ServiceBusTrigger` — reçoit les messages de la queue `sbq-claimcheck-pdf` et délègue à `ClaimCheckConsumer` | Claim Check (trigger) | v2.0 | 🟢 Active |
 
 ### 7.2 Trois familles de samples — guide de lecture
 
@@ -532,7 +532,7 @@ Points techniques remarquables :
 
 | # | Observation | Sévérité |
 |---|---|---|
-| **S-1** | ~~Aucun sample ne démontre Claim Check actif.~~ ✅ **Résolu R2** — `RAMQ.Samples.Queue.ClaimCheck.PDF.*` (4 projets) couvre gros message JSON, pièce jointe binaire et message léger. Options A (référence) et B (download inline) démontrées. | 🟢 Résolu |
+| **S-1** | ~~Aucun sample ne démontre Claim Check actif.~~ ✅ **Résolu R2** — `RAMQ.Samples.Queue.ClaimCheck.*` (4 projets) couvre gros message JSON, pièce jointe binaire et message léger. Options A (référence) et B (download inline) démontrées. | 🟢 Résolu |
 | **S-2** | Aucun sample ne démontre le **Circuit Breaker en action** (injection de panne, ouverture, fermeture). Pattern implémenté mais non illustré. | 🟡 Mineur |
 | **S-3** | ~~`Queue.RequestReply` est inutilisable en l'état.~~ ✅ **Résolu R3** — C1/C2/C3/I5 corrigés, 4 projets compilent et fonctionnent. | 🟢 Résolu |
 | **S-4** | ~~Plusieurs samples copient/collent le même `Program.cs`.~~ ✅ **Résolu R12** — `AddEMTSampleProducerDefaults` + `AddEMTSampleConsumerDefaults` dans `RAMQ.Samples.MessageTransitHelper`, appliqués sur 10 samples. | 🟢 Résolu |
@@ -594,7 +594,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 
 🟠 **À compléter (lot R5 du plan de résolution) :**
 - TTL Blob automatique ou job de nettoyage des orphelins (risque CAI/RGPD).
-- Sample dédié `Queue.ClaimCheck.PDF` démontrant l'envoi d'un PDF de 5 Mo.
+- Sample dédié `Queue.ClaimCheck` démontrant l'envoi d'un PDF de 5 Mo.
 
 > ✅ Counters OTel (`claimcheck_uploads_total`, `claimcheck_downloads_total`) déjà livrés en R7.
 
@@ -991,13 +991,13 @@ Cf. [§7 de la version originale](#7-récapitulatif-des-revues) pour la table co
 **Origine :** Observation S-1 sur les samples (§7.4).
 **Objectif :** combler le trou pédagogique — aucun sample ne démontrait le Claim Check actif.
 
-**Livré — 4 projets dans `Exemples/RAMQ.Samples.Queue.ClaimCheck.PDF.*` :**
+**Livré — 4 projets dans `Exemples/RAMQ.Samples.Queue.ClaimCheck.*` :**
 
 | Projet | Rôle |
 |---|---|
-| `.Message` | DTO `PdfRapportMessage` (métadonnées du rapport) |
+| `.Message` | DTO `RapportMessage` (métadonnées du rapport) |
 | `.Worker` | Azure Function HTTP trigger — **3 cas de test couverts** |
-| `.Consumer` | Lib `ClaimCheckPdfConsumer : BaseConsumer<PdfRapportMessage>` — Options A et B |
+| `.Consumer` | Lib `ClaimCheckConsumer : BaseConsumer<RapportMessage>` — Options A et B |
 | `.Activator` | Azure Function `ServiceBusTrigger` — reçoit et délègue au Consumer |
 
 **3 cas de test couverts dans le Worker :**

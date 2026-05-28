@@ -18,6 +18,7 @@
     <ProjectReference Include="..\..\EnterpriseMessageTransit\EnterpriseMessageTransit.csproj" />
     <ProjectReference Include="..\RAMQ.Samples.ConfigurationService\RAMQ.Samples.ConfigurationService.csproj" />
     <ProjectReference Include="..\RAMQ.Samples.MessageTransitHelper\RAMQ.Samples.MessageTransitHelper.csproj" />
-    <ProjectReference Include="..\RAMQ.Samples.Queue.ClaimCheck.PDF.Message\RAMQ.Samples.Queue.ClaimCheck.PDF.Message.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.Queue.ClaimCheck.Consumer\RAMQ.Samples.Queue.ClaimCheck.Consumer.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.Queue.ClaimCheck.Message\RAMQ.Samples.Queue.ClaimCheck.Message.csproj" />
   </ItemGroup>
 </Project>

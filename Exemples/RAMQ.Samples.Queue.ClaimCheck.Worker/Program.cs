@@ -5,7 +5,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
 using RAMQ.Samples.MessageTransitHelper;
-using RAMQ.Samples.Queue.ClaimCheck.PDF.Consumer;
+using RAMQ.Samples.Queue.ClaimCheck.Message;
 
 var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
@@ -17,9 +17,10 @@ var builder = new HostBuilder()
         services.ConfigureFunctionsApplicationInsights();
 
         // R12 — Boilerplate EMT réduit à un appel.
-        services.AddEMTSampleConsumerDefaults(ctx.Configuration, new VisualStudioCredential());
+        services.AddEMTSampleProducerDefaults(ctx.Configuration, new VisualStudioCredential());
 
-        services.AddConsumer<ClaimCheckPdfConsumer>("claimcheck-pdf-queue");
+        // Producer pour les messages ClaimCheck PDF.
+        services.AddProducer<PdfRapportMessage>("claimcheck-pdf-queue");
     });
 
 builder.Build().Run();

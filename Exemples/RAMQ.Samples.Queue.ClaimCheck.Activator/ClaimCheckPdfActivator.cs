@@ -1,24 +1,24 @@
 using Azure.Messaging.ServiceBus;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
-using RAMQ.Samples.Queue.ClaimCheck.PDF.Consumer;
+using RAMQ.Samples.Queue.ClaimCheck.Consumer;
 
-namespace RAMQ.Samples.Queue.ClaimCheck.PDF.Activator
+namespace RAMQ.Samples.Queue.ClaimCheck.Activator
 {
-    public class ClaimCheckPdfActivator
+    public class ClaimCheckActivator
     {
-        private readonly ILogger<ClaimCheckPdfActivator> _logger;
-        private readonly ClaimCheckPdfConsumer _consumer;
+        private readonly ILogger<ClaimCheckActivator> _logger;
+        private readonly ClaimCheckConsumer _consumer;
 
-        public ClaimCheckPdfActivator(
-            ILogger<ClaimCheckPdfActivator> logger,
-            ClaimCheckPdfConsumer consumer)
+        public ClaimCheckActivator(
+            ILogger<ClaimCheckActivator> logger,
+            ClaimCheckConsumer consumer)
         {
             _logger   = logger   ?? throw new ArgumentNullException(nameof(logger));
             _consumer = consumer ?? throw new ArgumentNullException(nameof(consumer));
         }
 
-        [Function(nameof(ClaimCheckPdfActivator))]
+        [Function(nameof(ClaimCheckActivator))]
         public async Task Run(
             [ServiceBusTrigger("sbq-claimcheck-pdf",
                                Connection = "ServiceBusConnection",
@@ -49,7 +49,7 @@ namespace RAMQ.Samples.Queue.ClaimCheck.PDF.Activator
             // Étape 2 — Désérialiser le message (gère le Claim Check automatiquement :
             // si IsClaimCheckApplied, EMT télécharge le payload depuis le Blob avant désérialisation).
             var deserResult = await _consumer.DeserializeMessageAsync<
-                RAMQ.Samples.Queue.ClaimCheck.PDF.Message.PdfRapportMessage>(cancellationToken);
+                RAMQ.Samples.Queue.ClaimCheck.Message.PdfRapportMessage>(cancellationToken);
 
             if (!deserResult.IsSuccess || deserResult.Value == null)
             {

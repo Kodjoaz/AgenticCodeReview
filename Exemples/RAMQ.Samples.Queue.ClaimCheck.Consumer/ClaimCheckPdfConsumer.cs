@@ -5,10 +5,10 @@ using RAMQ.COM.EnterpriseMessageTransit.Messaging;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers;
 using RAMQ.COM.EnterpriseMessageTransit.Serialization;
-using RAMQ.Samples.Queue.ClaimCheck.PDF.Message;
+using RAMQ.Samples.Queue.ClaimCheck.Message;
 using System.Text;
 
-namespace RAMQ.Samples.Queue.ClaimCheck.PDF.Consumer
+namespace RAMQ.Samples.Queue.ClaimCheck.Consumer
 {
     /// <summary>
     /// Consumer Claim Check — démontre les deux stratégies de consommation d'un message > 256 Ko.
@@ -21,11 +21,11 @@ namespace RAMQ.Samples.Queue.ClaimCheck.PDF.Consumer
     ///   et le traite directement dans le consumer.
     ///   Avantage : traitement local complet ; utile si l'API downstream n'a pas accès au storage.
     /// </summary>
-    public class ClaimCheckPdfConsumer : BaseConsumer<PdfRapportMessage>
+    public class ClaimCheckConsumer : BaseConsumer<PdfRapportMessage>
     {
-        public ClaimCheckPdfConsumer(
+        public ClaimCheckConsumer(
             IMessagingProvider messagingProvider,
-            ILogger<ClaimCheckPdfConsumer> logger,
+            ILogger<ClaimCheckConsumer> logger,
             IConsumerConfigurationService config,
             IMessageSerializer serializer,
             IStorageProvider storageProvider,
@@ -112,13 +112,13 @@ namespace RAMQ.Samples.Queue.ClaimCheck.PDF.Consumer
             }
             catch (OperationCanceledException)
             {
-                Logger.LogWarning("Annulation ClaimCheckPdfConsumer MessageId={MessageId}", context.MessageId);
+                Logger.LogWarning("Annulation ClaimCheckConsumer MessageId={MessageId}", context.MessageId);
                 throw;
             }
             catch (Exception ex)
             {
                 reply.IsTransient = true;
-                Logger.LogError(ex, "Erreur ClaimCheckPdfConsumer MessageId={MessageId}", context.MessageId);
+                Logger.LogError(ex, "Erreur ClaimCheckConsumer MessageId={MessageId}", context.MessageId);
                 await DeadLetterMessageAsync(ex, cancellationToken);
             }
 

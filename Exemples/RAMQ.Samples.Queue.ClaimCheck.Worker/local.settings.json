@@ -6,7 +6,7 @@
     "ServiceBusConnection__fullyQualifiedNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net"
   },
   "AppSettings": {
-    "ApplicationName": "ClaimCheckPdfWorker",
+    "ApplicationName": "ClaimCheckWorker",
     "ServiceBusNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net",
     "RetryPolicy": {
       "InitialDelay": "00:00:05",

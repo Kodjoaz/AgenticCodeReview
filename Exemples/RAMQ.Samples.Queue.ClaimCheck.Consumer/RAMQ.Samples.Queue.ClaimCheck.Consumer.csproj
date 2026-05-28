@@ -6,6 +6,6 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\EnterpriseMessageTransit\EnterpriseMessageTransit.csproj" />
-    <ProjectReference Include="..\RAMQ.Samples.Queue.ClaimCheck.PDF.Message\RAMQ.Samples.Queue.ClaimCheck.PDF.Message.csproj" />
+    <ProjectReference Include="..\RAMQ.Samples.Queue.ClaimCheck.Message\RAMQ.Samples.Queue.ClaimCheck.Message.csproj" />
   </ItemGroup>
 </Project>
