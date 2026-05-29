@@ -33,6 +33,8 @@
 4. [Cartographie du code source — où est quoi](#4-cartographie-du-code-source)
 5. [Flux d'exécution pas-à-pas](#5-flux-dexécution-pas-à-pas)
 6. [Les patterns expliqués en profondeur](#6-les-patterns-expliqués-en-profondeur)
+    - [6.7 Message Transit Journal — BAM enterprise + Single Pane of Glass](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique)
+    - [6.9 Multi-Target Producer — pattern fanout typé](#69-multi-target-producer--pattern-fanout-typé)
 7. [Inventaire des exemples — 35 projets dans `Exemples/`](#7-inventaire-des-exemples-31-projets-dans-exemples)
 8. [Vérification des patterns enterprise — état actuel](#8-vérification-des-patterns-enterprise)
 9. [Audit SOLID — ligne par ligne](#9-audit-solid--ligne-par-ligne)
@@ -42,6 +44,8 @@
 12. [Feuille de route — où va EMT](#12-feuille-de-route)
 13. [Design For Operation — architecture observabilité enterprise](#13-design-for-operation--architecture-observabilité-enterprise)
     - [13.4 ILogger vs OpenTelemetry — la nuance critique](#134-ilogger-vs-opentelemetry--la-nuance-critique)
+    - [13.4.4 10 best practices ILogger + OTel opposables en revue](#1344-best-practices-ilogger--opentelemetry--checklist-quotidienne-ramq)
+    - [13.4.6 Niveaux de log dans le code métier RAMQ — guide opposable](#1346-niveaux-de-log-dans-le-code-métier-ramq--guide-opposable)
     - [13.5 Stratégie de filtrage à chaque étage](#135-stratégie-de-filtrage-à-chaque-étage--design-for-operation)
     - [13.10 Workbooks et alertes](#1310-workbooks-et-alertes--livrables-opérationnels-recommandés)
     - [13.11 Checklist pour démarrer](#1311-pour-démarrer--checklist-design-for-operation-pour-un-nouveau-domaine-ramq)
@@ -140,7 +144,7 @@ EMT n'est pas une librairie monolithique, c'est en réalité **trois produits im
 | **Consumer / Action** | Application Properties Service Bus utilisées en filtres SQL. |
 | **CorrelationId** | Identifiant immuable bout-en-bout, survit aux retries. |
 | **EndpointResolver** | Mappe `Target` logique → queue/topic physique. |
-| **Journal (pattern A5)** | Audit Azure Table **découplé du chemin critique**. |
+| **Journal (MTJ — BAM)** | **Business Activity Monitoring** stockés en Azure Table, découplé du chemin critique (pattern A5). Système nerveux métier (cf. [§6.7](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique)). |
 
 ---
 
@@ -150,7 +154,7 @@ EMT n'est pas une librairie monolithique, c'est en réalité **trois produits im
 |---|---|---|---|
 | **R1** | **Routing Slip** (saga auto-portante) | Cloisonnement RBAC entre domaines — aucun orchestrateur central possible | Itinéraire dans le message, pas dans un service central |
 | **R2** | **Claim Check** systématique | Pièces jointes médicales > 256 Ko, rétention légale | Requirement réglementaire déguisé en pattern technique |
-| **R3** | **Journal A5** (audit) | Auditabilité multi-années (CAI) | Citoyen de première classe, découplé du chemin critique |
+| **R3** | **MTJ — Business Activity Monitoring** (BAM enterprise) | Pilotage métier temps réel + auditabilité 7 ans (CAI). Pas un audit log, mais le **système nerveux métier** de la plateforme RAMQ (cf. [§6.7](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique)) | Pilier stratégique de niveau plateforme, découplé du chemin critique via pattern A5 |
 | **R4** | **`Consumer.Action`** Application Properties | Contrats stables métier vs topologie SB infra | Refactorer la topologie sans casser les consumers |
 | **R5** | **Sessions Service Bus** | Traitement FIFO par entité métier | Garanti par ASB, propriété déclarative d'endpoint |
 | **R6** | **`Variables`** dans le contexte | Contexte saga accumulé par étapes | Standardise un porte-clés que 15 consumers réinventaient |
@@ -504,13 +508,1122 @@ Trois politiques de retry :
 
 `CircuitBreakerManager` (Singleton, **par entité**) : Closed → Open → HalfOpen.
 
-### 6.7 Journalisation (pattern A5)
+### 6.7 Message Transit Journal (MTJ) — Business Activity Monitoring stratégique
 
-Audit Azure Table avec `JournalEntry.ForPublish/ForRetry/ForDLQ/ForRequestReply`. **Découplé du chemin critique** : un échec d'écriture audit ne fait pas échouer un envoi.
+> 🧭 **Décision plateforme RAMQ :** le MTJ n'est **pas** un journal d'audit technique. C'est notre **Business Activity Monitoring (BAM)** — le système nerveux métier qui mesure, alerte et explique le comportement de chaque processus d'intégration RAMQ, en temps réel et sur 7 ans.
+>
+> Cette décision élève le MTJ au rang de **produit plateforme stratégique**, pas un sidecar facultatif.
+
+#### 6.7.0 Positionnement stratégique — pourquoi le MTJ est notre BAM
+
+> 💡 **Pour un junior — qu'est-ce que le Business Activity Monitoring ?** Le BAM est un concept enterprise (Gartner, Forrester) qui mesure les **événements métier** d'une organisation en temps réel : « combien de dossiers RAMQ ont franchi l'étape de validation aujourd'hui ? », « quel domaine est en retard sur son SLA de 2 minutes ? », « pourquoi le taux de DLQ a doublé ce matin ? ». Le BAM se distingue de l'**APM (Application Performance Monitoring)** par sa focalisation **métier**, pas infrastructure.
+
+##### Les 5 dimensions BAM que le MTJ doit couvrir
+
+| Dimension BAM | Question métier RAMQ | Champ MTJ qui la porte |
+|---|---|---|
+| **Volume métier** | « Combien de dossiers d'assurance traités aujourd'hui ? » | `Mode=PUBLISH` × `Action="ValiderDossier"` |
+| **Latence métier (E2E)** | « Combien de temps entre soumission et notification ? » | `EnqueuedTimeUtc` cross-stages corrélés par `CorrelationId` / `SlipId` |
+| **Taux de succès / échec** | « Quel domaine échoue le plus aujourd'hui ? » | `Mode=DLQ` group by `Target` + `DeadLetterReason` |
+| **Conformité SLA** | « Le domaine Pharmacie respecte-t-il son SLA de 5 min ? » | Différence `EnqueuedTimeUtc` step N - step 0 par `SlipId` |
+| **Anomalies métier** | « Pourquoi 12 % de dossiers stuck après l'étape 3 ? » | Slips publiés sans `ForSlipComplete` correspondant |
+
+##### Différences clefs MTJ-BAM vs APM (Application Insights)
+
+| Aspect | APM (Application Insights / OTel) | BAM (Message Transit Journal) |
+|---|---|---|
+| **Question principale** | « Le code va-t-il bien ? » | « Le métier va-t-il bien ? » |
+| **Rétention** | 30-90 jours (FinOps OTel) | 7 ans (conformité légale RAMQ) |
+| **Granularité** | Span technique, latence ms | Événement métier, conformité SLA |
+| **Public cible** | SRE, devs backend | Direction, Conformité, Architectes métier |
+| **Volume** | Élevé (millions/jour, sampling 10 %) | Modéré (toutes les opérations métier, 100 %) |
+| **Source de vérité** | Sampling probabiliste | **Exhaustif, jamais sampled** |
+| **Outil de requête** | KQL Application Insights | KQL Log Analytics + Power BI |
+| **Coût/Go** | ~2,76 USD/Go (Log Analytics) | ~0,05 CAD/Go (Table Storage) |
+
+🟢 **Insight stratégique :** le MTJ est **complémentaire** à Application Insights, pas concurrent. Application Insights couvre les **incidents techniques** (« mon code a planté »). Le MTJ couvre les **événements métier** (« la pharmacie n'a pas validé ce dossier dans le délai »). Les deux **se joignent par TraceId** (lot R16) pour donner une vision complète à un opérateur.
+
+##### Architecture cible BAM enterprise pour EMT — 4 couches
+
+```
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  COUCHE 1 — Sources d'événements métier (EMT runtime)                          │
+│    Producer · BaseConsumer · RoutingSlipExecutor · RetryPolicyHandler         │
+│    → émettent JournalEntry enrichies (R16) via IJournalProvider               │
+└────────────────────────────────────┬──────────────────────────────────────────┘
+                                     │ pattern A5 — découplé du chemin critique
+                                     ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  COUCHE 2 — Stockage primaire BAM                                              │
+│    Azure Table Storage  (table `MessageTransitJournal`)                       │
+│      PartitionKey = Target (endpoint logique)                                 │
+│      RowKey = horodatage + MessageId + Guid                                   │
+│      Rétention : 7 ans (conformité CAI)                                       │
+│      Coût : ~0,05 CAD/Go — quasi-gratuit même à 100 Go                        │
+└────────────────────────────────────┬──────────────────────────────────────────┘
+                                     │ Change Feed Azure Tables (optionnel)
+                                     │ OU export batch via Data Factory
+                                     ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  COUCHE 3 — Traitement temps réel BAM (optionnel, Phase 2 BAM)                 │
+│    Azure Stream Analytics OU Azure Data Explorer (ADX)                        │
+│      → calcul de KPI temps réel (rolling windows)                             │
+│      → enrichissement par référentiels métier RAMQ                            │
+│      → détection d'anomalies via Azure Anomaly Detector                       │
+└────────────────────────────────────┬──────────────────────────────────────────┘
+                                     ▼
+┌───────────────────────────────────────────────────────────────────────────────┐
+│  COUCHE 4 — Consommation BAM                                                   │
+│    • Power BI Dashboards (direction métier, conformité)                       │
+│    • Azure Monitor Workbooks (SRE, Lead techniques)                           │
+│    • Application Insights (jointure technique via TraceId — lot R16)          │
+│    • Alertes Action Groups (SLA breach, anomalies métier)                     │
+│    • Export juridique (archive 7 ans pour CAI / enquêtes)                     │
+└───────────────────────────────────────────────────────────────────────────────┘
+```
+
+##### Les outils Azure stratégiques pour le BAM EMT
+
+| Service Azure | Rôle BAM | Quand l'introduire |
+|---|---|---|
+| **Azure Table Storage** | Stockage primaire 7 ans, source de vérité | ✅ Phase 1 — déjà en place |
+| **Log Analytics Workspace** | Requêtes KQL exploratoires (corrélation MTJ ↔ traces) | ✅ Phase 1 BAM — exposer la Table via `externaldata()` ou export Data Factory |
+| **Power BI Premium** | Dashboards métier exécutifs (direction RAMQ) | 🟠 Phase 2 BAM — dès qu'on a besoin de KPI partagés à la direction |
+| **Azure Data Explorer (ADX)** | Requêtes temps réel haute performance sur des milliards d'événements | 🟡 Phase 3 BAM — au-delà de 10 millions de messages/jour |
+| **Azure Stream Analytics** | Agrégations temps réel, détection patterns SLA | 🟡 Phase 3 BAM — alertes < 1 minute sur breach SLA |
+| **Azure Anomaly Detector** | Détection automatique de variations anormales par domaine | 🟡 Phase 3 BAM — maturité opérationnelle ≥ 6 mois |
+| **Azure Data Factory** | Export Table Storage → Power BI / ADX (planifié) | 🟠 Phase 2 BAM — alimentation initiale Power BI |
+| **Azure Purview** | Catalogage et lineage des données BAM (gouvernance) | 🟡 Phase 3 BAM — alignement avec stratégie data RAMQ |
+
+##### KPI BAM cibles pour le premier déploiement RAMQ
+
+| KPI | Définition KQL | Cible métier |
+|---|---|---|
+| **Throughput dossiers/heure** | `count() by bin(EnqueuedTimeUtc, 1h)` filtré sur `Action=ValidationDossier` | Tendance hebdomadaire |
+| **Latence E2E médiane** | `percentile(durationMs, 50)` par `SlipName` | < 5 min pour 95 % des slips |
+| **Taux DLQ** | `100.0 * count(Mode=DLQ) / count(Mode=PUBLISH)` par domaine | < 0,1 % en nominal |
+| **Slips stuck** | Slips avec `ForPublish` mais sans `ForSlipComplete` dans les 24h | Alerte au-delà de 5 |
+| **Conformité SLA par domaine** | `% slips où Duration < SLA` group by Target | ≥ 98 % |
+| **Top 5 raisons DLQ semaine** | `count() by DeadLetterReason` order by count desc | Pour priorisation backlog |
+| **Distribution par Application Source** | `count() by ApplicationName` | Identifier les apps émettrices et leur poids |
+
+##### Single Pane of Glass — le pont opérationnel ↔ métier
+
+> 🧭 **Concept enterprise central :** le *single pane of glass* est une **vue unifiée** où un opérateur (SRE, agent CAI, Lead technique, direction métier) peut **partir d'un point quelconque** (alerte business, log technique, dossier métier) et **dériver dans toutes les dimensions** sans changer d'outil ni perdre le contexte. C'est ce qui transforme deux systèmes côte-à-côte (APM + BAM) en une **plateforme d'observabilité unique**.
+
+##### L'analogie du tableau de bord automobile
+
+> 💡 **Pour un junior — comprendre le single pane of glass en 30 secondes :**
+>
+> Imagine que tu conduis une voiture. Sur ton tableau de bord, tu vois en même temps : la vitesse, le niveau d'essence, la température moteur, le voyant ABS, le GPS. **Tu ne descends pas du véhicule pour aller lire chaque jauge sous le capot, dans le réservoir, ou dans la roue.** Tout est devant toi, et un seul coup d'œil suffit.
+>
+> Le single pane of glass, c'est ça pour l'observabilité de la plateforme RAMQ :
+> - **Une seule UI** (Azure Monitor Workbooks) où on voit tout en même temps.
+> - **Un même contexte** propagé : la voiture a un VIN unique ; nos messages ont un `TraceId` unique.
+> - **Des « voyants » qui parlent à chaque persona** : la direction voit la jauge essence (KPI métier), le mécanicien voit la température moteur (métriques techniques).
+> - **Un drill-down d'un clic** : si le voyant ABS s'allume, le mécanicien branche son scanner sur la prise OBD-II sans démonter la voiture. Pour nous : un clic du Workbook business vers l'Application Map technique.
+
+##### Définition précise du single pane of glass appliquée à EMT
+
+Le single pane of glass EMT respecte **3 propriétés non-négociables** :
+
+1. **Convergence visuelle** — Toutes les données d'observabilité (logs, traces, métriques, MTJ-BAM, alertes) sont **accessibles depuis une seule URL** : le portail Azure Monitor. Pas de Grafana à côté, pas de Power BI ailleurs, pas de console séparée pour Service Bus DLQ.
+
+2. **Convergence sémantique** — Tous les événements observés sont **liés par des identifiants communs** (`TraceId`, `SlipId`, `CorrelationId`, `MessageId`). Cela permet la requête transversale : « tous les logs + tous les spans + toutes les entrées BAM ayant `TraceId = X` ».
+
+3. **Convergence narrative** — Pour chaque persona (direction, SRE, agent CAI), il existe **un Workbook unique** qui est son point d'entrée naturel. Le persona n'a pas à connaître la structure technique des données pour les explorer.
+
+> 🧭 **La phrase de référence à mémoriser :** *« Un seul endroit pour entrer, mille chemins pour creuser, zéro contexte perdu. »*
+
+##### Avant / Après — la même investigation, deux mondes
+
+###### Sans single pane of glass (état actuel, 2026-05)
+
+```
+   3h12 — alerte SLA breach « domaine Pharmacie »
+   ─────────────────────────────────────────────────
+   ✉ Email PagerDuty avec un texte vague :
+       "Pharmacy domain SLA exceeded — 47 dossiers affected"
+
+   📱 Ouverture Power BI BAM dashboard
+   → onglet 1 : voir le KPI breach
+   → onglet 2 : voir les 47 DossierId concernés
+   → copier-coller des 47 IDs dans un fichier texte
+
+   🖥️ Ouverture Application Insights dans un autre onglet
+   → coller chaque DossierId dans la barre de recherche
+   → ne trouve rien — DossierId est en customDim, pas indexé
+   → essai par CorrelationId — mais le breach n'en donnait pas
+
+   🖥️ Ouverture Azure Portal pour Service Bus
+   → cliquer sur la queue Pharmacie → DLQ → voir les messages
+   → format MessageId différent, pas relié au DossierId
+
+   🖥️ Ouverture du repo GitHub pour comprendre le code
+   → chercher dans quelle classe le SLA est mesuré
+   → trouver le code, comprendre le contexte
+
+   ⏱️  3h12 → 6h45  (3h33 d'investigation avant 1ère hypothèse)
+   😤  6h45 → équipe nuit transmet à équipe jour faute de pouvoir conclure
+```
+
+###### Avec single pane of glass (état cible après lots R13/R14/R16)
+
+```
+   3h12 — alerte SLA breach « domaine Pharmacie »
+   ─────────────────────────────────────────────────
+   📱 Notification Azure Monitor avec lien direct :
+       "47 dossiers en SLA breach → ouvrir Workbook 2 (filtré)"
+
+   🖥️ Clic → Workbook 2 « EMT Operational » s'ouvre déjà filtré
+   → table en haut : 47 dossiers, colonnes [DossierId, TraceId, StepStuck, Domain]
+
+   → clic sur la 1ʳᵉ ligne (DossierId D-2026-04-0042)
+   → Application Map s'affiche en latéral droit, filtré par ce TraceId
+   → on voit : Validate ✓ (200ms) → Enrich ✓ (180ms) → Reserve TIMEOUT (30s)
+
+   → clic « voir les exceptions associées »
+   → 1 trace remontée : "Pharmacy.WCF.SoapException: Timeout 30s"
+
+   → clic « voir l'entrée MTJ correspondante »
+   → entrée BAM : `Mode=DLQ`, `DeadLetterReason="SOAP timeout"`,
+                   `StepName="Reserve"`, `Target="pharmacie-soap-adapter"`
+
+   → clic « voir tous les dossiers similaires depuis 1h »
+   → 47 résultats, tous avec la même cause racine
+
+   ⏱️  3h12 → 3h27  (15 min d'investigation, cause racine identifiée)
+   ✅  3h27 → ouverture ticket WCF Pharmacie, mitigation lancée à 3h35
+```
+
+**Différence quantifiée :** **3h33 → 15 min**, soit un facteur **14×** sur le MTTR (Mean Time To Resolution). Voilà pourquoi le single pane of glass n'est pas un « nice to have » — c'est le **multiplicateur de productivité opérationnelle** qui justifie tous les lots DFO.
+
+##### Pourquoi c'est particulièrement critique pour RAMQ
+
+| Contrainte RAMQ | Comment le single pane of glass aide |
+|---|---|
+| **Cloisonnement des domaines** (assurance, pharmacie, dispensateur, etc.) | Un opérateur RAMQ centralisé peut diagnostiquer un incident traversant 3 domaines sans avoir accès aux 3 cockpits séparés |
+| **Conformité CAI** (loi d'accès à l'information) | Un agent CAI reconstruit le parcours d'un dossier en 5 minutes, signe un PDF audit, et peut retracer 7 ans en arrière |
+| **WCF SOAP legacy** | Les timeouts WCF sont vus dans le même Workbook que les retries EMT — pas besoin de switcher sur le portail legacy |
+| **Multi-équipes (49 implémentations possibles)** | Toutes les équipes voient les mêmes Workbooks, parlent le même vocabulaire (BAM/APM) — pas de divergence |
+| **Cycles de release distincts** | Quand une équipe upgrade EMT v1.0 → v1.1, le single pane of glass reste identique — invariant opérationnel |
+| **Astreinte 24/7** | Réveillé à 3h du matin, l'opérateur **doit** diagnostiquer en < 30 min — sinon le mandat de santé publique tombe |
+
+##### Les 4 erreurs à éviter quand on construit son single pane of glass
+
+> 🟠 **Erreur #1 — Multiplier les outils en pensant « le meilleur de chaque ».**
+> Grafana pour les métriques, Splunk pour les logs, Power BI pour le BAM, Azure Monitor pour les traces. Sur le papier c'est mieux. **En pratique, chaque outil ajouté divise par 2 la vitesse de diagnostic** (latence cognitive de basculement). Un seul outil « bon partout » bat 4 outils excellents séparés.
+
+> 🟠 **Erreur #2 — Oublier que les personas ne sont pas symétriques.**
+> Un Lead technique veut commencer par la trace technique. Une direction métier veut commencer par le KPI. Une équipe conformité veut commencer par le dossier individuel. **Construire un seul Workbook pour les 3 = personne ne l'utilise.** Il faut 3 Workbooks avec leurs **points d'entrée propres** + drill-down réciproques.
+
+> 🟠 **Erreur #3 — Croire que la corrélation peut se faire après coup.**
+> Si `TraceId` n'est pas injecté à l'origine dans tous les signaux (logs, MTJ, métriques), aucune requête KQL ne pourra le reconstituer. **La propagation des identifiants doit être faite by-design à l'émission**, pas en post-traitement. C'est pour ça que les lots R13/R14/R16 sont des prérequis.
+
+> 🟠 **Erreur #4 — Confondre « beaucoup de données » et « bon single pane of glass ».**
+> Un dashboard qui montre 200 graphiques n'est pas un single pane of glass — c'est du bruit. Un single pane of glass montre **les 5-10 éléments qui comptent**, avec drill-down vers le détail. **Moins de signal visible, plus de signal accessible.**
+
+##### Comment savoir si on a réussi son single pane of glass
+
+Le test est binaire : **prendre un opérateur d'astreinte à 3h du matin, lui montrer une alerte, chronométrer.** Trois résultats possibles :
+
+| Diagnostic | Verdict |
+|---|---|
+| < 15 min — cause racine + impact business identifiés | ✅ Single pane of glass réussi |
+| 15-60 min — diagnostic atteint mais avec friction multi-outils | 🟡 En cours — manque drill-down 1 clic |
+| > 60 min — l'opérateur doit appeler un dev senior pour comprendre | 🔴 Échec — pas un single pane of glass, juste plusieurs outils |
+
+L'objectif RAMQ pour la v1.0 : **>= 80 % des incidents diagnostiqués en < 30 min, mesuré sur 3 mois post-DFO-4** (cf. KPI §13.12.9).
+
+##### Pourquoi le single pane of glass est non-négociable pour RAMQ
+
+Aujourd'hui, sans single pane of glass, voici ce qui se passe lors d'un incident :
+
+```
+   3h du matin — alerte SLA breach « domaine Pharmacie »
+   │
+   ▼
+   Agent astreinte ouvre Power BI dashboard BAM
+   → voit 47 dossiers en breach
+   → veut comprendre pourquoi
+   │
+   ▼  ❌ Friction
+   Doit basculer manuellement dans Application Insights
+   → cherche par CorrelationId (slow scan)
+   → 50 traces remontent, lesquelles correspondent aux 47 dossiers ?
+   │
+   ▼  ❌ Friction
+   Doit basculer dans Azure Portal pour voir Service Bus DLQ
+   → cherche par MessageId — pas le même format
+   │
+   ▼  ❌ Friction
+   Doit basculer dans le code RAMQ pour comprendre la logique
+   │
+   ▼  ⏱️  Diagnostic ≈ 2-4 heures
+```
+
+Avec single pane of glass (cible) :
+
+```
+   3h du matin — alerte SLA breach « domaine Pharmacie » (dans Azure Monitor)
+   │
+   ▼
+   Workbook unique « EMT Operations » dans Azure Monitor
+   → clic sur l'alerte → vue agrégée 47 dossiers
+   → 1 clic « voir traces » → Application Map filtrée par les TraceId concernés
+   → 1 clic « voir KQL MTJ » → timeline complète des slips
+   → 1 clic « voir Service Bus DLQ » → messages réels via deep-link Azure Portal
+   │
+   ▼  ⏱️  Diagnostic ≈ 15 minutes
+```
+
+##### Architecture du single pane of glass EMT — 3 surfaces, 1 vérité
+
+```
+        ┌──────────────────────────────────────────────────────────┐
+        │       AZURE MONITOR — UI unique (Workbooks)               │
+        │                                                            │
+        │  ┌────────────────────────────────────────────────────┐   │
+        │  │ Workbook 1 — EMT Executive (BAM, direction RAMQ)   │   │
+        │  │   → KPI métier, conformité SLA, taux de DLQ        │   │
+        │  │   → drill-down : 1 clic vers Workbook 2            │   │
+        │  └────────────────┬───────────────────────────────────┘   │
+        │                   │ TraceId / SlipId / CorrelationId      │
+        │  ┌────────────────▼───────────────────────────────────┐   │
+        │  │ Workbook 2 — EMT Operational (APM+BAM, SRE/Lead)   │   │
+        │  │   → Application Map, traces, métriques, logs       │   │
+        │  │   → vues côte-à-côte BAM ↔ APM                     │   │
+        │  │   → drill-down : 1 clic vers ressource Azure       │   │
+        │  └────────────────┬───────────────────────────────────┘   │
+        │                   │ deep-links Azure portal               │
+        │  ┌────────────────▼───────────────────────────────────┐   │
+        │  │ Workbook 3 — EMT Forensic (CAI, conformité)        │   │
+        │  │   → recherche par DossierId / MessageId / SlipId   │   │
+        │  │   → reconstruction timeline 7 ans                  │   │
+        │  │   → export PDF pour dossier juridique              │   │
+        │  └────────────────────────────────────────────────────┘   │
+        │                                                            │
+        └──────────────────────────────────────────────────────────┘
+                                  │
+                  ┌───────────────┴────────────────┐
+                  ▼                                ▼
+    ┌────────────────────────┐    ┌────────────────────────┐
+    │ Log Analytics          │    │ Azure Table Storage    │
+    │ (APM technique 90 j)   │    │ (BAM métier 7 ans)     │
+    │  dependencies          │◄──►│  MessageTransitJournal │
+    │  customMetrics         │    │                        │
+    │  traces                │    │ ← TraceId/SpanId/SlipId│
+    │  exceptions            │    │   permettent jointure  │
+    └────────────────────────┘    └────────────────────────┘
+                              │
+                              ▼
+                ┌──────────────────────────┐
+                │ Power BI Premium          │
+                │ (BAM exécutif, direction) │
+                │ ← export Data Factory     │
+                └──────────────────────────┘
+```
+
+##### Les 3 personas et leur point d'entrée dans le single pane of glass
+
+| Persona | Question d'entrée | Workbook de départ | Drill-down possible |
+|---|---|---|---|
+| **Direction métier RAMQ** | « Combien de dossiers traités cette semaine par domaine ? » | Workbook 1 (Executive) ou Power BI | Vers Workbook 2 si anomalie détectée |
+| **Lead technique / SRE** | « Pourquoi l'alerte A2 (DLQ spike) s'est déclenchée ? » | Workbook 2 (Operational) | Vers Workbook 1 (impact business) ou Workbook 3 (audit) |
+| **Agent CAI / Conformité** | « Reconstruire le parcours du dossier D-2026-04-0042 » | Workbook 3 (Forensic) | Vers Application Insights (cause technique) si besoin |
+
+🟢 **Invariant critique :** ces 3 Workbooks **utilisent les mêmes clefs de jointure** (TraceId, SlipId, MessageId, CorrelationId, DossierId). Cela suppose que ces clefs sont **propagées de bout en bout** — c'est précisément la raison d'être des lots R13 (BeginScope), R14 (W3C TraceContext propagation) et R16 (TraceId/SlipId dans MTJ).
+
+##### Comment construire le single pane of glass — décomposition technique
+
+Le single pane of glass repose sur **3 capacités techniques mutuellement renforcées** :
+
+1. **Identifiants partagés** entre APM et BAM
+   - `TraceId` (W3C, 32 hex) — généré par OTel SDK, propagé via lot R14, persisté en MTJ par lot R16
+   - `SlipId` (Guid) — généré par `RoutingSlipBuilder`, propagé via `SlipHeader`, persisté en MTJ par lot R16
+   - `CorrelationId` (Guid) — immuable, survit aux retries, présent partout depuis Phase 1
+   - `MessageId` (Guid) — peut être régénéré sur retry exponentiel no-session (donc moins fiable)
+   - `DossierId` / `AssureId` (PII !) — métier, transitent via `Variables` (hash recommandé en `customDimensions`, valeur claire en MTJ seulement)
+
+2. **Jointures KQL natives** entre Log Analytics et Azure Table
+   - Pattern `externaldata()` pour accéder à Azure Table Storage depuis KQL
+   - Lookup tables MaterializedView pour les KPI les plus fréquents
+   - Pré-calculs Stream Analytics pour les vues temps réel
+
+3. **Workbooks Azure Monitor avec deep-links**
+   - Liens vers spécifique trace dans Application Map (`#blade/AppInsightsExtension/TraceDetailBlade`)
+   - Liens vers entité Service Bus DLQ (`#blade/Microsoft_Azure_ServiceBus/...`)
+   - Liens vers ressource Azure Function / Worker (logs en direct)
+   - Liens vers le Workbook adjacent (drill-down avec paramètres préfillés)
+
+##### Requête KQL emblématique du single pane of glass
+
+```kusto
+// "Donne-moi tout sur ce dossier — APM + BAM en une requête"
+let dossierId = "D-2026-04-0042";
+
+// BAM : timeline business complète depuis Azure Table
+let bam = externaldata(TraceId:string, SlipId:string, SlipName:string,
+                      StepIndex:int, StepName:string, StepStatus:string,
+                      EnqueuedTimeUtc:datetime, Mode:string, StatusCode:int,
+                      Target:string, ApplicationName:string,
+                      Consumer:string, Action:string)
+    [@"https://ramq.table.core.windows.net/MessageTransitJournal?$filter=..."]
+        with(format='csv');
+
+// APM : tous les spans et logs ayant ce dossier en customDimensions
+let apm = union dependencies, traces, exceptions
+    | where tostring(customDimensions["DossierId"]) == dossierId
+            or tostring(customDimensions["dossier_id"]) == dossierId
+    | project timestamp, itemType, name, message, duration, operation_Id, customDimensions;
+
+// Union — UNE SEULE TIMELINE pour le single pane of glass
+bam
+| project EnqueuedTimeUtc, source="BAM", name=strcat(SlipName, ".", StepName),
+          status=StepStatus, mode=Mode, statusCode=StatusCode,
+          operation_Id=TraceId, target=Target
+| union (
+    apm
+    | project EnqueuedTimeUtc=timestamp, source="APM", name, status=tostring(itemType),
+              mode="", statusCode=0, operation_Id, target=""
+)
+| order by EnqueuedTimeUtc asc
+| project EnqueuedTimeUtc, source, name, status, target, operation_Id
+```
+
+**Résultat :** une seule ligne temporelle qui mélange événements BAM (étapes saga) et APM (spans + erreurs). Pour un agent CAI : « 2026-04-12 09:34 → step ValiderAdmissibilite Completed, 2026-04-12 09:35 → exception NamException, 2026-04-12 09:36 → step EnrichirDonnees Faulted ». **Diagnostic en 30 secondes**.
+
+##### Trois règles d'or du single pane of glass RAMQ
+
+> 🟢 **Règle #1 — Une seule URL d'entrée pour chaque persona.**
+> Workbook 1 pour la direction, Workbook 2 pour les SRE/Lead, Workbook 3 pour la conformité. Pas de « ouvrir 5 onglets ». Si un persona doit aller dans 2 outils, on a échoué.
+
+> 🟢 **Règle #2 — TraceId partout, sans exception.**
+> Toute donnée d'observabilité (log, span, métrique, entrée MTJ) doit contenir `TraceId`. C'est la clef de jointure unique. Lots R13/R14/R16 sont **non-négociables**.
+
+> 🟢 **Règle #3 — Drill-down toujours en 1 clic.**
+> Un opérateur ne devrait jamais avoir à copier/coller un ID entre deux outils. Tous les liens cross-workbook et cross-portail doivent être pré-construits avec paramètres URL.
+
+##### Pourquoi cette vision est **stratégique** pour RAMQ
+
+> 💡 **Une plateforme d'intégration sans BAM est une boîte noire métier.** EMT v0.x était une lib technique. EMT v1.0 + MTJ-BAM devient un **outil de pilotage métier** :
+>
+> - **La direction RAMQ** sait combien de dossiers ont été traités par domaine, en temps réel.
+> - **L'équipe Conformité** peut prouver qu'un dossier a été audité selon la procédure, en quelques requêtes.
+> - **Les architectes métier** identifient les goulots d'étranglement entre domaines avant qu'ils ne deviennent des incidents.
+> - **Les Lead techniques** corrèlent un incident technique (Application Insights, trace) à son **impact métier** (MTJ, nombre de dossiers affectés) en une seule requête.
+> - **Les agents CAI** reconstruisent le parcours d'un dossier en 5 minutes, pas 5 jours.
+
+C'est cette vision qui justifie l'investissement R16 — ce n'est pas un refactor d'audit log, c'est la **construction du système nerveux métier de la plateforme d'intégration RAMQ**.
+
+#### 6.7.1 État actuel — ce que le journal capture
+
+**Interface :** [`IJournalProvider.cs:8-18`](../EnterpriseMessageTransit/Messaging/Providers/IJournalProvider.cs)
+
+```csharp
+public interface IJournalProvider
+{
+    Task WriteRecordAsync(JournalEntry entry, CancellationToken ct = default);
+    Task WriteBatchAsync(IEnumerable<JournalEntry> entries, CancellationToken ct = default);
+}
+```
+
+**Record `JournalEntry`** ([`JournalEntry.cs:9-23`](../EnterpriseMessageTransit/Messaging/Providers/JournalEntry.cs)) — **13 champs** :
+
+| Champ | Type | Source | Usage |
+|---|---|---|---|
+| `Consumer` | string | propriétés du message | Routage métier RAMQ |
+| `Action` | string | propriétés du message | Routage métier RAMQ |
+| `MessageId` | string | `MessageTransitContext.MessageId` | Identifiant unique du message |
+| `CorrelationId` | string | `MessageTransitContext.CorrelationId` (immuable) | Corrélation bout-en-bout cross-retries |
+| `Target` | string | EndpointResolver | Endpoint logique destinataire |
+| `Mode` | enum `OperationMode` | factory utilisée | `PUBLISH` / `RETRY` / `DLQ` / `REQUEST_REPLY` |
+| `StatusCode` | int | factory + contexte | HTTP-like : 200 OK, 410 DLQ, 429 retry |
+| `DeliveryCount` | int | broker | Nombre de tentatives de livraison |
+| `MaxDeliveryCount` | int | config consumer | Plafond avant DLQ automatique |
+| `DeadLetterReason` | string | exception ou raison | Renseigné en DLQ uniquement |
+| `EnqueuedTimeUtc` | DateTime | broker | Horodatage côté Service Bus |
+| `DeadLetterSource` | string? | broker | « UserError », « MaxDeliveryCountExceeded »… |
+| `SessionId` | string? | contexte | Si entité session-activée |
+| `ApplicationName` | string? | `AppSettings` | Nom de l'app émettrice |
+
+**Stockage :** Azure Table Storage, table `AppSettings.MessageTransitJournalName`.
+
+**Stratégie d'indexation** ([`AzureJournalProvider.cs:112-113`](../EnterpriseMessageTransit/Messaging/Providers/Azure/AzureJournalProvider.cs)) :
+- `PartitionKey = Target ?? "(none)"` — une partition par endpoint logique
+- `RowKey = {timestamp:yyyyMMddHHmmssfff}-{MessageId}-{Guid:N}` — unicité absolue, tri chronologique par scan
+
+**Batch optimisé :** [`AzureJournalProvider.cs:76-105`](../EnterpriseMessageTransit/Messaging/Providers/Azure/AzureJournalProvider.cs) utilise `SubmitTransactionAsync` (max 100 entités par batch, groupées par PartitionKey) — **transactionnel par batch**, pas O(n) séquentiel.
+
+**Factory methods statiques** (4) :
+- `JournalEntry.ForPublish(...)` : StatusCode=200, Mode=PUBLISH, DeliveryCount=1
+- `JournalEntry.ForRetry(...)` : StatusCode=429, Mode=RETRY
+- `JournalEntry.ForDLQ(...)` : StatusCode=410, Mode=DLQ
+- `JournalEntry.ForRequestReply(...)` : StatusCode personnalisé, Mode=REQUEST_REPLY
+
+#### 6.7.2 Pattern A5 — découplage critique
+
+> 🧭 **Le pattern A5 est une décision de design consciente, pas un bug.**
+
+Quand `Producer.PublishCoreAsync` appelle `_journal.WriteRecordAsync(...)` après un `SendAsync` réussi, le bloc est wrappé dans un `try/catch` :
+
+```csharp
+// Producer.cs:170-175 — pattern A5
+try
+{
+    await _journal.WriteRecordAsync(journalEntry, effectiveCt);
+}
+catch (Exception jEx)
+{
+    _logger.LogWarning(jEx, "Journal failed (publish) — message sent but not journalized");
+    // ↑ on N'EST PAS responsable de la disponibilité du journal côté chemin critique
+}
+```
+
+**Justification :** si Azure Table est indisponible 5 minutes, on préfère **continuer à envoyer les messages** (système reste utile) quitte à perdre 5 minutes d'audit, plutôt que de tout bloquer. La conformité audit est un **nice-to-have à la seconde près**, pas un **must-have à la seconde près**.
+
+🟠 **Conséquence : lot R15 est nécessaire** (voir §11) — réconciliation périodique entre `messages_sent_total` et entrées journal, pour détecter et compenser les pertes.
+
+#### 6.7.3 Trous identifiés — l'audit ligne-par-ligne
+
+Les **3 trous structurels** du MTJ actuel :
+
+##### T1 — RoutingSlipExecutor n'écrit aucune entrée journal
+
+🔴 **C'est le trou le plus grave de tout le système.** Pour une saga RAMQ à 5 étapes :
+
+```
+Activator                  → Producer.PublishAsync()  → 1 entrée journal ✅
+Worker step 1 (Validate)   → RoutingSlipExecutor      → 0 entrée journal ❌
+Worker step 2 (Enrich)     → RoutingSlipExecutor      → 0 entrée journal ❌
+Worker step 3 (Reserve)    → RoutingSlipExecutor      → 0 entrée journal ❌
+Worker step 4 (Notify)     → RoutingSlipExecutor      → 0 entrée journal ❌
+                                                       ───────────────────
+                                                       TOTAL : 1 entrée
+```
+
+**Conséquence pour l'auditabilité CAI :**
+- Impossible de savoir si l'étape « Reserve » a été franchie avec succès
+- Impossible de répondre à « Quand le DossierId D-001 a-t-il été validé ? »
+- Impossible de reconstruire la timeline d'un slip via le journal seul
+
+**Évidence dans le code :** [`RoutingSlipExecutor.cs:1-359`](../EnterpriseMessageTransit/Messaging/RoutingSlip/RoutingSlipExecutor.cs) — aucune référence à `IJournalProvider`, aucun appel `WriteRecordAsync`.
+
+##### T2 — Aucun `TraceId` / `SpanId` dans `JournalEntry`
+
+🔴 **Cassure de la corrélation Design For Operation.**
+
+Aujourd'hui, pour relier une entrée journal à un span Application Insights, l'opérateur **doit faire une jointure par `CorrelationId`** :
+
+```kusto
+// requête actuelle — joindre journal et trace
+let journal = externaldata(...)["MessageTransitJournal"];
+journal
+| join kind=inner (dependencies | where name == "messaging.publish")
+    on $left.CorrelationId == $right.customDimensions.CorrelationId
+```
+
+**Limites :**
+- `CorrelationId` n'est **pas** indexé dans Log Analytics (slow)
+- Plusieurs spans peuvent avoir le même `CorrelationId` (retries) → match ambigu
+- Demande à l'opérateur de connaître la structure exacte des deux schémas
+
+**Avec `TraceId` natif dans `JournalEntry` :**
+
+```kusto
+journal
+| join kind=inner dependencies on $left.TraceId == $right.operation_Id
+// ↑ jointure O(1) sur index natif Log Analytics
+```
+
+##### T3 — Aucun `SlipId` dans `JournalEntry`
+
+🟠 **Impossibilité de tracer un slip via le journal.**
+
+Le `SlipId` est porté par `SlipHeader` (dans le payload `SlipEnvelope`), mais **n'est pas extrait** vers `JournalEntry`. Un agent CAI qui cherche « tout ce qui s'est passé pour le slip `f3a8-...` » doit :
+1. Aller dans Application Insights pour les traces (qui ont `slip.id` en tag span)
+2. Aller dans la Table Journal pour l'audit légal
+3. Faire la corrélation manuellement par `CorrelationId`
+
+**Avec `SlipId` natif dans `JournalEntry`** : une seule requête sur la Table Journal suffit.
+
+#### 6.7.4 Vision cible — `JournalEntry` enrichi
+
+```csharp
+public sealed record JournalEntry
+{
+    // === Identifiants métier (existants) ===
+    public string Consumer        { get; init; }
+    public string Action          { get; init; }
+    public string MessageId       { get; init; }
+    public string CorrelationId   { get; init; }
+    public string Target          { get; init; }
+
+    // === Traçabilité Design For Operation (nouveaux — lot R16) ===
+    public string? TraceId        { get; init; }   // ← injecté depuis Activity.Current?.TraceId
+    public string? SpanId         { get; init; }   // ← idem pour l'opération courante
+    public string? ParentSpanId   { get; init; }   // ← pour saga : span du worker précédent
+
+    // === Routing Slip (nouveaux — lot R16) ===
+    public string? SlipId         { get; init; }   // ← depuis SlipEnvelope.Header.SlipId
+    public string? SlipName       { get; init; }   // ← workflow logique (ex. "TraiterDossier")
+    public int?    StepIndex      { get; init; }   // ← cursor courant
+    public string? StepName       { get; init; }   // ← nom de l'étape franchie
+    public SlipStepStatus? StepStatus { get; init; }  // ← Completed / Faulted / Compensated
+
+    // === Résultat opération (existants) ===
+    public OperationMode Mode     { get; init; }
+    public int  StatusCode        { get; init; }
+    public int  DeliveryCount     { get; init; }
+    public int  MaxDeliveryCount  { get; init; }
+    public string? DeadLetterReason   { get; init; }
+    public string? DeadLetterSource   { get; init; }
+
+    // === Contexte (existants) ===
+    public DateTime EnqueuedTimeUtc   { get; init; }
+    public string?  SessionId         { get; init; }
+    public string?  ApplicationName   { get; init; }
+}
+```
+
+#### 6.7.5 Intégration MTJ ↔ Routing Slip — design cible
+
+Le `RoutingSlipExecutor` doit injecter **une entrée journal par étape franchie**. Voici le pattern proposé pour le lot R16 :
+
+```csharp
+// RoutingSlipExecutor.cs — version cible (pseudocode)
+internal sealed class RoutingSlipExecutor<TArgs> : IRoutingSlipExecutor
+{
+    private readonly IJournalProvider _journal;   // ← NOUVELLE dépendance DI
+
+    public async Task ExecuteAsync(IMessagingProvider provider, CancellationToken ct)
+    {
+        var envelope = /* ... désérialiser le SlipEnvelope ... */;
+        var currentStep = envelope.Steps[envelope.Cursor];
+
+        using var activity = MessagingActivitySource.Source.StartActivity(
+            "routing_slip.step",
+            ActivityKind.Internal);
+        activity?.SetTag("slip.id", envelope.Header.SlipId);
+        activity?.SetTag("slip.name", envelope.Header.SlipName);
+        activity?.SetTag("slip.cursor", envelope.Cursor);
+        activity?.SetTag("slip.step.name", currentStep.Name);
+
+        ActivityResult result;
+        try
+        {
+            result = await activity.ExecuteAsync(ctx, ct);
+        }
+        catch (Exception ex)
+        {
+            await JournalSlipStepAsync(envelope, currentStep, status: Faulted, ex, ct);
+            throw;
+        }
+
+        // ✅ Journalisation systématique de chaque step
+        await JournalSlipStepAsync(envelope, currentStep,
+            status: result is NextResult ? Completed : (result is FaultResult ? Faulted : ...),
+            exception: null, ct);
+
+        // Routing vers le step suivant ou Complete...
+    }
+
+    private async Task JournalSlipStepAsync(
+        SlipEnvelope envelope, SlipStep step, SlipStepStatus status,
+        Exception? ex, CancellationToken ct)
+    {
+        var entry = JournalEntry.ForSlipStep(    // ← NOUVELLE factory
+            messageId:        envelope.Header.SlipId,    // step n'a pas son propre MessageId
+            correlationId:    envelope.Header.CorrelationId,
+            traceId:          Activity.Current?.TraceId.ToString(),
+            spanId:           Activity.Current?.SpanId.ToString(),
+            parentSpanId:     Activity.Current?.ParentSpanId.ToString(),
+            slipId:           envelope.Header.SlipId,
+            slipName:         envelope.Header.SlipName,
+            stepIndex:        envelope.Cursor,
+            stepName:         step.Name,
+            stepStatus:       status,
+            target:           step.EntityName,
+            deadLetterReason: ex?.Message,
+            applicationName:  /* ... */);
+
+        try { await _journal.WriteRecordAsync(entry, ct); }
+        catch (Exception jEx) { _logger.LogWarning(jEx, "Journal step failed"); }  // A5
+    }
+}
+```
+
+**Conséquence pour une saga 5 steps :**
+
+```
+Activator                  → 1 entrée ForPublish     (SlipName="TraiterDossier", Cursor=0, Status=Active)
+Worker step 1 (Validate)   → 1 entrée ForSlipStep    (Cursor=1, StepName="Validate", Status=Completed)
+Worker step 2 (Enrich)     → 1 entrée ForSlipStep    (Cursor=2, StepName="Enrich", Status=Completed)
+Worker step 3 (Reserve)    → 1 entrée ForSlipStep    (Cursor=3, StepName="Reserve", Status=Faulted!)
+Compensation Validate      → 1 entrée ForSlipStep    (Cursor=1, StepName="Validate", Status=Compensated)
+                             ─────────────────────────────────────────────────────────────────
+                             5 entrées — timeline complète reconstructible
+```
+
+**Requête KQL après enrichissement :**
+
+```kusto
+externaldata(...)["MessageTransitJournal"]
+| where SlipId == "f3a8-..."
+| order by EnqueuedTimeUtc asc
+| project EnqueuedTimeUtc, StepIndex, StepName, StepStatus, DeadLetterReason
+```
+
+→ **Reconstruction d'un slip complet en une requête Table (pas même besoin d'Application Insights).**
+
+#### 6.7.6 Intégration MTJ ↔ DFO — propagation TraceId
+
+> 🧭 **Le journal devient le pont entre l'audit légal (Azure Table, rétention 7 ans) et l'observabilité opérationnelle (Application Insights, rétention 90 jours).**
+
+Le lot R14 (W3C TraceContext propagation, déjà introduit en §13.9) doit être **couplé au lot R16** :
+
+| Lot | Rôle dans la corrélation |
+|---|---|
+| **R14** | Propage `traceparent` côté **Service Bus ApplicationProperties** (Producer → Consumer) |
+| **R16** | Injecte `TraceId/SpanId` dans **`JournalEntry`** (Activity.Current → Journal) |
+
+**Source unique de vérité** : `Activity.Current`. Si l'`Activity` ambiente est posée correctement (lots R13 + R14), alors :
+
+```csharp
+// AzureJournalProvider.WriteRecordAsync (interne)
+var entity = BuildEntity(entry);
+// Injection automatique des champs trace si absents dans entry
+if (string.IsNullOrEmpty(entry.TraceId) && Activity.Current is { } act)
+{
+    entity["TraceId"]      = act.TraceId.ToString();
+    entity["SpanId"]       = act.SpanId.ToString();
+    entity["ParentSpanId"] = act.ParentSpanId.ToString();
+}
+```
+
+**Bénéfice opérationnel pour un agent CAI / SRE :**
+
+| Avant R16 | Après R16 |
+|---|---|
+| Cherche dans la Table Journal par `CorrelationId` (slow scan) | Cherche par `TraceId` ou `SlipId` (index direct) |
+| Joint manuellement avec Application Insights | Lien cliquable « Voir cette trace dans Application Map » dans le Workbook |
+| Reconstruit un saga 5-steps en lisant 5 logs distincts | Une seule requête KQL sur la Table Journal |
+
+#### 6.7.7 Compensation et DLQ — couverture cible
+
+Le journal doit aussi capturer **les compensations Routing Slip** (déclenchées en cas de `Fault`) — aujourd'hui ces opérations ne laissent aucune trace journalisée.
+
+**Cas à couvrir (lot R16) :**
+
+| Événement | Factory cible | Quand |
+|---|---|---|
+| Publish initial du slip | `ForPublish` (existant) | Activator → `PublishAsync` |
+| Step franchi avec succès | `ForSlipStep(status=Completed)` (nouveau) | RoutingSlipExecutor après `ActivityResult.Next` |
+| Step en faute | `ForSlipStep(status=Faulted)` (nouveau) | RoutingSlipExecutor après `ActivityResult.Fault` |
+| Compensation déclenchée | `ForSlipCompensation` (nouveau) | RoutingSlipExecutor en mode rollback LIFO |
+| Slip complété | `ForSlipComplete` (nouveau) | RoutingSlipExecutor sur dernier step + Complete |
+| Retry exponentiel | `ForRetry` (existant) | RetryPolicyHandler |
+| DLQ final | `ForDLQ` (existant) | RetryPolicyHandler après MaxDeliveryCount |
+
+#### 6.7.8 Plan d'implémentation MTJ — lot R16 phasé
+
+> **Objectif :** enrichir le MTJ pour qu'il devienne l'épine dorsale de l'audit Routing Slip et le pont vers Application Insights, **sans casser** les call sites existants.
+
+##### Phase R16-A — Enrichissement schéma `JournalEntry` (1 semaine)
+
+| # | Tâche | Livrable |
+|---|---|---|
+| R16-A.1 | Ajouter `TraceId`, `SpanId`, `ParentSpanId` (nullable) à `JournalEntry` | PR additif |
+| R16-A.2 | Ajouter `SlipId`, `SlipName`, `StepIndex`, `StepName`, `StepStatus` (nullable) | PR additif |
+| R16-A.3 | Étendre `AzureJournalProvider.BuildEntity` pour persister les nouveaux champs en Azure Table | PR — entité Table flexible |
+| R16-A.4 | Test unitaire : round-trip JournalEntry avec tous les champs Trace + Slip | Test vert |
+| R16-A.5 | Migration de table : aucune (Azure Table est schemaless — les colonnes apparaissent automatiquement à la première écriture) | Note dans MIGRATION.md |
+
+**Compatibilité :** 100 % rétrocompatible — les anciennes entrées sans `TraceId` restent lisibles, les nouvelles ont les champs supplémentaires.
+
+##### Phase R16-B — Auto-injection `Activity.Current` (3 jours)
+
+| # | Tâche | Livrable |
+|---|---|---|
+| R16-B.1 | Dans `AzureJournalProvider.WriteRecordAsync` : si `entry.TraceId` est null, lire `Activity.Current?.TraceId` | PR |
+| R16-B.2 | Idem dans `WriteBatchAsync` | PR |
+| R16-B.3 | Test : appel `WriteRecordAsync` dans une portée `Activity.StartActivity(...)` → l'entrée journal porte le bon `TraceId` | Test vert |
+
+##### Phase R16-C — Nouvelles factory methods (1 semaine)
+
+| # | Tâche | Livrable |
+|---|---|---|
+| R16-C.1 | `JournalEntry.ForSlipStep(...)` : accepte SlipId, StepName, Cursor, StepStatus, TraceId | PR + test |
+| R16-C.2 | `JournalEntry.ForSlipCompensation(...)` : variante pour compensations LIFO | PR + test |
+| R16-C.3 | `JournalEntry.ForSlipComplete(...)` : variante pour le complete final | PR + test |
+| R16-C.4 | Documenter le catalogue de factories dans `docs/observability/journal.md` (nouveau fichier) | Doc + 6 exemples |
+
+##### Phase R16-D — Intégration `RoutingSlipExecutor` (1 semaine)
+
+| # | Tâche | Livrable |
+|---|---|---|
+| R16-D.1 | Injecter `IJournalProvider` dans `RoutingSlipExecutor<TArgs>` (constructeur) | PR |
+| R16-D.2 | Wrapper Try/Catch (pattern A5) autour de l'écriture journal — `SafeJournalAsync` | PR |
+| R16-D.3 | Écrire `ForSlipStep(Completed)` après chaque `Next()` réussi | PR |
+| R16-D.4 | Écrire `ForSlipStep(Faulted)` lors d'un `Fault(ex)` | PR |
+| R16-D.5 | Écrire `ForSlipCompensation` pour chaque compensateur déclenché | PR |
+| R16-D.6 | Écrire `ForSlipComplete` sur le dernier step réussi | PR |
+| R16-D.7 | Test d'intégration sur Service Bus Emulator : saga 3 steps → 4 entrées journal (1 publish + 3 steps) | Test vert |
+
+##### Phase R16-E — Workbook et alertes basés sur le MTJ enrichi (1 semaine)
+
+| # | Tâche | Livrable |
+|---|---|---|
+| R16-E.1 | Workbook **MTJ Slip Timeline** — vue chronologique d'un slip par `SlipId` | JSON Workbook |
+| R16-E.2 | Workbook **MTJ Audit Trail** — recherche par `DossierId` / `MessageId` / `SlipId` | JSON Workbook |
+| R16-E.3 | Alerte sur slips bloqués > N heures (slip publié sans `ForSlipComplete` correspondant) | Bicep alert |
+| R16-E.4 | Documentation : pattern KQL « Reconstruction d'un slip » avec exemples | Doc `docs/observability/journal-kql.md` |
+
+**Total R16 :** ~4-5 semaines (1 dev backend + 0.5 dev SRE en revue).
+
+**Dépendances :**
+- Pré-requis : Lot R14 (W3C TraceContext propagation) livré avant R16-B (sinon `Activity.Current.TraceId` n'est pas lié aux spans Producer/Consumer).
+- Co-requis : Lot R15 (réconciliation) bénéficie directement du `SlipId` natif pour les alertes de slip stuck.
+
+**Risques R16 et mitigations :**
+
+| Risque | Probabilité | Impact | Mitigation |
+|---|---|---|---|
+| Cardinalité Table Azure explose (cf. limite 252 colonnes) | 🟢 Faible | Faible | 5 nouveaux champs nullable seulement → 18 colonnes au total, marge énorme |
+| Coût Table Storage augmente × 5 (5 entrées/saga au lieu de 1) | 🟡 Moyenne | Moyen | Table Storage coûte ~0,05 $ CAD / Go — impact négligeable même × 10 |
+| Refactor lot R16-D casse des tests Routing Slip existants | 🟡 Moyenne | Moyen | TDD : écrire d'abord les tests, refactor ensuite |
+| Conflit avec lots R13 (BeginScope) et R14 (traceparent) | 🟡 Moyenne | Moyen | Séquence stricte : R13 → R14 → R16-B → R16-D |
 
 ### 6.8 Sessions Service Bus
 
 `EnableSession = true` → `SessionId` obligatoire, FIFO garanti par session, lock mono-consumer. Validation fail-fast dans `PublishCoreAsync` (lève `ArgumentNullException` si manquant).
+
+### 6.9 Multi-Target Producer — pattern fanout typé
+
+> 💡 **Pour un junior — le besoin métier :** une application RAMQ doit parfois envoyer **différents types de messages** vers **différentes queues/topics** dans la même opération. Exemple typique : un service de réservation qui publie en parallèle un `CarMessage` vers la queue `car-bookings`, un `HotelMessage` vers `hotel-bookings`, et un `FlightMessage` vers `flight-bookings`. Le code applicatif doit aujourd'hui **réinventer la glu** à chaque fois.
+
+#### 6.9.1 État actuel — sample `Queue.MultiTarget` (~150 lignes de boilerplate)
+
+Le sample [`RAMQ.Samples.Queue.MultiTarget.*`](../Exemples/) démontre le pattern, mais demande au développeur d'**implémenter 5 projets** et **3 classes Producer + 3 classes Consumer** pour 3 cibles. Voici la structure actuelle :
+
+```
+Exemples/
+├── RAMQ.Samples.Queue.MultiTarget.Message/      (records typés : CarMessage, HotelMessage, FlightMessage)
+├── RAMQ.Samples.Queue.MultiTarget.Producer/
+│   ├── IMultiTargetProducer.cs                  (interface — propre au sample)
+│   ├── MultiTargetProducer<TMessage>.cs         (classe abstraite — pattern Strategy)
+│   ├── CarProducer.cs                           (sous-classe — ~22 lignes)
+│   ├── HotelProducer.cs                         (sous-classe — ~22 lignes)
+│   ├── FlightProducer.cs                        (sous-classe — ~22 lignes)
+│   └── MultiTargetPublicationService.cs         (orchestrateur — itère la chaîne)
+├── RAMQ.Samples.Queue.MultiTarget.Consumer/
+│   ├── CarConsumer.cs                           (~30 lignes)
+│   ├── HotelConsumer.cs                         (~30 lignes)
+│   └── FlightConsumer.cs                        (~30 lignes)
+├── RAMQ.Samples.Queue.MultiTarget.Activator/    (3 ServiceBusTrigger Functions)
+└── RAMQ.Samples.Queue.MultiTarget.Worker/       (DoWork — appelle MultiTargetPublicationService)
+```
+
+#### 6.9.2 Le pain point côté Producer — concret
+
+Voici comment le développeur publie aujourd'hui un message vers une cible « Car » :
+
+```csharp
+// 1. Définir une sous-classe ProducerStrategy pour chaque type
+public class CarProducer : MultiTargetProducer<CarMessage>, IMultiTargetProducer
+{
+    private readonly IMessageProducer<CarMessage> _producer;
+    public CarProducer(IMessageProducer<CarMessage> producer) => _producer = producer;
+
+    public override string NomTarget => "Car";
+
+    public override MessageTransitContext<CarMessage> CreerContexte(
+        string target, Guid id, string content) => new()
+    {
+        MessageId = id.ToString("N"),
+        Message   = new CarMessage { Id = id, Content = content }
+    };
+
+    public async Task<bool> TryPublishAsync(string target, Guid id, string content, CancellationToken ct)
+    {
+        if (!target.Equals("Car", StringComparison.OrdinalIgnoreCase)) return false;
+        var ctx = CreerContexte(target, id, content);
+        await _producer.PublishAsync(ctx, ...);
+        return true;
+    }
+}
+
+// 2. Idem pour HotelProducer, FlightProducer — copy/paste avec changement de "Car" → "Hotel"
+
+// 3. Service orchestrateur
+public class MultiTargetPublicationService
+{
+    private readonly IEnumerable<IMultiTargetProducer> _producers;
+
+    public async Task PublierAsync(string target, Guid id, string content, CancellationToken ct)
+    {
+        foreach (var producer in _producers)
+        {
+            if (await producer.TryPublishAsync(target, id, content, ct))
+                return;
+        }
+        throw new InvalidOperationException($"Aucun producer ne reconnaît la cible : {target}");
+    }
+}
+
+// 4. Worker
+public class DoWork : BackgroundService
+{
+    public DoWork(MultiTargetPublicationService service) { /* ... */ }
+
+    protected override async Task ExecuteAsync(CancellationToken ct)
+    {
+        await _service.PublierAsync("Car",    Guid.NewGuid(), "...", ct);
+        await _service.PublierAsync("Hotel",  Guid.NewGuid(), "...", ct);
+        await _service.PublierAsync("Flight", Guid.NewGuid(), "...", ct);
+    }
+}
+
+// 5. DI Setup
+services.AddTransient<IMultiTargetProducer, CarProducer>();
+services.AddTransient<IMultiTargetProducer, HotelProducer>();
+services.AddTransient<IMultiTargetProducer, FlightProducer>();
+services.AddSingleton<MultiTargetPublicationService>();
+```
+
+🟠 **Constat :** ce code est **du boilerplate non-métier**. Aucune ligne ci-dessus ne fait quoi que ce soit qu'EMT ne pourrait pas faire. C'est de la glu d'infrastructure que **chaque équipe RAMQ doit réinventer**.
+
+**Comptage des problèmes :**
+
+| Problème | Impact |
+|---|---|
+| ~150 lignes de boilerplate par déploiement multi-target | Vélocité ↓, dette ↑ |
+| Pattern Strategy par chaînage `foreach + TryPublishAsync` | O(n) à chaque publish, pas de garantie de résolution |
+| Magic strings (`"Car"`, `"Hotel"`, `"Flight"`) | Pas de type-safety, fautes de frappe silencieuses |
+| Aucune extension EMT — chaque équipe ré-invente | Divergence inter-équipes, incohérence d'observabilité |
+| `IMultiTargetProducer` n'est pas dans EMT, mais dans le sample | Pas d'invariant garanti par la lib |
+| Pas de propagation OTel auto | Lots R13/R14 doivent être réimplémentés dans chaque CarProducer |
+
+#### 6.9.3 Design cible — `IMultiTargetProducer<TBase>` natif dans EMT
+
+> 🧭 **Vision :** absorber le pattern Strategy dans la lib EMT. Le développeur déclare ses cibles **une fois en DI**, et obtient une API **type-safe** qui route automatiquement le bon message vers la bonne queue.
+
+##### Interface cible (proposée pour la lib EMT — lot R17)
+
+```csharp
+namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
+{
+    /// <summary>
+    /// Producer multi-cible avec routage automatique par type.
+    /// Chaque message TPayload (héritier ou implémenteur de TBase) est routé
+    /// vers la cible logique configurée par AddMultiTargetProducer{TPayload}("target").
+    /// </summary>
+    public interface IMultiTargetProducer<TBase> where TBase : class
+    {
+        /// <summary>
+        /// Publie un message TPayload vers la cible logique enregistrée pour ce type.
+        /// La résolution de cible se fait via IMessageTargetMap (zero magic string).
+        /// </summary>
+        Task<MessageTransitContext<MessageTransitResponse>> PublishAsync<TPayload>(
+            MessageTransitContext<TPayload> context,
+            PublishOptions? options = null,
+            CancellationToken cancellationToken = default)
+            where TPayload : class, TBase;
+
+        /// <summary>
+        /// Batch typé : publie une collection hétérogène de TPayload où chaque
+        /// élément est routé vers SA cible (résolution par type d'objet).
+        /// </summary>
+        Task<IReadOnlyList<string>> PublishMixedBatchAsync(
+            IEnumerable<MessageTransitContext<TBase>> contexts,
+            PublishOptions? options = null,
+            CancellationToken cancellationToken = default);
+    }
+}
+```
+
+##### Extensions DI (lot R17)
+
+```csharp
+namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
+{
+    public static class MultiTargetProducerServiceCollectionExtensions
+    {
+        /// <summary>
+        /// Enregistre un IMultiTargetProducer{TBase} où TBase est une classe ou interface
+        /// commune (peut être 'object' si vraiment hétérogène).
+        /// </summary>
+        public static IServiceCollection AddMultiTargetProducer<TBase>(
+            this IServiceCollection services,
+            Action<MultiTargetBuilder<TBase>> configure)
+            where TBase : class
+        {
+            var builder = new MultiTargetBuilder<TBase>(services);
+            configure(builder);
+            services.AddSingleton<IMultiTargetProducer<TBase>>(sp =>
+                new EmtMultiTargetProducer<TBase>(sp, builder.Targets));
+            return services;
+        }
+    }
+
+    public sealed class MultiTargetBuilder<TBase> where TBase : class
+    {
+        public IDictionary<Type, string> Targets { get; } = new Dictionary<Type, string>();
+
+        /// <summary>
+        /// Lie un type TPayload (sous-type de TBase) à une cible logique.
+        /// Internalement, AddProducer{TPayload}(target) est aussi appelé.
+        /// </summary>
+        public MultiTargetBuilder<TBase> AddTarget<TPayload>(string target)
+            where TPayload : class, TBase
+        {
+            _services.AddProducer<TPayload>(target);
+            Targets[typeof(TPayload)] = target;
+            return this;
+        }
+    }
+}
+```
+
+##### Usage côté application — **5 lignes au lieu de ~150**
+
+```csharp
+// Program.cs côté Producer-side (Worker / Activator)
+services.AddMultiTargetProducer<IBookingMessage>(b => b
+    .AddTarget<CarMessage>("Car")
+    .AddTarget<HotelMessage>("Hotel")
+    .AddTarget<FlightMessage>("Flight"));
+
+// Côté code applicatif
+public class BookingService
+{
+    private readonly IMultiTargetProducer<IBookingMessage> _producer;
+
+    public BookingService(IMultiTargetProducer<IBookingMessage> producer) => _producer = producer;
+
+    public async Task ReserveAllAsync(Guid id, CancellationToken ct)
+    {
+        // Le bon producer interne est choisi automatiquement par typeof(TPayload)
+        await _producer.PublishAsync(new MessageTransitContext<CarMessage>
+            { Message = new CarMessage { /* ... */ } }, ct: ct);
+        await _producer.PublishAsync(new MessageTransitContext<HotelMessage>
+            { Message = new HotelMessage { /* ... */ } }, ct: ct);
+        await _producer.PublishAsync(new MessageTransitContext<FlightMessage>
+            { Message = new FlightMessage { /* ... */ } }, ct: ct);
+    }
+}
+```
+
+**Gain quantifié :**
+
+| Métrique | Avant (sample actuel) | Après (`IMultiTargetProducer<T>` natif) | Gain |
+|---|---|---|---|
+| Lignes de code applicatif | ~150 | ~5 (DI) + appels typés | **-95 %** |
+| Classes à créer par target | 1 Producer + 1 Consumer | 0 Producer (uniquement Consumer) | **-50 %** |
+| Magic strings | Oui (`"Car"`, `"Hotel"`) | Non (résolution par type) | **-100 %** |
+| Type safety | `string target` | `where TPayload : TBase` | ✅ |
+| Cohérence OTel cross-app | Variable | Garantie EMT | ✅ |
+
+#### 6.9.4 Avantages opérationnels du design natif
+
+1. **Type-safety :** une faute de frappe `"Caar"` ne compile plus — la cible est résolue par `typeof(TPayload)`.
+2. **Cohérence observabilité :** `IMultiTargetProducer<T>` hérite gratuitement de tous les améliorations DFO (lots R13, R14, R16) — chaque équipe n'a plus à les reproduire.
+3. **Découplage du fanout :** l'application appelante ne connaît pas le nom de la queue Service Bus — c'est de la **configuration**, pas du **code**.
+4. **Test unitaire trivial :** mocker `IMultiTargetProducer<IBookingMessage>` suffit, plus besoin de mocker N `IMessageProducer<T>` individuels.
+5. **Batch hétérogène natif :** `PublishMixedBatchAsync` permet d'envoyer Car + Hotel + Flight en **un seul appel optimisé** par EMT (sender cache mutualisé).
+6. **Compatible request/reply :** un projet futur peut ajouter `IMultiTargetRequestReplyClient<TBase, TResponse>` sur le même pattern.
+
+#### 6.9.5 Plan d'implémentation — lot R17 phasé
+
+> **Objectif :** ajouter `IMultiTargetProducer<TBase>` à la lib EMT, supprimer le boilerplate des samples, documenter la migration.
+
+##### Phase R17-A — API publique (3 jours)
+
+| # | Tâche | Livrable |
+|---|---|---|
+| R17-A.1 | Définir `IMultiTargetProducer<TBase>` + `EmtMultiTargetProducer<TBase>` (impl interne) dans `Messaging.Producer/` | PR additif |
+| R17-A.2 | Définir `MultiTargetBuilder<TBase>` + `AddMultiTargetProducer<TBase>(...)` extension | PR additif |
+| R17-A.3 | Résolution interne `typeof(TPayload) → target` via `IMessageTargetMap` (déjà existant) | Pas de nouveau code, réutilisation |
+| R17-A.4 | Mise à jour `PublicAPI.Unshipped.txt` avec les nouveaux types publics | PR |
+
+##### Phase R17-B — Implémentation `PublishMixedBatchAsync` (3 jours)
+
+| # | Tâche | Livrable |
+|---|---|---|
+| R17-B.1 | Grouper la collection mixte par `typeof(TPayload)` | Code interne |
+| R17-B.2 | Pour chaque groupe, appeler `IMessageProducer<TPayload>.PublishBatchAsync` correspondant | Code interne |
+| R17-B.3 | Retourner la liste de `MessageId` dans l'ordre d'entrée (même contrat que `PublishBatchAsync`) | Code interne |
+| R17-B.4 | Tests unitaires : batch mixte de 100 messages = 3 batches Service Bus (un par type) | Tests verts |
+
+##### Phase R17-C — Refonte des samples Multi-Target (1 semaine)
+
+| # | Tâche | Livrable |
+|---|---|---|
+| R17-C.1 | Supprimer les classes `CarProducer`, `HotelProducer`, `FlightProducer` du sample | -75 lignes |
+| R17-C.2 | Supprimer `IMultiTargetProducer` (interface du sample) et `MultiTargetProducer<T>` (classe abstraite) | -50 lignes |
+| R17-C.3 | Supprimer `MultiTargetPublicationService` (remplacé par `IMultiTargetProducer<IBookingMessage>` natif EMT) | -34 lignes |
+| R17-C.4 | Refondre `DoWork.cs` côté Worker — utilisation directe de `IMultiTargetProducer<IBookingMessage>` | -20 lignes |
+| R17-C.5 | Refondre `Program.cs` côté Worker — `AddMultiTargetProducer<IBookingMessage>(b => ...)` | -5 lignes |
+| R17-C.6 | Ajouter `IBookingMessage` (interface marqueur) dans `RAMQ.Samples.Queue.MultiTarget.Message` | +5 lignes |
+| R17-C.7 | Sample devient une **référence pédagogique** : démontrer l'API en ~30 lignes au lieu de ~150 | Doc README sample mise à jour |
+
+##### Phase R17-D — Documentation et pédagogie (3 jours)
+
+| # | Tâche | Livrable |
+|---|---|---|
+| R17-D.1 | Créer `docs/multi-target.md` dans EMT : explication pattern + exemples | Doc complète |
+| R17-D.2 | Ajouter section dans `CONTRIBUTING.md` côté samples : « Quand utiliser `IMultiTargetProducer<T>` vs `IMessageProducer<T>` ? » | Doc |
+| R17-D.3 | Mettre à jour le sample README avec un benchmark avant/après (lignes de code) | Doc |
+| R17-D.4 | Ajouter un test d'architecture (NetArchTest) : « les samples Producer ne doivent plus implémenter de pattern Strategy maison » | Test architecture |
+
+**Total R17 :** ~3 semaines (1 dev backend + 0.5 dev SRE en revue).
+
+**Dépendances :**
+- Pré-requis : Lot R1 (tests) livré — pour valider la non-régression.
+- Indépendant des lots R13/R14/R16 (ne touche pas l'observabilité ni le journal).
+- Couplage possible : `IMultiTargetProducer<T>` peut être utilisé par les **activateurs Routing Slip** pour publier la première étape avec un type métier (au lieu de `SlipEnvelope`).
+
+**Risques R17 et mitigations :**
+
+| Risque | Probabilité | Impact | Mitigation |
+|---|---|---|---|
+| Le générique `where TPayload : TBase` rend l'API complexe pour un junior | 🟡 Moyenne | Faible | Doc avec 3 exemples : `TBase = interface`, `TBase = classe abstraite`, `TBase = object` |
+| L'ancien sample `Queue.MultiTarget.Producer` reste référencé par d'autres projets | 🟢 Faible | Faible | Garder l'ancien pendant 1 release marqué `[Obsolete]`, suppression complète à la release suivante |
+| Incompatibilité avec request/reply (lot R3 livré) | 🟢 Faible | Moyen | `IMultiTargetProducer<TBase>` n'expose **pas** request/reply (séparation ISP préservée) |
+| Confusion entre `IMultiTargetProducer<TBase>` (mêmes broker, multiples cibles) et multi-broker | 🟡 Moyenne | Faible | Note explicite dans la doc : « EMT v1.x supporte uniquement Service Bus — multi-cible ≠ multi-broker » |
+
+#### 6.9.6 Avant / Après — vue de l'application appelante
+
+##### Avant (aujourd'hui — sample `Queue.MultiTarget`)
+
+```csharp
+// 8 fichiers, ~150 lignes
+// 3 classes Producer + 1 interface + 1 classe abstraite + 1 service + 3 enregistrements DI
+
+await _multiTargetService.PublierAsync("Car",    id, "...", ct);
+await _multiTargetService.PublierAsync("Hotel",  id, "...", ct);
+await _multiTargetService.PublierAsync("Flight", id, "...", ct);
+// ↑ magic strings, pas de type safety, ~150 LOC en support
+```
+
+##### Après (cible — `IMultiTargetProducer<T>` natif EMT)
+
+```csharp
+// 1 enregistrement DI, 0 classe Producer custom
+
+services.AddMultiTargetProducer<IBookingMessage>(b => b
+    .AddTarget<CarMessage>("Car")
+    .AddTarget<HotelMessage>("Hotel")
+    .AddTarget<FlightMessage>("Flight"));
+
+// Usage
+await _producer.PublishAsync(new MessageTransitContext<CarMessage> { ... }, ct: ct);
+await _producer.PublishAsync(new MessageTransitContext<HotelMessage> { ... }, ct: ct);
+await _producer.PublishAsync(new MessageTransitContext<FlightMessage> { ... }, ct: ct);
+// ↑ type-safe, 0 magic string, EMT s'occupe du routage
+```
+
+🟢 **Verdict :** le pattern Multi-Target Producer doit appartenir à EMT, pas au sample. C'est de l'infrastructure mutualisable, pas du code métier RAMQ.
 
 ---
 
@@ -705,7 +1818,10 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Observabilité | 🟢 **Complet** | Span dédié `routing_slip.compensation` (tags: `slip.id`, `slip.name`, `slip.step`, `slip.cursor`, `compensation.reason`) + counter `routing_slip_compensation_total{slip_name,reason}` |
 | Documentation | 🟢 Excellent | Scénario réservation très détaillé |
 
-### 8.7 Pattern A5 (Journal hors chemin critique)
+### 8.7 Message Transit Journal — BAM enterprise (pattern A5)
+
+> 🧭 **Position stratégique :** le MTJ est notre **Business Activity Monitoring** (cf. [§6.7](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique)) — pas un simple audit log. Pattern A5 désigne le **mécanisme** (découplage du chemin critique), pas la finalité (BAM enterprise).
+
 
 | Axe | Verdict | Évidence |
 |---|---|---|
@@ -1577,7 +2693,7 @@ Concrètement, Design For Operation dans EMT signifie répondre à **5 questions
 | « **Où en est ce message ?** » | Distributed tracing | `ActivitySource` + W3C `traceparent` propagé |
 | « **Combien de messages échouent ?** » | Metrics | `System.Diagnostics.Metrics` + Azure Monitor |
 | « **Pourquoi celui-ci a échoué ?** » | Logs structurés | `ILogger` + scopes `BeginScope({MessageId, SessionId})` |
-| « **Cette opération a-t-elle été faite, à qui, quand ?** » | Journal A5 (audit légal) | `IJournalProvider` → Azure Table |
+| « **Cette opération a-t-elle été faite, à qui, quand ? Quel KPI métier en résulte ?** » | **MTJ — Business Activity Monitoring** (cf. [§6.7](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique)) | `IJournalProvider` → Azure Table → Power BI / ADX |
 | « **Le système est-il sain en ce moment ?** » | Health checks | `ServiceBusHealthCheck` + dashboard temps réel |
 
 Ces 5 piliers ne sont **pas équivalents**. Confondre logs et traces, ou journal et métriques, mène à des incidents impossibles à diagnostiquer. La sous-section §13.4 détaille leurs frontières.
@@ -1601,11 +2717,12 @@ Ces 5 piliers ne sont **pas équivalents**. Confondre logs et traces, ou journal
                        │   │
                        ▼   ▼                              ┌──────────────────┐
               ┌──────────────────────┐                    │  IJournalProvider│
-              │  OpenTelemetry SDK   │                    │  (Azure Table)   │
-              │  (Tracer/Meter/Log   │                    │  ← audit légal   │
-              │   Providers)         │                    │  ← découplé du   │
-              └──────────┬───────────┘                    │    chemin OTel   │
-                         │                                └────────┬─────────┘
+              │  OpenTelemetry SDK   │                    │  (BAM enterprise)│
+              │  (Tracer/Meter/Log   │                    │  Azure Table     │
+              │   Providers)         │                    │  ← rétention 7 ans│
+              │                      │                    │  ← Business KPI  │
+              │                      │                    │  ← découplé OTel │
+              └──────────┬───────────┘                    └────────┬─────────┘
                          │ Pipeline interne :                       │
                          │  ① Sampler (filtrage statistique)        │
                          │  ② Processor (enrichissement,            │
@@ -1620,18 +2737,25 @@ Ces 5 piliers ne sont **pas équivalents**. Confondre logs et traces, ou journal
                          ▼                                          ▼
               ┌──────────────────────────┐         ┌──────────────────────┐
               │ Application Insights      │         │ Azure Table Storage  │
-              │ (façade, workspace-based)│         │  TransitJournal      │
-              └──────────┬───────────────┘         │  (rétention 7 ans)   │
+              │ (APM technique,           │         │  MessageTransitJournal│
+              │  workspace-based)         │         │  (BAM — rétention 7a)│
+              └──────────┬───────────────┘         └──────────┬──────────┘
+                         │                                     │
+                         │                                     ▼
+                         │                          ┌──────────────────────┐
+                         │                          │ Azure Data Factory   │
+                         │                          │ (export planifié BAM)│
                          │                          └──────────┬──────────┘
-                         ▼                                     │
-              ┌──────────────────────────┐                     │
-              │ Log Analytics Workspace  │ ◄─── union KQL ─────┘
-              │ (stockage + KQL)         │     (corrélation audit ↔ traces)
-              │  - dependencies          │
-              │  - customMetrics         │
-              │  - traces (logs)         │
-              │  - exceptions            │
-              └──────────┬───────────────┘
+                         │                                     │
+                         ▼                                     ▼
+              ┌──────────────────────────┐         ┌──────────────────────┐
+              │ Log Analytics Workspace  │         │  Power BI Premium    │
+              │ (stockage + KQL)         │         │  (dashboards métier  │
+              │  - dependencies          │  ◄────► │   direction RAMQ)    │
+              │  - customMetrics         │ TraceId │  ← KPI volume/SLA    │
+              │  - traces (logs)         │ jointure│  ← conformité CAI    │
+              │  - exceptions            │ (R16)   │  ← BAM exécutif       │
+              └──────────┬───────────────┘         └──────────────────────┘
                          │
                          ▼
               ┌──────────────────────────────────────┐
@@ -1639,12 +2763,12 @@ Ces 5 piliers ne sont **pas équivalents**. Confondre logs et traces, ou journal
               │  • Application Map (graphe sagas)     │
               │  • Live Metrics (latence < 1 s)        │
               │  • Smart Detection (anomalies)         │
-              │  • Workbooks (dashboards RAMQ)         │
+              │  • Workbooks APM + BAM (dashboards RAMQ)│
               │  • Action Groups (alertes PagerDuty)   │
               └──────────────────────────────────────┘
 ```
 
-🟢 **Décision RAMQ : Azure Monitor (Application Insights workspace-based + Log Analytics Workspace) est le backend cible.** Le choix est définitif pour la v1.0. Pas de Grafana, Jaeger ou Prometheus en production — seulement comme outils dev locaux.
+🟢 **Décision RAMQ : Azure Monitor (Application Insights workspace-based + Log Analytics Workspace) est le backend APM cible.** Pour le BAM, **Azure Table Storage** (MessageTransitJournal) + **Power BI Premium** sont les backends ciblés. **APM et BAM sont deux pilliers complémentaires**, joints par `TraceId` (lot R16) — pas concurrents. Pas de Grafana, Jaeger ou Prometheus en production — seulement comme outils dev locaux.
 
 ### 13.3 Les composants Azure Monitor à utiliser et pourquoi
 
@@ -2024,6 +3148,486 @@ public class MyClass(ILogger<MyClass> logger)  // ← category = "Namespace.MyCl
 | BP-8 (scopes en arbre) | Le contexte s'enrichit naturellement le long du parcours saga. |
 | BP-9 (logs métier vs technique) | Audit CAI possible sans bruit infrastructure. |
 | BP-10 (category granulaire) | Tuning fin du verbosity en prod sans recompilation. |
+
+### 13.4.6 Niveaux de log dans le code métier RAMQ — guide opposable
+
+> 💡 **Pour un junior — pourquoi cette section :** BP-5 (§13.4.4) survole la hiérarchie des niveaux. Cette sous-section approfondit, **avec des exemples RAMQ concrets**, pour répondre à la question : *« Mon code métier doit logger cet événement — quel niveau ? »*. C'est une **règle de revue de code opposable** — pas une suggestion.
+>
+> 🟢 **Focus principal : le code métier RAMQ** (consumers, activities, services applicatifs). La lib EMT a ses propres conventions (cf. §13.4.4 BP-5).
+
+#### 13.4.6.1 Tableau de décision rapide
+
+> **Le test des 3 questions :** quand tu hésites sur le niveau, demande-toi :
+> 1. **Cet événement est-il attendu dans un fonctionnement normal ?** Oui → Information ou Debug. Non → Warning, Error ou Critical.
+> 2. **Cela demande-t-il une action humaine ?** Oui → Warning (à examiner), Error (à corriger), Critical (à corriger immédiatement). Non → Information / Debug.
+> 3. **Le système peut-il continuer ?** Oui → Warning. Non → Error ou Critical.
+
+```
+Réponse aux 3 questions → niveau de log :
+
+│   Attendu ?    │ Action humaine ? │ Système OK ? │  Niveau  │
+├────────────────┼──────────────────┼──────────────┼──────────┤
+│ Oui            │ Non              │ Oui          │ Information │
+│ Oui (debug)    │ Non              │ Oui          │ Debug      │
+│ Non            │ Oui (vérifier)   │ Oui          │ Warning    │
+│ Non            │ Oui (corriger)   │ Partiel      │ Error      │
+│ Non            │ Oui (URGENT)     │ Non          │ Critical   │
+```
+
+#### 13.4.6.2 LogTrace — pour le diagnostic ultra-détaillé
+
+**Quand l'utiliser :**
+- Tracer le parsing d'un message volumineux (chaque champ)
+- Tracer une boucle interne (sortir l'état à chaque itération)
+- Valider qu'une condition rare est atteinte pendant un debug ponctuel
+
+**Quand NE PAS l'utiliser :**
+- Tout le temps en production — `LogTrace` est **toujours désactivé** en prod RAMQ
+- Code métier nominal — préfère `LogDebug` ou `LogInformation`
+
+**Exemple métier RAMQ :**
+
+```csharp
+// ✅ Approprié — détail d'un parser personnalisé qu'on diagnostique en dev
+_logger.LogTrace("Champ HL7 segment={Segment} index={Idx} valeur='{Valeur}'",
+    segment, idx, valeur);
+
+// ❌ Inapproprié — événement qui mérite Information
+_logger.LogTrace("Dossier {DossierId} validé", id);   // Devrait être LogInformation
+```
+
+**Coût en prod :** quasi-nul (filtré par F1 LogLevel avant OTel). **Volume attendu :** énorme — réservé au dev.
+
+#### 13.4.6.3 LogDebug — pour les détails développeur
+
+**Quand l'utiliser :**
+- Détails d'implémentation utiles à un dev qui debug un problème
+- Paramètres reçus, branchements pris, valeurs intermédiaires
+- Tracking d'état interne dans une boucle métier
+
+**Quand NE PAS l'utiliser :**
+- Événements métier visibles à un auditeur ou agent CAI — utiliser `LogInformation`
+- Erreurs récupérées — utiliser `LogWarning`
+- Tout ce qui doit survivre en production
+
+**Exemples métier RAMQ :**
+
+```csharp
+// ✅ Approprié — détail debug d'une logique de calcul
+_logger.LogDebug("Calcul prime — DossierId={DossierId} BaseAssure={Base} Coefficient={Coeff} TotalCalcule={Total}",
+    dossierId, baseAssure, coefficient, totalCalcule);
+
+// ✅ Approprié — branchement métier rarement pris
+if (assure.HasExemptionSpeciale)
+{
+    _logger.LogDebug("Branche exemption spéciale prise pour AssureId={InternalId}", assure.InternalId);
+    // ... traitement spécifique
+}
+
+// ❌ Inapproprié — étape majeure du flux métier
+_logger.LogDebug("Validation admissibilité réussie");   // Devrait être LogInformation
+```
+
+**Coût en prod :** quasi-nul si désactivé (par défaut chez RAMQ : `Warning` dans `host.json`). **Volume attendu :** élevé — désactivé en prod nominale, activé temporairement pour debug ciblé via `Logging:LogLevel:RAMQ.Pharmacie = "Debug"`.
+
+#### 13.4.6.4 LogInformation — pour les événements métier nominaux
+
+**🟢 C'est le niveau par défaut du code métier RAMQ.**
+
+**Quand l'utiliser :**
+- Étape majeure d'un processus métier franchie avec succès (validation, calcul, notification)
+- Démarrage / fin d'une opération significative pour l'audit
+- Décision métier prise (acceptation, rejet, escalade)
+- Événement qui doit apparaître dans la timeline d'un dossier pour un agent CAI
+
+**Quand NE PAS l'utiliser :**
+- Détail d'implémentation — préfère `LogDebug`
+- Erreur récupérée — préfère `LogWarning`
+- Boucle interne — `LogTrace` ou rien du tout
+- Tâche périodique répétitive (toutes les 100ms) — risque d'inonder Log Analytics
+
+**Exemples métier RAMQ :**
+
+```csharp
+// ✅ Étape métier franchie
+_logger.LogInformation(
+    "Dossier {DossierId} validé pour AssureId={AssureIdHash} avec statut {Statut}",
+    dossierId, HashTruncate(assureId), statut);
+
+// ✅ Décision métier
+_logger.LogInformation(
+    "Demande admissibilité {DossierId} acceptée — montant calculé {MontantCAD:N2} CAD",
+    dossierId, montant);
+
+// ✅ Notification d'un événement métier important
+_logger.LogInformation(
+    "Notification envoyée pour {DossierId} via canal {Canal} — confirmation {ConfirmationId}",
+    dossierId, canal, confirmationId);
+
+// ❌ Trop verbeux — chaque opération CRUD ne mérite pas LogInformation
+_logger.LogInformation("Lecture en base pour DossierId={Id}", id);   // Préfère LogDebug
+
+// ❌ Détail d'implémentation
+_logger.LogInformation("Cache hit pour {Key}", key);   // Préfère LogDebug
+```
+
+**Coût en prod :** modéré — c'est ce qui consomme le plus de volume Log Analytics. **C'est gardé en prod** chez RAMQ pour l'auditabilité.
+
+#### 13.4.6.5 LogWarning — pour les anomalies récupérées
+
+**Quand l'utiliser :**
+- Anomalie attendue mais inattendue (retry transitoire qui réussit)
+- Dégradation de performance détectée (timeout proche, throughput abaissé)
+- Donnée métier suspecte mais traitée (champ optionnel manquant, valeur hors gamme)
+- Comportement à surveiller mais qui n'a pas bloqué la transaction
+- Échec d'une dépendance secondaire (le journal A5 échoue mais l'envoi a réussi)
+
+**Quand NE PAS l'utiliser :**
+- Erreur métier attendue (« dossier déjà traité ») — utilise `LogInformation`
+- Erreur non récupérable — utilise `LogError`
+- Branche métier rare mais valide — utilise `LogDebug` ou `LogInformation`
+
+**Exemples métier RAMQ :**
+
+```csharp
+// ✅ Anomalie récupérée
+try { await _pharmacieApi.ValiderAsync(id, ct); }
+catch (TransientException ex)
+{
+    _logger.LogWarning(ex,
+        "Pharmacie API timeout pour {DossierId} — retry programmé",
+        dossierId);
+    throw new ExponentialRetryException("Pharmacie timeout", ex);
+}
+
+// ✅ Donnée métier suspecte mais traitée
+if (assure.AdresseValidee == null)
+{
+    _logger.LogWarning(
+        "Adresse non validée pour {DossierId} — utilisation adresse historique",
+        dossierId);
+    adresse = await GetAdresseHistoriqueAsync(assure.InternalId, ct);
+}
+
+// ✅ Dégradation détectée
+if (sw.ElapsedMilliseconds > _slaMs)
+{
+    _logger.LogWarning(
+        "SLA potentiel — {Operation} pour {DossierId} a pris {Duree}ms (cible {SlaMs}ms)",
+        nameof(ValiderAdmissibiliteAsync), dossierId, sw.ElapsedMilliseconds, _slaMs);
+}
+
+// ❌ Anti-pattern — événement métier nominal n'est PAS un warning
+_logger.LogWarning("Dossier {DossierId} rejeté", id);   // Rejet est métier valide
+                                                        // → LogInformation
+```
+
+**Coût en prod :** faible — devrait représenter < 5 % du volume total. **Trigger d'alerte :** un volume Warning > 10 % du total signale un problème systémique à investiguer.
+
+#### 13.4.6.6 LogError — pour les erreurs non récupérables
+
+**Quand l'utiliser :**
+- Exception inattendue qui empêche le traitement métier
+- Erreur permanente qui requiert un correctif (bug, donnée corrompue)
+- Échec d'une dépendance critique sans alternative (référentiel principal indisponible)
+- Tout cas où le dossier ne peut pas avancer
+
+**Quand NE PAS l'utiliser :**
+- Erreur métier prévue (« dossier expiré ») — c'est du `LogInformation` pour audit
+- Retry transitoire — c'est du `LogWarning`
+- Échec d'une dépendance secondaire (journal A5) qui n'empêche pas l'opération — c'est `LogWarning`
+
+**Exemples métier RAMQ :**
+
+```csharp
+// ✅ Exception inattendue
+try { await ProcessDossierAsync(ctx, ct); }
+catch (Exception ex) when (ex is not OperationCanceledException)
+{
+    _logger.LogError(ex,
+        "Erreur non gérée traitement {DossierId} — DLQ programmé",
+        ctx.Message?.DossierId);
+    throw new ImmediateDLQException("Erreur inattendue", ex);
+}
+
+// ✅ Donnée corrompue
+if (dossier.NumeroAssuranceMaladie?.Length != 12)
+{
+    _logger.LogError(
+        "Donnée corrompue — DossierId={DossierId} NAM invalide (longueur={Len})",
+        dossier.Id, dossier.NumeroAssuranceMaladie?.Length ?? 0);
+    throw new ImmediateDLQException("NAM invalide");
+}
+
+// ✅ Dépendance critique indisponible
+catch (RegistreCentralIndisponibleException ex)
+{
+    _logger.LogError(ex,
+        "Registre central RAMQ indisponible pour {DossierId} — escalade nécessaire",
+        dossierId);
+    throw;
+}
+
+// ❌ Anti-pattern — erreur métier attendue n'est PAS un Error
+_logger.LogError("Dossier {DossierId} déjà traité", id);   // C'est un cas métier valide
+                                                            // → LogInformation
+```
+
+**Coût en prod :** très faible. **Trigger d'alerte :** chaque `LogError` devrait potentiellement déclencher une alerte (selon le filtre KQL). Si vous avez 100 LogError/jour en nominal, c'est que vous abusez du niveau — il faut redescendre les vrais warnings en `LogWarning`.
+
+#### 13.4.6.7 LogCritical — pour les pannes système majeures
+
+**Quand l'utiliser :**
+- DI cassée au démarrage (configuration manquante, service non enregistré)
+- Référentiel principal RAMQ complètement inaccessible (pas juste lent — totalement indisponible)
+- Détection d'un état système incohérent grave (fichiers de configuration manipulés, certificats expirés)
+- Tout ce qui doit réveiller PagerDuty à 3h du matin **sans hésitation**
+
+**Quand NE PAS l'utiliser :**
+- Un dossier qui échoue — c'est `LogError`
+- Une dépendance qui timeout — c'est `LogWarning` (transitoire) ou `LogError` (permanent)
+
+**Exemples métier RAMQ :**
+
+```csharp
+// ✅ DI / configuration critique manquante
+public class PharmacieClient
+{
+    public PharmacieClient(IOptions<PharmacieOptions> options, ILogger<PharmacieClient> logger)
+    {
+        if (string.IsNullOrEmpty(options.Value.WcfEndpoint))
+        {
+            logger.LogCritical(
+                "PharmacieClient — WcfEndpoint absent dans la config — démarrage impossible");
+            throw new InvalidOperationException("WcfEndpoint requis");
+        }
+    }
+}
+
+// ✅ Référentiel central indisponible pendant > 5 min
+if (_registreHealthCheck.IsDownLongerThan(TimeSpan.FromMinutes(5)))
+{
+    _logger.LogCritical(
+        "Registre central RAMQ indisponible depuis {DurationMin} min — tous les flux affectés",
+        elapsedMin);
+}
+
+// ❌ Anti-pattern — un seul timeout n'est pas Critical
+_logger.LogCritical("Timeout WCF Pharmacie pour DossierId=...");   // Devrait être LogWarning
+                                                                    // (retry) ou LogError (épuisé)
+```
+
+**Coût en prod :** quasi-nul (très rare). **Trigger d'alerte :** chaque `LogCritical` réveille l'astreinte sans filtre.
+
+#### 13.4.6.8 Anti-patterns à éviter — examen en revue de code
+
+> Ces 10 anti-patterns sont **opposables en revue de code** — un PR qui en contient doit être corrigé.
+
+| # | Anti-pattern | Pourquoi c'est mauvais | Correction |
+|---|---|---|---|
+| **AP-1** | `LogError` sur une erreur métier prévue (« dossier déjà traité ») | Pollue les alertes, masque les vraies erreurs | Remplacer par `LogInformation` |
+| **AP-2** | `LogInformation` dans une boucle (« lecture record N » × 10000) | Inonde Log Analytics, coût FinOps × 100 | Remplacer par `LogDebug`, ou logger uniquement le résumé |
+| **AP-3** | `LogCritical` pour un événement non bloquant | Réveille PagerDuty à tort, alert fatigue | Remplacer par `LogError` ou `LogWarning` selon contexte |
+| **AP-4** | `LogWarning` sans contexte (`_logger.LogWarning("Échec")`) | Inutile en investigation — sans `DossierId`, on ne peut rien faire | Ajouter placeholders nommés (BP-1) |
+| **AP-5** | `LogTrace` pour un événement nominal de fin de processus | Désactivé en prod → audit perdu | Remplacer par `LogInformation` |
+| **AP-6** | `LogError` qui swallow l'exception (`catch { logger.LogError(...); }` sans rethrow) | Erreur masquée, comportement imprévisible aval | Soit rethrow, soit convertir en `LogWarning` si vraiment récupéré |
+| **AP-7** | Logger une exception en `LogInformation` ou `LogDebug` | Sévérité incorrecte → pas d'alerte déclenchée | Selon contexte : `LogWarning` (récupéré) ou `LogError` (non) |
+| **AP-8** | Concaténer la stack trace dans le message (`$"{ex} {ex.StackTrace}"`) | Pollue le `messageTemplate`, casse l'agrégation | Passer l'exception en 1ᵉʳ argument : `LogError(ex, "Échec {DossierId}", id)` |
+| **AP-9** | Log de `LogInformation` qui est en fait du marketing (`"Démarrage de l'application 🎉"`) | Bruit, faible valeur opérationnelle | À retirer ou passer en `LogDebug` |
+| **AP-10** | Log de PII en clair (`LogInformation("NAM={Nam}", nam)`) | Violation CAI/RGPD | Hash tronqué (BP-4) |
+
+#### 13.4.6.9 Cas d'usage RAMQ — exemples complets commentés
+
+##### Cas 1 — Activity de validation admissibilité (Routing Slip)
+
+```csharp
+public sealed class ValiderAdmissibiliteActivity : IRoutingSlipActivity<ValiderArgs>
+{
+    private readonly IRegistreCentral _registre;
+    private readonly ILogger<ValiderAdmissibiliteActivity> _logger;
+    private readonly TimeSpan _slaCible = TimeSpan.FromMilliseconds(500);
+
+    public async Task<ActivityResult> ExecuteAsync(
+        ActivityContext<ValiderArgs> ctx, CancellationToken ct)
+    {
+        // BP-2 : scope englobant — toutes les lignes en dessous auront ces customDim
+        using var scope = _logger.BeginScope(new Dictionary<string, object?>
+        {
+            ["DossierId"]     = ctx.Arguments.DossierId,
+            ["AssureIdHash"]  = HashTruncate(ctx.Arguments.AssureId),
+            ["SlipId"]        = ctx.SlipId,
+            ["StepName"]      = ctx.StepName
+        });
+
+        // LogDebug : détail diagnostic — désactivé en prod nominale
+        _logger.LogDebug("Démarrage validation admissibilité");
+
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            var verdict = await _registre.ValiderAsync(ctx.Arguments.DossierId, ct);
+            sw.Stop();
+
+            // LogWarning : SLA dépassé mais le traitement a réussi (anomalie récupérée)
+            if (sw.Elapsed > _slaCible)
+            {
+                _logger.LogWarning(
+                    "SLA admissibilité dépassé — {DureeMs}ms (cible {SlaMs}ms)",
+                    sw.ElapsedMilliseconds, _slaCible.TotalMilliseconds);
+            }
+
+            if (!verdict.IsValid)
+            {
+                // LogInformation : rejet métier — événement nominal, à auditer
+                _logger.LogInformation(
+                    "Dossier non admissible — raison {RaisonCode} : {RaisonLibelle}",
+                    verdict.RaisonCode, verdict.RaisonLibelle);
+                return ActivityResult.Fault(new NonAdmissibleException(verdict.RaisonLibelle));
+            }
+
+            // LogInformation : succès nominal — événement audit clé
+            _logger.LogInformation(
+                "Admissibilité validée — DateEffet={DateEffet:yyyy-MM-dd} en {DureeMs}ms",
+                verdict.DateEffet, sw.ElapsedMilliseconds);
+
+            return ActivityResult.Next(vars => vars["DateValidation"] = DateTime.UtcNow);
+        }
+        catch (TransientException ex)
+        {
+            // LogWarning : retry programmé — anomalie attendue dans un système distribué
+            _logger.LogWarning(ex, "Erreur transitoire admissibilité — retry programmé");
+            return ActivityResult.RetryExponential("Erreur transitoire admissibilité", ex);
+        }
+        catch (Exception ex)
+        {
+            // LogError : exception non gérée — requiert investigation
+            _logger.LogError(ex, "Erreur non gérée validation admissibilité — DLQ");
+            return ActivityResult.Fault(ex);
+        }
+    }
+}
+```
+
+##### Cas 2 — Service métier de calcul de prime
+
+```csharp
+public sealed class CalculPrimeService
+{
+    private readonly ILogger<CalculPrimeService> _logger;
+
+    public PrimeResult Calculer(Dossier dossier, BaremeReglementaire bareme)
+    {
+        using var scope = _logger.BeginScope(new { dossier.Id, BaremeVersion = bareme.Version });
+
+        // LogDebug : détail intermédiaire de calcul, utile en debug seulement
+        _logger.LogDebug("Calcul prime — base={Base} coefficient={Coef}",
+            dossier.BaseAssuree, bareme.CoefficientDomaine);
+
+        if (dossier.HasExemptionSpeciale)
+        {
+            // LogInformation : branche métier importante — à auditer
+            _logger.LogInformation(
+                "Exemption spéciale appliquée — prime fixée à 0 pour exemption {ExemptionCode}",
+                dossier.ExemptionCode);
+            return PrimeResult.Exempte();
+        }
+
+        var prime = dossier.BaseAssuree * bareme.CoefficientDomaine;
+
+        if (prime > _bareme.PlafondAlertePrime)
+        {
+            // LogWarning : valeur hors gamme habituelle, à examiner
+            _logger.LogWarning(
+                "Prime calculée supérieure au plafond d'alerte — {Prime:N2} > {Plafond:N2}",
+                prime, _bareme.PlafondAlertePrime);
+        }
+
+        // LogInformation : résultat métier final — événement audit
+        _logger.LogInformation("Prime calculée : {Prime:N2} CAD", prime);
+        return PrimeResult.Calcule(prime);
+    }
+}
+```
+
+#### 13.4.6.10 Configuration recommandée par environnement
+
+**`appsettings.Development.json` — pour les devs locaux :**
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "RAMQ": "Debug",
+      "RAMQ.COM.EnterpriseMessageTransit": "Information",
+      "Microsoft": "Warning"
+    }
+  }
+}
+```
+
+**`appsettings.Staging.json` — pour la pré-prod :**
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "RAMQ": "Information",
+      "RAMQ.COM.EnterpriseMessageTransit": "Information",
+      "Microsoft": "Warning"
+    }
+  }
+}
+```
+
+**`appsettings.Production.json` ou `host.json` — pour la prod :**
+```json
+{
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information",
+      "RAMQ": "Information",
+      "RAMQ.COM.EnterpriseMessageTransit": "Information",
+      "Microsoft": "Warning",
+      "Host.General": "Warning",
+      "Microsoft.Azure.WebJobs.Hosting": "Warning"
+    }
+  }
+}
+```
+
+> 💡 **Astuce DFO :** pour activer `LogDebug` ponctuellement en prod (diagnostic d'incident), modifier la config dans Azure App Configuration → reload sans redéploiement → désactiver après le diagnostic.
+
+#### 13.4.6.11 Checklist revue de code « LogLevel »
+
+À cocher pour chaque PR qui contient du logging :
+
+| ☑ | Question |
+|---|---|
+| ☐ | Chaque `LogXxx` utilise des placeholders nommés (BP-1) ? |
+| ☐ | Aucun `LogError` sur une erreur métier prévue (AP-1) ? |
+| ☐ | Aucun `LogInformation` dans une boucle de plus de 100 itérations (AP-2) ? |
+| ☐ | Aucun `LogCritical` sur un événement récupérable (AP-3) ? |
+| ☐ | Chaque `LogWarning` / `LogError` contient au moins `DossierId` ou équivalent métier (AP-4) ? |
+| ☐ | Aucune PII en clair (AP-10, BP-4) ? |
+| ☐ | Les exceptions sont passées en 1ᵉʳ argument, pas dans le message (AP-8) ? |
+| ☐ | Le scope `BeginScope` est posé autour de l'unité de travail (BP-2) ? |
+| ☐ | Chaque `LogWarning`/`LogError` récurrent a une métrique associée pour l'alerting (BP-7) ? |
+| ☐ | La hiérarchie de catégorie suit `ILogger<ClasseCourante>` (BP-10) ? |
+
+#### 13.4.6.12 Volume attendu par niveau — calibrage prod
+
+À comparer en preprod / prod pour valider que les niveaux sont bien calibrés :
+
+| Niveau | Volume cible (% du total) | Volume anormal |
+|---|---|---|
+| `LogTrace` | 0 % (filtré) | > 0 % |
+| `LogDebug` | 0 % (filtré) | > 1 % → vérifier la config |
+| `LogInformation` | 85-95 % | < 70 % ou > 99 % |
+| `LogWarning` | 3-10 % | > 15 % → bug systémique |
+| `LogError` | 0,1-2 % | > 5 % → incident en cours |
+| `LogCritical` | < 0,01 % | > 0,1 % → bug calibrage |
+
+> 🟠 **Si vous voyez > 5 % de `LogError` ou > 15 % de `LogWarning` en prod nominale**, ce n'est pas un problème de production — c'est un problème de **calibrage des niveaux** dans le code. À corriger avant de déployer.
 
 ### 13.5 Stratégie de filtrage à chaque étage — Design For Operation
 
@@ -2568,7 +4172,12 @@ Une fois DFO v1.0 prêt (fin S10), le déploiement aux différents domaines RAMQ
 | **Itinerary** | Liste d'étapes (v1 dans `AppSettings`, v2.0 dans le `SlipEnvelope`). |
 | **MessageId** | Identifiant unique du message côté producer. Sert à la duplicate detection broker. |
 | **OpenTelemetry / OTel** | Standard de télémétrie unifié (traces, métriques, logs). |
-| **Pattern A5** | Convention RAMQ : journalisation **découplée du chemin critique**. |
+| **Pattern A5** | Convention RAMQ : journalisation **découplée du chemin critique** (mécanisme). C'est le moyen technique du MTJ — pas sa finalité (qui est le BAM). |
+| **BAM (Business Activity Monitoring)** | Pratique enterprise de monitoring **métier** des activités, par opposition à l'APM (technique). EMT implémente le BAM via le Message Transit Journal — stocké sur Azure Table 7 ans, exposé en Power BI et Workbooks Azure Monitor. Cf. [§6.7](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique). |
+| **APM (Application Performance Monitoring)** | Pratique de monitoring **technique** des applications (logs, traces, métriques). EMT s'appuie sur Azure Monitor (Application Insights + Log Analytics). Complémentaire au BAM. |
+| **MTJ (Message Transit Journal)** | Le journal d'audit EMT stocké en Azure Table, élevé au rang de **BAM enterprise stratégique** pour RAMQ. Cf. [§6.7](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique). |
+| **Single pane of glass** | Vue unifiée d'observabilité où un opérateur peut entrer en un point quelconque (alerte business, log technique, dossier métier) et dériver dans toutes les dimensions sans changer d'outil. **Multiplicateur de productivité opérationnelle** — facteur 14× sur le MTTR mesuré. Cf. [§6.7.0](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique). |
+| **MTTR (Mean Time To Resolution)** | Temps moyen entre la détection d'un incident et sa résolution. Objectif RAMQ : MTTR < 30 min sur 80 % des incidents (KPI §13.12.9). |
 | **POCO (Plain Old CLR Object)** | Objet C# sans dépendance framework — testable avec `new`. |
 | **Provider** | Implémentation infrastructure (ex. `AzureMessagingProvider`). |
 | **Routing Slip** | Pattern saga où le message porte son itinéraire. |
