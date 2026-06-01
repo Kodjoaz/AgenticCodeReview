@@ -2188,7 +2188,7 @@ Au démarrage, EMT interroge l'API d'administration Service Bus. Si `RequiresDup
 |---|---|---|
 | **S** — Single Responsibility | 🟡 **Partiellement résolu** | S1 résolu R8 ; S3 résolu (IClaimCheckPreparer) ; S4 (AzureMessagingProvider) → Phase 6 |
 | **O** — Open / Closed | ✅ **Résolu** | R9 : 5 interfaces fines permettent l'extension sans modifier `IMessagingProvider` |
-| **L** — Liskov Substitution | 🟡 **OK avec marker interfaces** | Hiérarchie de config saine mais marqueur inutile |
+| **L** — Liskov Substitution | 🟡 **OK** | Marker interfaces → Phase 6 (L1) |
 | **I** — Interface Segregation | ✅ **Résolu** | R9 : `IMessagePublisher`, `IMessageReceiver`, `IMessageSettler`, `IMessagingEndpointResolver`, `IMessageDeserializer` |
 | **D** — Dependency Inversion | 🟠 **Partiel** | Producer ✅ multi-hôte (R9) ; Consumer 🚫 hors scope R10 — exclusivement Azure Functions |
 
@@ -2305,13 +2305,15 @@ Les 5 interfaces fines :
 
 ### 9.4 LSP — Liskov Substitution Principle
 
-#### 🟡 Violation L1 — Marker interfaces inutiles
+#### 🟡 Violation L1 — Marker interfaces — ⛾ Reportée Phase 6
 
 [`Configuration/IConsumerConfigurationService.cs`](../EnterpriseMessageTransit/Configuration/IConsumerConfigurationService.cs) et [`IProducerConfigurationService.cs`](../EnterpriseMessageTransit/Configuration/IProducerConfigurationService.cs) sont des **marker interfaces** vides héritant de `IMessageTransitConfigurationService`.
 
 **Conséquence :** `EndpointResolver.IsConsumer => _config is IConsumerConfigurationService` utilise du **type-checking runtime fragile** au lieu d'un paramètre explicite. Si un nouveau type de config arrive (ex. `IBidirectionalConfigurationService`), le test échoue silencieusement.
 
 🧭 **Refactor proposé :** remplacer par une propriété `ConfigurationKind` enum ou par injection séparée de deux configs distincts.
+
+> ⛾ **Décision (2026-05-28) :** reporté en **Phase 6**. Le refactor impacte ~15 fichiers (lib + samples) : `BaseConsumer`, `Producer`, `ConsumerConfigurationService`, `ProducerConfigurationService`, `EndpointResolver`, et tous les call sites DI. Le coût est disproportionné pour le bénéfice actuel — le `is IConsumerConfigurationService` fonctionne sans risque de régression dans l'architecture v1.x.
 
 ### 9.5 ISP — Interface Segregation Principle
 
