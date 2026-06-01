@@ -164,6 +164,42 @@ EMT n'est pas une librairie monolithique, c'est en réalité **trois produits im
 | `OpenTelemetry.Exporter.OpenTelemetryProtocol` 1.9.0 | Vulnérabilité modérée `GHSA-4625-4j76-fww9` | ✅ **Dépendance supprimée** — export via `Azure.Monitor.OpenTelemetry.Exporter` uniquement |
 | `Microsoft.CodeAnalysis.PublicApiAnalyzers` | Analyseur de surface publique obsolète dans ce contexte | ✅ **Supprimé** de tous les csproj |
 
+#### ⚠️ Prérequis machine de build — Windows Long Paths
+
+> Le projet `RAMQ.Samples.Queue.TDF.Integration.DurableOrchestrator` génère un sous-projet `WorkerExtensions` dont le chemin de sortie dépasse **260 caractères** (limite Windows `MAX_PATH`) :
+> ```
+> ...\TDF.Integration.DurableOrchestrator\obj\Debug\net8.0\WorkerExtensions\bin\Release\net8.0\
+>     runtimes\win\lib\netstandard2.0\System.Security.Cryptography.ProtectedData.dll
+> (~265 chars)
+> ```
+> MSBuild's `Copy` task échoue silencieusement avec `MSB3030: file not found` quand le chemin dépasse `MAX_PATH` et que le support des chemins longs Windows est désactivé.
+
+**Activation requise (une fois par machine, admin) :**
+```cmd
+reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
+```
+Ou via PowerShell :
+```powershell
+Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name LongPathsEnabled -Value 1
+```
+
+> ✅ Prend effet immédiatement pour les **nouveaux processus** (pas de redémarrage requis). À configurer également sur les agents CI/CD (GitHub Actions, Azure Pipelines) avant `dotnet build`.
+
+**Sur Azure Pipelines / GitHub Actions :** ajouter avant le step `dotnet build` :
+```yaml
+# GitHub Actions
+- name: Enable Windows long paths
+  run: |
+    reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
+  shell: cmd
+```
+```yaml
+# Azure Pipelines
+- script: |
+    reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
+  displayName: 'Enable Windows long paths'
+```
+
 ---
 
 ## 2. Vue d'ensemble en 5 minutes
