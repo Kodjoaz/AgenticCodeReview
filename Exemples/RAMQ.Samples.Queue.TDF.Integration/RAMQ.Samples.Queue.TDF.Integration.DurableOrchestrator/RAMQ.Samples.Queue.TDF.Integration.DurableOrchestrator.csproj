@@ -6,14 +6,12 @@
     <OutputType>Exe</OutputType>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- Known issue: Microsoft.Azure.Functions.Worker.Extensions.DurableTask 1.1.7 +
-         Microsoft.NET.Sdk.Functions 4.6.0 on Windows .NET 8 builds.
-         The auto-generated WorkerExtensions inner project resolves
-         System.Security.Cryptography.ProtectedData 4.7.0 (via transitive dependency from
-         Microsoft.Azure.WebJobs.Extensions.DurableTask 2.13.7). The SDK's
-         _FunctionsPostBuildCopyFiles target expects the runtimes/win/lib/netstandard2.0/ DLL
-         in the WorkerExtensions output, but the .NET 8 build does not emit it.
-         Workaround: run 'dotnet restore' before 'dotnet build' on first checkout. -->
+    <!-- Root cause: Windows MAX_PATH (260 chars) exceeded by the WorkerExtensions inner
+         project output path (~269 chars). MSBuild's Copy task fails with "file not found"
+         when path > 260 chars and LongPathsEnabled=0 in the registry.
+         Required fix: enable Windows long paths on the build machine:
+           reg add HKLM\SYSTEM\CurrentControlSet\Control\FileSystem /v LongPathsEnabled /t REG_DWORD /d 1 /f
+         Then restart the terminal and rebuild. -->
   </PropertyGroup>
 
   <ItemGroup>
