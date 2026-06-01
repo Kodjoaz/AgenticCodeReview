@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 using RAMQ.Samples.ConfigurationService;
 using RAMQ.Samples.Queue.TDF.Integration.Producer.Services;
+using RAMQ.Samples.Queue.TDF.Integration.Frontend;
 using RAMQ.Samples.Queue.TDF.Integration.Frontend.Options;
 using RAMQ.Samples.Queue.TDF.Integration.Frontend.Services;
 using Refit;

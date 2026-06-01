@@ -191,7 +191,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                         "RoutingSlipExecutor: RetryExponential à l'étape '{Step}', Raison={Reason}, SlipId={SlipId}",
                         currentStep.Name, retryExponential.Reason, envelope.Header.SlipId);
                     throw new ExponentialRetryException(retryExponential.Reason,
-                        retryExponential.InnerException);
+                        retryExponential.InnerException!);
 
                 default:
                     _logger.LogError(
