@@ -1716,6 +1716,58 @@ Points techniques remarquables :
 
 💡 **Pour un junior :** ne commencez pas par TDF. Lisez d'abord `Queue.Simple`, puis `Queue.RoutingSlip.Booking`, puis seulement TDF.Integration.
 
+#### Pourquoi Durable Orchestrator et non Durable Entity ?
+
+> 🧭 **Question architecturale fréquente :** Durable Functions propose deux abstractions — les **Orchestrateurs** (workflows) et les **Entités** (acteurs stateful). Pourquoi le TDF Sequential Convoy utilise-t-il un Orchestrateur plutôt qu'une Entité ?
+
+**Rappel — différence entre les deux :**
+
+| | Durable Orchestrator | Durable Entity |
+|---|---|---|
+| Modèle mental | Machine à états finie avec étapes séquentielles | Acteur persistant avec état mutable |
+| Attente d'événement externe | `WaitForExternalEventAsync("event", timeout)` — **natif** | Non natif — nécessite un Orchestrateur ou un Timer Entity en plus |
+| Timeout configurable | `WaitForExternalEventAsync(…, TimeSpan.FromMinutes(x))` — intégré | Doit être implémenté manuellement via `context.SignalEntity` différé |
+| History / Audit | Historique complet de chaque step → audit CAI natif | Pas d'historique de transitions — état courant seulement |
+| Custom Status | `context.SetCustomStatus(…)` — visible dans Azure Portal / Grafana | Non disponible |
+| Idempotence de création | `ScheduleNewOrchestrationInstanceAsync(instanceId)` — rejette les doublons si même ID | `context.SignalEntity(entityId)` — crée l'entité si inexistante, pas de concept de "déjà en cours" |
+| Replay déterministe | Oui — seules les activités ont des side-effects ; l'orchestrateur rejoue sans appels réseau | Non applicable — les entités n'ont pas de replay |
+
+**Pourquoi le Sequential Convoy TDF exige un Orchestrateur :**
+
+Le pattern TDF attend **deux messages corrélés dans un ordre précis** (`tdf.envoi` puis `tdf.correller`) avec un **timeout** entre les deux :
+
+```
+tdf.envoi reçu    → démarrer l'orchestrateur (StartOrchestration)
+                        ↓ attendre "CorrellerEnvoyer" pendant max X minutes
+tdf.correller reçu → RaiseEventAsync("CorrellerEnvoyer") → orchestrateur se réveille
+                  OU
+Timeout expiré    → orchestrateur traite le cas "tdf.correller jamais reçu"
+```
+
+Avec une **Durable Entity**, ce flux deviendrait :
+```
+tdf.envoi reçu    → SignalEntity(entityId, "OnEnvoi")  → entité stocke l'état "EnvoiReçu"
+                       + créer un Timer Entity séparé pour le timeout
+tdf.correller reçu → SignalEntity(entityId, "OnCorrellation") → entité appelle le backend
+Timeout           → Timer Entity signale l'entité → entité traite le cas timeout
+```
+
+Problèmes de l'approche Entity pour ce cas :
+1. **Pas de timeout natif** — il faut un second acteur (Timer Entity ou Orchestrateur) juste pour gérer le délai. La complexité double.
+2. **Pas d'historique** — l'audit CAI exige de tracer chaque transition d'état. Une Entity expose uniquement son état actuel, pas ses transitions.
+3. **Custom Status impossible** — le monitoring opérationnel (Azure Portal, Grafana) ne peut pas afficher "En attente de corrélation depuis 3 min" pour une Entity.
+4. **Idempotence de création plus fragile** — `SignalEntity` ne protège pas contre les doubles créations de la même façon que `ScheduleNewOrchestrationInstanceAsync(instanceId = sessionId)`.
+5. **Replay-safe logging impossible** — dans un Orchestrateur, les logs dans `orchestrationContext.CreateReplaySafeLogger()` sont automatiquement filtrés lors du replay. Les Entities n'ont pas ce concept.
+
+**Quand utiliser Durable Entity à la place :**
+
+Les Entities sont préférables quand :
+- L'état doit être **partagé entre plusieurs orchestrateurs** (ex. : un compteur de transactions par dossier accessible par plusieurs workflows en parallèle).
+- Le cycle de vie est **long et sans étapes définies** (ex. : un dossier HOA5 qui accumule des événements sur des semaines sans timeline fixe).
+- La logique est du **CRUD pur** sans machine à états (ex. : `IncrementeCompteur`, `AjouterEtape`, `GetStatut`).
+
+Dans le TDF, le cycle de vie est court et structuré (envoi → corrélation → résultat), avec un timeout dur — l'Orchestrateur est le bon choix.
+
 ### 7.4 Observations transverses sur les samples
 
 | # | Observation | Sévérité |
