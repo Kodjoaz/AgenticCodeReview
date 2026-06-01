@@ -581,6 +581,86 @@ Caller envoie MaCommande(dossierId=D-001)  → MessageId="dossier-D-001-cmd" →
                                             → ✅ message ignoré silencieusement, 0 doublon
 ```
 
+#### Patterns de MessageId déterministe — guidance
+
+> 🧭 **Règle fondamentale :** un `MessageId` déterministe doit être **stable, unique et représenter une intention métier précise**. Même payload republié par le même caller dans la même fenêtre de déduplication → même `MessageId` → Service Bus déduplique.
+
+##### Règle 1 — Composer avec les clés métier naturelles
+
+```csharp
+// Pattern recommandé : concaténer les identifiants naturels de l'opération
+// Format : <domaine>-<entité>-<id>-<action>[-<version>]
+
+// Cas 1 : traitement d'un dossier (1 action par dossier)
+var messageId = $"individu-dossier-{dossierId}-valider";
+
+// Cas 2 : action sur un dossier avec version (re-soumettre possible)
+var messageId = $"pharmacie-recette-{recetteId}-v{version}-soumettre";
+
+// Cas 3 : événement daté (1 seul envoi par jour)
+var messageId = $"regie-rapport-{organismeId}-{DateTime.UtcNow:yyyyMMdd}";
+```
+
+##### Règle 2 — Utiliser un hash déterministe quand la clé métier est longue
+
+```csharp
+// Quand les identifiants sont trop longs pour une clé lisible,
+// utiliser SHA256 tronqué (16 premiers octets = 32 hex chars, collision negligeable)
+private static string DeterministicId(params string[] parts)
+{
+    var raw = string.Join("|", parts);
+    var hash = System.Security.Cryptography.SHA256.HashData(
+        System.Text.Encoding.UTF8.GetBytes(raw));
+    // 16 octets → 32 hex chars → bien en-dessous de la limite Service Bus (128 chars)
+    return Convert.ToHexString(hash[..16]).ToLowerInvariant();
+}
+
+// Usage
+var messageId = DeterministicId("individu", dossierId, "ValiderAdresse", correlationId);
+```
+
+##### Règle 3 — Ne jamais utiliser `Guid.NewGuid()` seul comme MessageId dans un flux retriable
+
+```csharp
+// ❌ Anti-pattern : un nouveau Guid à chaque appel → zéro protection contre les doublons
+var ctx = new MessageTransitContext<MaCommande>
+{
+    MessageId = Guid.NewGuid().ToString("N"),  // ← Si le caller retente, doublon garanti
+    Message   = new MaCommande { ... }
+};
+
+// ✅ Correct : MessageId ancré sur les données métier
+var ctx = new MessageTransitContext<MaCommande>
+{
+    MessageId = $"{dossierId}-{actionCode}",   // ← Stable à travers les retries
+    Message   = new MaCommande { ... }
+};
+```
+
+##### Règle 4 — Cas où `Guid.NewGuid()` est acceptable
+
+| Scénario | MessageId déterministe requis ? | Justification |
+|---|---|---|
+| Publication fire-and-forget sans retry applicatif | ❌ Non | Le caller ne retentera jamais |
+| Queue **sans** `RequiresDuplicateDetection` | ❌ Non | Le broker ne déduplique pas |
+| Événement de notification (audit, log, monitoring) | ❌ Non | Le doublon est inoffensif |
+| Commande métier avec effet de bord (paiement, réservation) | ✅ **Oui** | Un doublon = double paiement |
+| Message dans une saga Routing Slip | ✅ **Oui** | Le `SlipId` est le bon `MessageId` de base |
+
+##### Règle 5 — Routing Slip : utiliser `SlipId` comme base
+
+```csharp
+// Dans un Routing Slip, chaque message de l'étape suivante doit utiliser
+// le SlipId + step pour garantir l'idempotence de l'avancement du curseur.
+// RoutingSlipExecutor le fait automatiquement :
+var nextCtx = new MessageTransitContext<SlipEnvelope>
+{
+    MessageId     = $"{envelope.Header.SlipId}-step{nextCursor}",  // déterministe
+    CorrelationId = envelope.Header.CorrelationId,
+    Message       = nextEnvelope
+};
+```
+
 #### ⚠️ Comportement critique : MessageId régénéré sur retry exponentiel (sans session)
 
 > **Lors d'un `ExponentialRetry` sans session**, EMT **génère un nouveau `MessageId`** pour le message re-schedulé. Raison : si `RequiresDuplicateDetection = true` est configuré sur la queue, Service Bus rejetterait silencieusement un retry portant le même `MessageId` (il considérerait le message comme un doublon).
@@ -2008,7 +2088,7 @@ Cette section est **le check-list de qualité** des patterns enterprise impléme
 | Axe | Verdict | Évidence |
 |---|---|---|
 | Implémentation | 🟢 **Complet** | `TransportSettings.RequiresDuplicateDetection` (défaut `false`) — déclenche validation au démarrage via `IdempotenceValidationService` + `ServiceBusHealthCheck.ValidateIdempotenceAsync`. |
-| Complétude | 🟡 Partielle | Validation infra ✅ livrée ; guidance `MessageId` déterministe + sample dédié (lot R4 partiel) restants |
+| Complétude | 🟡 Partielle | Validation infra ✅ livrée ; guidance `MessageId` déterministe ✅ livrée (§6.5 — 5 règles + patterns) ; sample dédié restant |
 | Testabilité | 🟢 Bon | `ValidateIdempotenceCoreAsync` internal testable sans SDK Azure ; seam de test injecté |
 | Observabilité | 🟡 Partielle | Counter `duplicate_detected_total` dans `IMetricsProvider` mais non câblé (broker ne notifie pas les doublons filtrés) |
 | Documentation | 🟢 Bon | [idempotence.md](../EnterpriseMessageTransit/docs/idempotence.md) + §6.5 |
