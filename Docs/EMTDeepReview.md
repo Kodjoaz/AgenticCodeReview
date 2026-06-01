@@ -1,7 +1,7 @@
 # EMT Deep Review — Comprendre Enterprise Message Transit de A à Z
 
 > **Audience cible :** développeur junior arrivant sur le projet RAMQ et devant comprendre la librairie `EnterpriseMessageTransit` (EMT) **et tous les exemples du dossier `Exemples/`** sans pré-requis.
-> **Objectif :** synthétiser dans un seul document toutes les revues effectuées sur la librairie (Senior, Lead, Distinguished, Phases 1-5, EMT 1.0, Request/Reply, Routing-Slip), inventorier les **35 projets exemples**, vérifier le respect des **principes SOLID ligne par ligne**, l'intégrité de **chaque pattern enterprise**, et fournir un **plan de résolution chiffré et priorisé**.
+> **Objectif :** synthétiser dans un seul document toutes les revues effectuées sur la librairie (Senior, Lead, Distinguished, Phases 1-5, EMT 1.0, Request/Reply, Routing-Slip), inventorier les **34 projets exemples**, vérifier le respect des **principes SOLID ligne par ligne**, l'intégrité de **chaque pattern enterprise**, et fournir un **plan de résolution chiffré et priorisé**.
 > **Sources consolidées :**
 > - [EMT-SeniorEngineerReview.md](../EnterpriseMessageTransit/docs/EMT-SeniorEngineerReview.md) — revue ligne-à-ligne du code Producer
 > - [EMT-LeadEngineerReview.md](../EnterpriseMessageTransit/docs/EMT-LeadEngineerReview.md) — conception locale, SRP, performance
@@ -10,7 +10,7 @@
 > - [architecture-routing-slip.md](../EnterpriseMessageTransit/docs/architecture-routing-slip.md) — refonte saga v2.0
 > - [EMT1.0Review.md](EMT1.0Review.md) — revue v0.9.0 (Routing Slip v2.0 livré)
 > - [EMT1.0-RequestReply.md](EMT1.0-RequestReply.md) — pattern Request/Reply partiel
-> - [Exemples/](../Exemples/) — 35 projets de démonstration
+> - [Exemples/](../Exemples/) — 34 projets de démonstration
 >
 > **Périmètre — clarification du scope :**
 > 🚫 **Phase 6 entièrement hors scope :** Phase 6 = support multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents). Ce volet n'est pas prévu dans cette phase de projet.
@@ -35,7 +35,7 @@
 6. [Les patterns expliqués en profondeur](#6-les-patterns-expliqués-en-profondeur)
     - [6.7 Message Transit Journal — BAM enterprise + Single Pane of Glass](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique)
     - [6.9 Multi-Target Producer — pattern fanout typé](#69-multi-target-producer--pattern-fanout-typé)
-7. [Inventaire des exemples — 35 projets dans `Exemples/`](#7-inventaire-des-exemples-31-projets-dans-exemples)
+7. [Inventaire des exemples — 34 projets dans `Exemples/`](#7-inventaire-des-exemples-31-projets-dans-exemples)
 8. [Vérification des patterns enterprise — état actuel](#8-vérification-des-patterns-enterprise)
 9. [Audit SOLID — ligne par ligne](#9-audit-solid--ligne-par-ligne)
 10. [Récapitulatif des revues — corrigé et restant](#10-récapitulatif-des-revues)
@@ -1403,7 +1403,7 @@ Le journal doit aussi capturer **les compensations Routing Slip** (déclenchées
 
 `EnableSession = true` → `SessionId` obligatoire, FIFO garanti par session, lock mono-consumer. Validation fail-fast dans `PublishCoreAsync` (lève `ArgumentNullException` si manquant).
 
-### 6.9 Multi-Target Producer — pattern fanout typé
+### 6.9 Multi-Target Producer — pattern fanout typé ✅ Livré (R17)
 
 > 💡 **Pour un junior — le besoin métier :** une application RAMQ doit parfois envoyer **différents types de messages** vers **différentes queues/topics** dans la même opération. Exemple typique : un service de réservation qui publie en parallèle un `CarMessage` vers la queue `car-bookings`, un `HotelMessage` vers `hotel-bookings`, et un `FlightMessage` vers `flight-bookings`. Le code applicatif doit aujourd'hui **réinventer la glu** à chaque fois.
 
@@ -1513,7 +1513,7 @@ services.AddSingleton<MultiTargetPublicationService>();
 
 > 🧭 **Vision :** absorber le pattern Strategy dans la lib EMT. Le développeur déclare ses cibles **une fois en DI**, et obtient une API **type-safe** qui route automatiquement le bon message vers la bonne queue.
 
-##### Interface cible (proposée pour la lib EMT — lot R17)
+##### Interface livrée dans la lib EMT (lot R17)
 
 ```csharp
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
@@ -1638,9 +1638,9 @@ public class BookingService
 5. **Batch hétérogène natif :** `PublishMixedBatchAsync` permet d'envoyer Car + Hotel + Flight en **un seul appel optimisé** par EMT (sender cache mutualisé).
 6. **Compatible request/reply :** un projet futur peut ajouter `IMultiTargetRequestReplyClient<TBase, TResponse>` sur le même pattern.
 
-#### 6.9.5 Plan d'implémentation — lot R17 phasé
+#### 6.9.5 Lot R17 — ✅ Livré
 
-> **Objectif :** ajouter `IMultiTargetProducer<TBase>` à la lib EMT, supprimer le boilerplate des samples, documenter la migration.
+> **Livré :** `IMultiTargetProducer<TBase>` ajouté à EMT, boilerplate Strategy supprimé du sample, migration complète.
 
 ##### Phase R17-A — API publique (3 jours)
 
@@ -1732,9 +1732,9 @@ await _producer.PublishAsync(new MessageTransitContext<FlightMessage> { ... }, c
 
 ---
 
-## 7. Inventaire des exemples — 35 projets dans `Exemples/`
+## 7. Inventaire des exemples — 34 projets dans `Exemples/`
 
-Le dossier [`Exemples/`](../Exemples/) contient **35 projets** qui démontrent les patterns EMT en conditions réelles. Compris dans leur ensemble, ils forment la documentation vivante de la librairie.
+Le dossier [`Exemples/`](../Exemples/) contient **34 projets** qui démontrent les patterns EMT en conditions réelles. Compris dans leur ensemble, ils forment la documentation vivante de la librairie.
 
 ### 7.1 Tableau récapitulatif des samples
 
@@ -1746,11 +1746,10 @@ Le dossier [`Exemples/`](../Exemples/) contient **35 projets** qui démontrent l
 | 4 | `RAMQ.Samples.Queue.Simple.Activator` | HTTP trigger qui publie un message | Queue Simple (producer) | v2.0 | 🟢 Active |
 | 5 | `RAMQ.Samples.Queue.Simple.Worker` | Function trigger qui consomme | Queue Simple (worker) | v2.0 | 🟢 Active |
 | 6 | `RAMQ.Samples.Queue.Simple.Consumer` | Lib consumer `BaseConsumer<T>` | Queue Simple (consumer) | v2.0 | 🟢 Active |
-| 7 | `RAMQ.Samples.Queue.MultiTarget.Message` | Messages typés par target | Queue MultiTarget | n/a | 🟢 Active |
-| 8 | `RAMQ.Samples.Queue.MultiTarget.Activator` | HTTP trigger → multiples cibles | Queue MultiTarget | v2.0 | 🟢 Active |
-| 9 | `RAMQ.Samples.Queue.MultiTarget.Producer` | Producer avec multiple `AddProducer<T>("target")` | Queue MultiTarget | v2.0 | 🟢 Active |
-| 10 | `RAMQ.Samples.Queue.MultiTarget.Worker` | Worker recevant message typé | Queue MultiTarget | v2.0 | 🟢 Active |
-| 11 | `RAMQ.Samples.Queue.MultiTarget.Consumer` | Consumer dérivé par target | Queue MultiTarget | v2.0 | 🟢 Active |
+| 7 | `RAMQ.Samples.Queue.MultiTarget.Message` | DTOs typés (`CarMessage`, `HotelMessage`, `FlightMessage`) + interface marqueur `IBookingMessage` | Queue MultiTarget | n/a | 🟢 Active |
+| 8 | `RAMQ.Samples.Queue.MultiTarget.Activator` | Azure Function ServiceBusTrigger — reçoit les 3 types de messages | Queue MultiTarget | v2.0 | 🟢 Active |
+| 9 | `RAMQ.Samples.Queue.MultiTarget.Worker` | Worker `IMultiTargetProducer<IBookingMessage>` — démo `PublishAsync<T>` + `PublishMixedBatchAsync` (R17) | Queue MultiTarget | v2.0 | 🟢 Active — boilerplate Strategy supprimé |
+| 10 | `RAMQ.Samples.Queue.MultiTarget.Consumer` | Consumer dérivé par target | Queue MultiTarget | v2.0 | 🟢 Active |
 | 12 | `RAMQ.Samples.Queue.RequestReply.Message` | RequestMessage + ReplyMessage records | Request/Reply | n/a | 🟢 Active |
 | 13 | `RAMQ.Samples.Queue.RequestReply.Activator` | Azure Function `ServiceBusTrigger` (côté **responder**) — désérialise + délègue au Consumer | Request/Reply (responder) | v2.0 | 🟢 Active — encodage UTF-8 propre, plus de cast Service Bus brut |
 | 14 | `RAMQ.Samples.Queue.RequestReply.Worker` | `BackgroundService` (côté **requester**) — appelle `IRequestReplyClient<,>.GetResponseAsync`, gère recovery offline | Request/Reply (requester) | v2.0 | 🟢 Active — `AddRequestReplyClient<,>` + helper `AddEMTSampleProducerDefaults` |
@@ -4407,4 +4406,4 @@ Une fois DFO v1.0 prêt (fin S10), le déploiement aux différents domaines RAMQ
 
 ---
 
-*Document généré le 27 mai 2026 par revue agentique consolidée à partir des sources listées en en-tête + analyse des 35 projets `Exemples/` + audit SOLID ligne-par-ligne sur les classes principales d'EMT. Pour toute question, ouvrir une issue ou contacter l'équipe d'architecture RAMQ.*
+*Document généré le 27 mai 2026 par revue agentique consolidée à partir des sources listées en en-tête + analyse des 34 projets `Exemples/` + audit SOLID ligne-par-ligne sur les classes principales d'EMT. Pour toute question, ouvrir une issue ou contacter l'équipe d'architecture RAMQ.*

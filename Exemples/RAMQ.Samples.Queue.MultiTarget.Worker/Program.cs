@@ -6,7 +6,6 @@ using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions;
 using RAMQ.Samples.MessageTransitHelper;
 using RAMQ.Samples.Queue.MultiTarget.Message;
-using RAMQ.Samples.Queue.MultiTarget.Producer;
 using RAMQ.Samples.Queue.MultiTarget.Worker;
 
 var builder = new HostBuilder()
@@ -27,17 +26,12 @@ var builder = new HostBuilder()
         // R12 — Boilerplate EMT réduit à un appel.
         services.AddEMTSampleProducerDefaults(configuration, new VisualStudioCredential());
 
-        // Producers — target correspond à EndpointSettings.Target dans local.settings.json.
-        // Chaque type de message est lié à un target distinct via IMessageTargetMap.
-        services.AddProducer<CarMessage>("Car");
-        services.AddProducer<HotelMessage>("Hotel");
-        services.AddProducer<FlightMessage>("Flight");
-
-        // Patron Strategy : chaque IMultiTargetProducer gère un target spécifique.
-        services.AddTransient<IMultiTargetProducer, CarProducer>();
-        services.AddTransient<IMultiTargetProducer, HotelProducer>();
-        services.AddTransient<IMultiTargetProducer, FlightProducer>();
-        services.AddTransient<MultiTargetPublicationService>();
+        // R17 — IMultiTargetProducer<IBookingMessage> : 3 lignes au lieu de ~40 lignes de boilerplate.
+        // AddTarget<T> appelle AddProducer<T>(target) en interne — aucun enregistrement supplémentaire.
+        services.AddMultiTargetProducer<IBookingMessage>(b => b
+            .AddTarget<CarMessage>("Car")
+            .AddTarget<HotelMessage>("Hotel")
+            .AddTarget<FlightMessage>("Flight"));
 
         services.AddHostedService<DoWork>();
     });

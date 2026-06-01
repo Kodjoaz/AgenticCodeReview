@@ -1,6 +1,8 @@
-﻿using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using RAMQ.Samples.Queue.MultiTarget.Producer;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging;
+using RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer;
+using RAMQ.Samples.Queue.MultiTarget.Message;
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,76 +10,127 @@ using System.Threading.Tasks;
 namespace RAMQ.Samples.Queue.MultiTarget.Worker
 {
     /// <summary>
-    /// BackgroundService pour la publication multi-target de messages vers Azure Service Bus.
-    /// Publie des messages en round-robin vers "Car", "Hotel", "Flight" toutes les 30 secondes.
+    /// BackgroundService qui publie des messages de réservation via IMultiTargetProducer.
+    /// Tourne en round-robin : Car → Hotel → Flight → Car → … toutes les 30 secondes.
+    ///
+    /// Démonstration R17 :
+    ///   - PublishAsync&lt;T&gt; : 1 message typé vers sa cible dédiée (zéro magic string)
+    ///   - PublishMixedBatchAsync : les 3 types en un seul appel, chacun routé automatiquement
     /// </summary>
     public class DoWork : BackgroundService
     {
-        private static readonly string[] _targets = ["Car", "Hotel", "Flight"];
-        private static long _roundRobinCounter = -1;
+        private static long _iteration = -1;
 
         private readonly ILogger<DoWork> _logger;
-        private readonly MultiTargetPublicationService _publicationService;
+        private readonly IMultiTargetProducer<IBookingMessage> _producer;
 
         public DoWork(
             ILogger<DoWork> logger,
-            MultiTargetPublicationService publicationService)
+            IMultiTargetProducer<IBookingMessage> producer)
         {
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _publicationService = publicationService ?? throw new ArgumentNullException(nameof(publicationService));
+            _logger   = logger   ?? throw new ArgumentNullException(nameof(logger));
+            _producer = producer ?? throw new ArgumentNullException(nameof(producer));
         }
 
         protected override async Task ExecuteAsync(CancellationToken stoppingToken)
         {
-            _logger.LogInformation("MultiTarget worker démarrant");
+            _logger.LogInformation("MultiTarget worker démarrant (R17 — IMultiTargetProducer)");
 
             try
             {
                 while (!stoppingToken.IsCancellationRequested)
                 {
-                    var id = Guid.NewGuid();
-                    var target = GetNextTarget();
-                    var content = $"Message {id:N} vers {target}";
+                    var iter = Interlocked.Increment(ref _iteration);
 
                     try
                     {
-                        await _publicationService.PublierAsync(target, id, content, stoppingToken);
-                        _logger.LogInformation("Message publié avec succès vers {Target} | MessageId={MessageId}", target, id);
+                        if (iter % 4 == 3)
+                        {
+                            // === Démo PublishMixedBatchAsync : 3 types en un seul appel ===
+                            await PublierBatchHeterogeneAsync(stoppingToken);
+                        }
+                        else
+                        {
+                            // === Démo PublishAsync<T> : round-robin Car → Hotel → Flight ===
+                            await PublierMessageTypéAsync((int)(iter % 3), stoppingToken);
+                        }
                     }
-                    catch (OperationCanceledException)
-                    {
-                        _logger.LogInformation("Publication annulée pour MessageId={MessageId}", id);
-                    }
+                    catch (OperationCanceledException) { break; }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Erreur lors de la publication vers {Target} | MessageId={MessageId}", target, id);
+                        _logger.LogError(ex, "Erreur de publication (itération {Iter})", iter);
                     }
 
-                    // Délai configurable (actuellement 30 secondes)
-                    try
-                    {
-                        await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        _logger.LogInformation("Arrêt du worker demandé");
-                    }
+                    await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
                 }
             }
+            catch (OperationCanceledException) { }
             finally
             {
                 _logger.LogInformation("MultiTarget worker arrêté");
             }
         }
 
-        /// <summary>
-        /// Retourne le prochain target en mode round-robin.
-        /// Utilise un compteur `long` pour éviter les débordements d'entier.
-        /// </summary>
-        private static string GetNextTarget()
+        // ─── Cas 1 : PublishAsync<T> — type connu à la compilation ──────────────
+
+        private async Task PublierMessageTypéAsync(int index, CancellationToken ct)
         {
-            var index = (int)(Interlocked.Increment(ref _roundRobinCounter) % _targets.Length);
-            return _targets[index];
+            var id = Guid.NewGuid();
+
+            switch (index)
+            {
+                case 0:
+                    await _producer.PublishAsync(
+                        new MessageTransitContext<CarMessage>
+                        {
+                            MessageId = id.ToString("N"),
+                            Message   = new CarMessage { Id = id, Content = "Réservation voiture" }
+                        }, cancellationToken: ct);
+                    _logger.LogInformation("CarMessage publié → Car | MessageId={Id}", id);
+                    break;
+
+                case 1:
+                    await _producer.PublishAsync(
+                        new MessageTransitContext<HotelMessage>
+                        {
+                            MessageId = id.ToString("N"),
+                            Message   = new HotelMessage { Id = id, Content = "Réservation hôtel" }
+                        }, cancellationToken: ct);
+                    _logger.LogInformation("HotelMessage publié → Hotel | MessageId={Id}", id);
+                    break;
+
+                default:
+                    await _producer.PublishAsync(
+                        new MessageTransitContext<FlightMessage>
+                        {
+                            MessageId = id.ToString("N"),
+                            Message   = new FlightMessage { Id = id, Content = "Réservation vol" }
+                        }, cancellationToken: ct);
+                    _logger.LogInformation("FlightMessage publié → Flight | MessageId={Id}", id);
+                    break;
+            }
+        }
+
+        // ─── Cas 2 : PublishMixedBatchAsync — batch hétérogène ──────────────────
+
+        private async Task PublierBatchHeterogeneAsync(CancellationToken ct)
+        {
+            var id = Guid.NewGuid();
+
+            // Les 3 types sont routés automatiquement vers leurs cibles respectives.
+            // Chaque contexte est de type MessageTransitContext<IBookingMessage>
+            // avec un Message dont le runtime type est CarMessage / HotelMessage / FlightMessage.
+            var batch = new List<MessageTransitContext<IBookingMessage>>
+            {
+                new() { MessageId = $"{id:N}-car",    Message = new CarMessage    { Id = id, Content = "Batch car"    } },
+                new() { MessageId = $"{id:N}-hotel",  Message = new HotelMessage  { Id = id, Content = "Batch hotel"  } },
+                new() { MessageId = $"{id:N}-flight", Message = new FlightMessage { Id = id, Content = "Batch flight" } },
+            };
+
+            var ids = await _producer.PublishMixedBatchAsync(batch, cancellationToken: ct);
+            _logger.LogInformation(
+                "Batch hétérogène publié — Car + Hotel + Flight | MessageIds=[{Ids}]",
+                string.Join(", ", ids));
         }
     }
 }

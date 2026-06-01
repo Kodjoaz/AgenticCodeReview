@@ -25,7 +25,7 @@ namespace RAMQ.Samples.Queue.MultiTarget.Message
         public string Content { get; init; } = string.Empty;
     }
 
-    public record CarMessage
+    public record CarMessage : IBookingMessage
     {
         [Required]
         public Guid Id { get; init; }
@@ -34,7 +34,7 @@ namespace RAMQ.Samples.Queue.MultiTarget.Message
         public string Content { get; init; } = string.Empty;
     }
 
-    public record HotelMessage
+    public record HotelMessage : IBookingMessage
     {
         [Required]
         public Guid Id { get; init; }
@@ -43,7 +43,7 @@ namespace RAMQ.Samples.Queue.MultiTarget.Message
         public string Content { get; init; } = string.Empty;
     }
 
-    public record FlightMessage
+    public record FlightMessage : IBookingMessage
     {
         [Required]
         public Guid Id { get; init; }
