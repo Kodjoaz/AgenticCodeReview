@@ -115,6 +115,17 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                 ClaimCheckToken = ctx.GetMessageToken()
             };
 
+            // R13 — BeginScope : SlipId/StepName/CorrelationId dans customDimensions de tous les logs de cette étape.
+            using var logScope = _logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["SlipId"]        = envelope.Header.SlipId,
+                ["SlipName"]      = envelope.Header.SlipName,
+                ["StepName"]      = currentStep.Name,
+                ["StepIndex"]     = envelope.Cursor,
+                ["CorrelationId"] = ctx.CorrelationId ?? envelope.Header.CorrelationId,
+                ["Attempt"]       = ctx.Attempt
+            });
+
             _logger.LogInformation(
                 "RoutingSlipExecutor: début étape {Step} ({Index}/{Total}), SlipId={SlipId}, Attempt={Attempt}",
                 currentStep.Name, envelope.Cursor + 1, envelope.Steps.Count,

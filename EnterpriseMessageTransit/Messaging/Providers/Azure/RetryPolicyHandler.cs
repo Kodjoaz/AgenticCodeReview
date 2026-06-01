@@ -152,6 +152,15 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             int maxDeliveryCount = retryPolicy?.MaxDeliveryCount ?? 10;
             int attempt = message.DeliveryCount;
 
+            // R13 — BeginScope pour enrichir tous les logs de cette méthode
+            using var scope = _logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["MessageId"]     = message.MessageId,
+                ["CorrelationId"] = message.CorrelationId,
+                ["SessionId"]     = message.SessionId,
+                ["DeliveryCount"] = attempt
+            });
+
             using var activity = MessagingActivitySource.Source.StartActivity(
                 "messaging.retry.immediate",
                 ActivityKind.Internal);
@@ -259,6 +268,14 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
         {
             var retryPolicy = _config.AppSettings?.RetryPolicy;
             int maxDeliveryCount = retryPolicy?.MaxDeliveryCount ?? 10;
+
+            // R13 — BeginScope
+            using var scope = _logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["MessageId"]     = message.MessageId,
+                ["CorrelationId"] = message.CorrelationId,
+                ["SessionId"]     = message.SessionId
+            });
 
             bool isSession = !string.IsNullOrWhiteSpace(message.SessionId);
             int attempt;

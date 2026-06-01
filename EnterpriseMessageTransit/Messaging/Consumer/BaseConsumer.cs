@@ -22,6 +22,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
         private readonly IMessageDeserializer _deserializer;
         private readonly IMessagingEndpointResolver _resolver;
         private readonly IConsumerTelemetry _telemetry;
+        // R13 — scope structuré (MessageId/CorrelationId/…) actif de la désérialisation au settlement.
+        private IDisposable? _messageScope;
 
         protected BaseConsumer(
             IMessagingProvider messagingProvider,
@@ -87,6 +89,20 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
             scope.MarkSuccess(ctx, entityName, _consumerName, _actionName);
             sw.Stop();
             _telemetry.RecordReceived(entityName, sw.Elapsed.TotalMilliseconds);
+
+            // R13 — BeginScope : injecte MessageId/SessionId/CorrelationId dans customDimensions
+            // pour tous les logs émis entre DeserializeMessageAsync et le settlement (Complete/DLQ/Retry).
+            // Le scope est disposé automatiquement dans CompleteMessageAsync / DeadLetterMessageAsync / Retry*.
+            _messageScope?.Dispose();
+            _messageScope = Logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["MessageId"]     = ctx.MessageId,
+                ["CorrelationId"] = ctx.CorrelationId,
+                ["SessionId"]     = ctx.SessionId,
+                ["Consumer"]      = _consumerName,
+                ["Action"]        = _actionName
+            });
+
             return result;
         }
 
@@ -122,6 +138,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
             CancellationToken ct = default) where TCurrent : class
         {
             ResetInvocationMetadata();
+            DisposeMessageScope();
             return _settler.CompleteMessageAsync(ct);
         }
 
@@ -131,19 +148,28 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
         public Task DeadLetterMessageAsync(Exception ex, CancellationToken ct = default)
         {
             ResetInvocationMetadata();
+            DisposeMessageScope();
             return _settler.DeadLetterMessageAsync(ex, ct);
         }
 
         protected Task ImmediateRetryAsync(ImmediateRetryException ex, CancellationToken ct = default)
         {
             ResetInvocationMetadata();
+            DisposeMessageScope();
             return _settler.ImmediateRetryAsync(ex, ct);
         }
 
         protected Task ExponentialRetryAsync(ExponentialRetryException ex, CancellationToken ct = default)
         {
             ResetInvocationMetadata();
+            DisposeMessageScope();
             return _settler.ExponentialRetryAsync(ex, ct);
+        }
+
+        private void DisposeMessageScope()
+        {
+            _messageScope?.Dispose();
+            _messageScope = null;
         }
         #endregion
     }

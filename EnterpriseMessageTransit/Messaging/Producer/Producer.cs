@@ -131,6 +131,15 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
 
             (string? consumer, string? action) = ExtractMessageProperties(properties);
 
+            // R13 — BeginScope : MessageId/SessionId/CorrelationId dans customDimensions de chaque log de ce publish.
+            using var scope = Logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["MessageId"]     = context.MessageId,
+                ["CorrelationId"] = context.CorrelationId,
+                ["SessionId"]     = context.SessionId,
+                ["Target"]        = resolvedTarget
+            });
+
             try
             {
                 using var activity = MessagingActivitySource.Source.StartActivity(
