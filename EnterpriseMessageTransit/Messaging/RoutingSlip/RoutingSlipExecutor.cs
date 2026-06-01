@@ -5,6 +5,7 @@ using RAMQ.COM.EnterpriseMessageTransit.Exceptions;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Enum;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Telemetry;
+using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
 {
@@ -28,15 +29,18 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
         private readonly IRoutingSlipActivity<TArgs> _activity;
         private readonly ILogger _logger;
         private readonly IMetricsProvider? _metrics;
+        private readonly IJournalProvider? _journal;
 
         public RoutingSlipExecutor(
             IRoutingSlipActivity<TArgs> activity,
             ILogger<RoutingSlipExecutor<TArgs>> logger,
-            IMetricsProvider? metrics = null)
+            IMetricsProvider? metrics = null,
+            IJournalProvider? journal = null)
         {
             _activity = activity ?? throw new ArgumentNullException(nameof(activity));
             _logger   = logger   ?? throw new ArgumentNullException(nameof(logger));
             _metrics  = metrics;
+            _journal  = journal;
         }
 
         // ─── IRoutingSlipExecutor ────────────────────────────────────────────
@@ -145,6 +149,10 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
             switch (activityResult)
             {
                 case ActivityResult.NextResult next:
+                    await SafeJournalAsync(JournalEntry.ForSlipStep(
+                        envelope.Header.SlipId, envelope.Header.SlipName,
+                        envelope.Cursor, currentStep.Name, SlipStepStatus.Completed,
+                        currentStep.EntityName, ctx.CorrelationId ?? envelope.Header.CorrelationId), ct);
                     await HandleNextAsync(provider, ctx, envelope, next, ct);
                     break;
 
@@ -152,6 +160,10 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                     _logger.LogInformation(
                         "RoutingSlipExecutor: Complete explicite à l'étape '{Step}', SlipId={SlipId}",
                         currentStep.Name, envelope.Header.SlipId);
+                    await SafeJournalAsync(JournalEntry.ForSlipComplete(
+                        envelope.Header.SlipId, envelope.Header.SlipName,
+                        envelope.Steps.Count, currentStep.EntityName,
+                        ctx.CorrelationId ?? envelope.Header.CorrelationId), ct);
                     await provider.CompleteMessageAsync(ct);
                     stepActivity?.SetStatus(ActivityStatusCode.Ok);
                     break;
@@ -176,6 +188,16 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                         _metrics?.IncrementRoutingSlipCompensation(
                             envelope.Header.SlipName,
                             fault.Exception.GetType().Name);
+                        await SafeJournalAsync(JournalEntry.ForSlipStep(
+                            envelope.Header.SlipId, envelope.Header.SlipName,
+                            envelope.Cursor, currentStep.Name, SlipStepStatus.Faulted,
+                            currentStep.EntityName, ctx.CorrelationId ?? envelope.Header.CorrelationId,
+                            deadLetterReason: fault.Exception.Message), ct);
+                        await SafeJournalAsync(JournalEntry.ForSlipCompensation(
+                            envelope.Header.SlipId, envelope.Header.SlipName,
+                            envelope.Cursor, currentStep.Name, currentStep.EntityName,
+                            ctx.CorrelationId ?? envelope.Header.CorrelationId,
+                            compensationReason: fault.Exception.Message), ct);
                     }
                     await provider.DeadLetterMessageAsync(fault.Exception, ct);
                     break;
@@ -213,12 +235,16 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
             ActivityResult.NextResult next,
             CancellationToken ct)
         {
-            // Dernière étape → Complete automatique
+            // Dernière étape → Complete automatique + journal ForSlipComplete
             if (envelope.IsLastStep)
             {
                 _logger.LogInformation(
                     "RoutingSlipExecutor: dernière étape '{Step}' terminée, slip complet. SlipId={SlipId}",
                     envelope.CurrentStep.Name, envelope.Header.SlipId);
+                await SafeJournalAsync(JournalEntry.ForSlipComplete(
+                    envelope.Header.SlipId, envelope.Header.SlipName,
+                    envelope.Steps.Count, envelope.CurrentStep.EntityName,
+                    ctx.CorrelationId ?? envelope.Header.CorrelationId), ct);
                 await provider.CompleteMessageAsync(ct);
                 return;
             }
@@ -354,6 +380,17 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                     $"Variables limit exceeded: {serializedBytes} octets sérialisés (max {MaxVariableBytes}).");
 
             return merged;
+        }
+
+        /// <summary>
+        /// Pattern A5 — écriture journal non-bloquante pour le Routing Slip.
+        /// Un échec de journal ne propage jamais vers le caller.
+        /// </summary>
+        private async Task SafeJournalAsync(JournalEntry entry, CancellationToken ct)
+        {
+            if (_journal is null) return;
+            try   { await _journal.WriteRecordAsync(entry, ct); }
+            catch (Exception ex) { _logger.LogWarning(ex, "RoutingSlipExecutor: journal step failed (pattern A5). SlipId={SlipId} Step={Step}", entry.SlipId, entry.StepName); }
         }
     }
 }

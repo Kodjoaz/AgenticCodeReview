@@ -13,6 +13,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
         /// <summary>Étape terminée avec succès.</summary>
         Completed,
         /// <summary>Étape terminée en erreur permanente (→ DLQ).</summary>
-        Faulted
+        Faulted,
+        /// <summary>Étape compensée (rollback LIFO après Fault).</summary>
+        Compensated
     }
 }

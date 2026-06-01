@@ -1,6 +1,7 @@
 ﻿using Azure.Data.Tables;
 using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 
 namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
@@ -112,19 +113,41 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             var partitionKey = entry.Target ?? "(none)";
             var rowKey       = $"{now:yyyyMMddHHmmssfff}-{entry.MessageId}-{Guid.NewGuid():N}";
 
-            return new TableEntity(partitionKey, rowKey)
+            // R16-B — Auto-injection Activity.Current si entry ne porte pas déjà les champs trace
+            var act        = Activity.Current;
+            var traceId    = entry.TraceId      ?? act?.TraceId.ToString();
+            var spanId     = entry.SpanId       ?? act?.SpanId.ToString();
+            var parentSpanId = entry.ParentSpanId ?? act?.ParentSpanId.ToString();
+
+            var entity = new TableEntity(partitionKey, rowKey)
             {
-                ["Consumer"]         = entry.Consumer        ?? "(none)",
-                ["Action"]           = entry.Action          ?? "(none)",
+                ["Consumer"]         = entry.Consumer         ?? "(none)",
+                ["Action"]           = entry.Action           ?? "(none)",
                 ["MessageId"]        = entry.MessageId,
-                ["CorrelationId"]    = entry.CorrelationId   ?? string.Empty,
+                ["CorrelationId"]    = entry.CorrelationId    ?? string.Empty,
                 ["Mode"]             = entry.Mode.ToString(),
                 ["StatusCode"]       = entry.StatusCode,
                 ["DeliveryCount"]    = entry.DeliveryCount,
                 ["MaxDeliveryCount"] = entry.MaxDeliveryCount,
                 ["DeadLetterReason"] = entry.DeadLetterReason ?? string.Empty,
-                ["EnqueuedTimeUtc"]  = entry.EnqueuedTimeUtc
+                ["EnqueuedTimeUtc"]  = entry.EnqueuedTimeUtc,
+                ["SessionId"]        = entry.SessionId        ?? string.Empty,
+                ["ApplicationName"]  = entry.ApplicationName  ?? string.Empty,
             };
+
+            // Champs trace OTel (R16-B) — écrits uniquement si non-null pour économiser le stockage
+            if (traceId    is not null) entity["TraceId"]      = traceId;
+            if (spanId     is not null) entity["SpanId"]       = spanId;
+            if (parentSpanId is not null) entity["ParentSpanId"] = parentSpanId;
+
+            // Champs Routing Slip (R16-A) — écrits uniquement si présents
+            if (entry.SlipId    is not null) entity["SlipId"]     = entry.SlipId;
+            if (entry.SlipName  is not null) entity["SlipName"]   = entry.SlipName;
+            if (entry.StepIndex is not null) entity["StepIndex"]  = entry.StepIndex.Value;
+            if (entry.StepName  is not null) entity["StepName"]   = entry.StepName;
+            if (entry.StepStatus is not null) entity["StepStatus"] = entry.StepStatus.Value.ToString();
+
+            return entity;
         }
     }
 }
