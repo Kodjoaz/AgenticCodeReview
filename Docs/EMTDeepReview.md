@@ -95,6 +95,74 @@ EMT n'est pas une librairie monolithique, c'est en réalité **trois produits im
 
 💡 **Pour un junior :** comprendre cette superposition explique pourquoi le code semble parfois sur-architecturé (P1) et pourquoi certaines classes mélangent des responsabilités (P3 dans P2).
 
+### 1.5 Stack technique — versions des composants runtime
+
+> **Référence au 28 mai 2026.** Versions utilisées dans la solution `EnterpriseMessageTransit.sln`.
+
+#### Runtime et framework
+
+| Composant | Version utilisée | Notes |
+|---|---|---|
+| **.NET** | **8.0 LTS** | Cible de toute la solution — support jusqu'en novembre 2026 |
+| **EMT Library** (`RAMQ.COM.EnterpriseMessageTransit`) | **0.9.0** | Pre-v1.0 — breaking changes assumés entre sprints |
+| **Azure Functions Isolated Worker Runtime** | **v4** | `AzureFunctionsVersion` = v4 dans tous les `.csproj` |
+| **Microsoft.NET.Sdk.Functions** | **4.6.0** | SDK de build Azure Functions |
+
+#### Azure Functions Worker (packages d'exécution)
+
+| Package | Version en solution | Rôle |
+|---|---|---|
+| `Microsoft.Azure.Functions.Worker` | **2.0.0 – 2.51.0** ⚠️ | Host isolation worker — versions mixtes dans la solution |
+| `Microsoft.Azure.Functions.Worker.Sdk` | **2.0.2 – 2.0.7** | Build SDK worker |
+| `Microsoft.Azure.Functions.Worker.Extensions.ServiceBus` | **5.22.2** | Trigger `[ServiceBusTrigger]`, `ServiceBusReceivedMessage`, sessions |
+| `Microsoft.Azure.Functions.Worker.Extensions.Http` | **3.1.0 – 3.3.0** | Trigger `[HttpTrigger]`, `HttpRequestData` |
+| `Microsoft.Azure.Functions.Worker.Extensions.Timer` | **4.3.1** | Trigger `[TimerTrigger]` |
+| `Microsoft.Azure.Functions.Worker.ApplicationInsights` | **2.0.0** | Intégration Application Insights isolated worker |
+| `Microsoft.Azure.Functions.Worker.OpenTelemetry` | **1.1.0** | `.UseFunctionsWorkerDefaults()` + OTel |
+
+#### Durable Functions
+
+| Package | Version en solution | Rôle |
+|---|---|---|
+| `Microsoft.Azure.Functions.Worker.Extensions.DurableTask` | **1.1.7** | SDK Durable Functions v3 pour isolated worker — Orchestrateurs, Activités, Entités |
+| `Microsoft.Azure.WebJobs.Extensions.DurableTask` | **2.13.7** | Implémentation sous-jacente du runtime Durable (requis en tant que dépendance indirecte) |
+
+> ℹ️ **Note Durable Functions :** la version **1.1.7** de `Extensions.DurableTask` est l'extension isolated worker. Le runtime Durable lui-même (2.x) est géré via `WebJobs.Extensions.DurableTask`. Ce découplage est intentionnel dans l'architecture isolated worker Azure Functions v4.
+
+#### Azure SDK
+
+| Package | Version en solution | Rôle |
+|---|---|---|
+| `Azure.Messaging.ServiceBus` | **7.18.1** | Client Service Bus (envoi, réception, sessions, administration) |
+| `Azure.Identity` | **1.13.0** | `ManagedIdentityCredential`, `VisualStudioCredential`, `DefaultAzureCredential` |
+| `Azure.Data.Tables` | **12.11.0** | Table Storage — journal EMT (`JournalEntry`) |
+| `Azure.Storage.Blobs` | **12.25.0** | Blob Storage — Claim Check (`AzureStorageProvider`) |
+| `Azure.Monitor.OpenTelemetry.Exporter` | **1.8.0** | Export métriques/traces vers Azure Monitor / Application Insights |
+
+#### Observabilité (OpenTelemetry)
+
+| Package | Version en solution | Rôle |
+|---|---|---|
+| `OpenTelemetry.Extensions.Hosting` | **1.15.3** | `AddOpenTelemetry()`, `WithMetrics()`, `WithTracing()` |
+| `OpenTelemetry.Exporter.OpenTelemetryProtocol` | **1.9.0** ⚠️ | Export OTLP (Jaeger, Grafana Tempo) — vulnérabilité modérée connue |
+| `OpenTelemetry.Instrumentation.Http` | **1.9.0** | Instrumentation automatique `HttpClient` |
+| `Microsoft.ApplicationInsights.WorkerService` | **2.23.0** | Application Insights pour Worker Service |
+
+#### Divers
+
+| Package | Version en solution | Rôle |
+|---|---|---|
+| `Refit.HttpClientFactory` | **8.0.0** | Client HTTP typé (TDF Frontend → Producer) |
+| `Microsoft.Extensions.Http.Resilience` | **8.10.0** | Politiques de retry sur `HttpClient` |
+| `Microsoft.CodeAnalysis.PublicApiAnalyzers` | **3.3.4** | Gel de la surface publique EMT (`PublicAPI.Shipped.txt`) |
+
+#### ⚠️ Points d'attention sur les versions
+
+| Composant | Problème | Action recommandée |
+|---|---|---|
+| `Microsoft.Azure.Functions.Worker` | Versions mixtes (2.0.0, 2.1.0, 2.51.0) dans la solution — certains samples utilisent des versions différentes de la librairie | Aligner tous les projets sur **2.51.0** (dernière stable) |
+| `OpenTelemetry.Exporter.OpenTelemetryProtocol` 1.9.0 | Vulnérabilité modérée `GHSA-4625-4j76-fww9` | Mettre à jour vers **≥ 1.10.0** quand disponible |
+
 ---
 
 ## 2. Vue d'ensemble en 5 minutes
