@@ -1,0 +1,36 @@
+{
+  "IsEncrypted": false,
+  "AppSettings": {
+    "ApplicationName": "CircuitBreakerWorker",
+    "ServiceBusNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net",
+    "RetryPolicy": {
+      "InitialDelay": "00:00:01",
+      "MaxDelay": "00:00:05",
+      "UseJitter": true,
+      "MaxDeliveryCount": 3
+    },
+    "Endpoints": [
+      {
+        "Target": "healthy-queue",
+        "Endpoint": {
+          "EntityName": "sbq-circuit-breaker-healthy",
+          "EntityType": "Queue"
+        }
+      },
+      {
+        "Target": "failing-queue",
+        "Endpoint": {
+          "EntityName": "sbq-circuit-breaker-failing-NONEXISTENT",
+          "EntityType": "Queue"
+        }
+      }
+    ],
+    "MessageTransitJournalStoreUri": "https://stxalpum.table.core.windows.net",
+    "MessageTransitJournalName": "COMJournalCircuitBreaker"
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "https://stxalpum.blob.core.windows.net",
+    "ContainerName": "claimcheck",
+    "FolderName": "circuit-breaker"
+  }
+}

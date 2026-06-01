@@ -1,7 +1,7 @@
 # EMT Deep Review — Comprendre Enterprise Message Transit de A à Z
 
 > **Audience cible :** développeur junior arrivant sur le projet RAMQ et devant comprendre la librairie `EnterpriseMessageTransit` (EMT) **et tous les exemples du dossier `Exemples/`** sans pré-requis.
-> **Objectif :** synthétiser dans un seul document toutes les revues effectuées sur la librairie (Senior, Lead, Distinguished, Phases 1-5, EMT 1.0, Request/Reply, Routing-Slip), inventorier les **34 projets exemples**, vérifier le respect des **principes SOLID ligne par ligne**, l'intégrité de **chaque pattern enterprise**, et fournir un **plan de résolution chiffré et priorisé**.
+> **Objectif :** synthétiser dans un seul document toutes les revues effectuées sur la librairie (Senior, Lead, Distinguished, Phases 1-5, EMT 1.0, Request/Reply, Routing-Slip), inventorier les **37 projets exemples**, vérifier le respect des **principes SOLID ligne par ligne**, l'intégrité de **chaque pattern enterprise**, et fournir un **plan de résolution chiffré et priorisé**.
 > **Sources consolidées :**
 > - [EMT-SeniorEngineerReview.md](../EnterpriseMessageTransit/docs/EMT-SeniorEngineerReview.md) — revue ligne-à-ligne du code Producer
 > - [EMT-LeadEngineerReview.md](../EnterpriseMessageTransit/docs/EMT-LeadEngineerReview.md) — conception locale, SRP, performance
@@ -10,7 +10,7 @@
 > - [architecture-routing-slip.md](../EnterpriseMessageTransit/docs/architecture-routing-slip.md) — refonte saga v2.0
 > - [EMT1.0Review.md](EMT1.0Review.md) — revue v0.9.0 (Routing Slip v2.0 livré)
 > - [EMT1.0-RequestReply.md](EMT1.0-RequestReply.md) — pattern Request/Reply partiel
-> - [Exemples/](../Exemples/) — 34 projets de démonstration
+> - [Exemples/](../Exemples/) — 37 projets de démonstration
 >
 > **Périmètre — clarification du scope :**
 > 🚫 **Phase 6 entièrement hors scope :** Phase 6 = support multi-broker (Kafka / Confluent / RabbitMQ / CloudEvents). Ce volet n'est pas prévu dans cette phase de projet.
@@ -35,7 +35,7 @@
 6. [Les patterns expliqués en profondeur](#6-les-patterns-expliqués-en-profondeur)
     - [6.7 Message Transit Journal — BAM enterprise + Single Pane of Glass](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique)
     - [6.9 Multi-Target Producer — pattern fanout typé](#69-multi-target-producer--pattern-fanout-typé)
-7. [Inventaire des exemples — 34 projets dans `Exemples/`](#7-inventaire-des-exemples-31-projets-dans-exemples)
+7. [Inventaire des exemples — 37 projets dans `Exemples/`](#7-inventaire-des-exemples-31-projets-dans-exemples)
 8. [Vérification des patterns enterprise — état actuel](#8-vérification-des-patterns-enterprise)
 9. [Audit SOLID — ligne par ligne](#9-audit-solid--ligne-par-ligne)
 10. [Récapitulatif des revues — corrigé et restant](#10-récapitulatif-des-revues)
@@ -1863,9 +1863,9 @@ await _producer.PublishAsync(new MessageTransitContext<FlightMessage> { ... }, c
 
 ---
 
-## 7. Inventaire des exemples — 34 projets dans `Exemples/`
+## 7. Inventaire des exemples — 37 projets dans `Exemples/`
 
-Le dossier [`Exemples/`](../Exemples/) contient **34 projets** qui démontrent les patterns EMT en conditions réelles. Compris dans leur ensemble, ils forment la documentation vivante de la librairie.
+Le dossier [`Exemples/`](../Exemples/) contient **37 projets** qui démontrent les patterns EMT en conditions réelles. Compris dans leur ensemble, ils forment la documentation vivante de la librairie.
 
 ### 7.1 Tableau récapitulatif des samples
 
@@ -1905,6 +1905,8 @@ Le dossier [`Exemples/`](../Exemples/) contient **34 projets** qui démontrent l
 | 33 | `RAMQ.Samples.Queue.ClaimCheck.Worker` | Azure Function HTTP — 3 cas : gros message JSON (> 256 Ko auto), pièce jointe binaire (`WithAttachment`), message léger inline | Claim Check (producteur) | v2.0 | 🟢 Active |
 | 34 | `RAMQ.Samples.Queue.ClaimCheck.Consumer` | Lib `ClaimCheckConsumer : BaseConsumer<RapportMessage>` — Option A (référence blob → API downstream) + Option B (download inline via `IStorageProvider`) | Claim Check (consumer lib) | v2.0 | 🟢 Active |
 | 35 | `RAMQ.Samples.Queue.ClaimCheck.Activator` | Azure Function `ServiceBusTrigger` — reçoit les messages de la queue `sbq-claimcheck-pdf` et délègue à `ClaimCheckConsumer` | Claim Check (trigger) | v2.0 | 🟢 Active |
+| 36 | `RAMQ.Samples.Queue.CircuitBreaker.Message` | DTO `CircuitBreakerMessage` (Id, Payload, Target) | Circuit Breaker | n/a | 🟢 Active |
+| 37 | `RAMQ.Samples.Queue.CircuitBreaker.Worker` | BackgroundService — 3 phases : Closed → Open (3 échecs) → HalfOpen → Closed ; `CircuitBreakerOpenException` capturée + métriques OTel `circuit_state` / `circuit_transitions_total` | Circuit Breaker | v2.0 | 🟢 Active |
 
 ### 7.2 Trois familles de samples — guide de lecture
 
@@ -2008,7 +2010,7 @@ Dans le TDF, le cycle de vie est court et structuré (envoi → corrélation →
 | # | Observation | Sévérité |
 |---|---|---|
 | **S-1** | ~~Aucun sample ne démontre Claim Check actif.~~ ✅ **Résolu R2** — `RAMQ.Samples.Queue.ClaimCheck.*` (4 projets) couvre gros message JSON, pièce jointe binaire et message léger. Options A (référence) et B (download inline) démontrées. | 🟢 Résolu |
-| **S-2** | Aucun sample ne démontre le **Circuit Breaker en action** (injection de panne, ouverture, fermeture). Pattern implémenté mais non illustré. | 🟡 Mineur |
+| **S-2** | ~~Aucun sample ne démontre le Circuit Breaker en action.~~ ✅ **Résolu** — `RAMQ.Samples.Queue.CircuitBreaker.*` (2 projets) démontre les 3 phases : Closed → Open (après 3 échecs) → HalfOpen → Closed. `CircuitBreakerOpenException` capturée, métriques OTel visibles. | 🟢 Résolu |
 | **S-3** | ~~`Queue.RequestReply` est inutilisable en l'état.~~ ✅ **Résolu R3** — C1/C2/C3/I5 corrigés, 4 projets compilent et fonctionnent. | 🟢 Résolu |
 | **S-4** | ~~Plusieurs samples copient/collent le même `Program.cs`.~~ ✅ **Résolu R12** — `AddEMTSampleProducerDefaults` + `AddEMTSampleConsumerDefaults` dans `RAMQ.Samples.MessageTransitHelper`, appliqués sur 10 samples. | 🟢 Résolu |
 | **S-5** | Aucun sample ne démontre **`IRoutingSlipActivity` testé en isolation** (objectif phare de la v2.0). Pas de projet `*.Tests` côté samples. | 🟠 Majeur |
@@ -4532,4 +4534,4 @@ Une fois DFO v1.0 prêt (fin S10), le déploiement aux différents domaines RAMQ
 
 ---
 
-*Document généré le 27 mai 2026 par revue agentique consolidée à partir des sources listées en en-tête + analyse des 34 projets `Exemples/` + audit SOLID ligne-par-ligne sur les classes principales d'EMT. Pour toute question, ouvrir une issue ou contacter l'équipe d'architecture RAMQ.*
+*Document généré le 27 mai 2026 par revue agentique consolidée à partir des sources listées en en-tête + analyse des 37 projets `Exemples/` + audit SOLID ligne-par-ligne sur les classes principales d'EMT. Pour toute question, ouvrir une issue ou contacter l'équipe d'architecture RAMQ.*
