@@ -401,7 +401,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
         {
             if (_journal is null) return;
             try   { await _journal.WriteRecordAsync(entry, ct); }
-            catch (Exception ex) { _logger.LogWarning(ex, "RoutingSlipExecutor: journal step failed (pattern A5). SlipId={SlipId} Step={Step}", entry.SlipId, entry.StepName); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Journal non écrit pour l'étape du routing slip (pattern A5). SlipId={SlipId} Etape={Step}", entry.SlipId, entry.StepName); }
         }
     }
 }

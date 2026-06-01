@@ -94,7 +94,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Error disposing ServiceBusSender");
+                _logger?.LogWarning(ex, "Erreur lors de la libération du ServiceBusSender.");
             }
         }
 
@@ -108,7 +108,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogWarning(ex, "Error disposing ServiceBusSender for entity {Entity}", kv.Key);
+                    _logger?.LogWarning(ex, "Erreur lors de la libération du ServiceBusSender pour l'entité {Entite}.", kv.Key);
                 }
             }
             _cache.Clear();

@@ -137,7 +137,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             catch (Exception jEx)
             {
                 _logger.LogWarning(jEx,
-                    "Journal failed (retry handler) — settlement succeeded but not journalized. MessageId={MessageId}",
+                    "Journal non écrit après settlement (pattern A5 — settlement réussi). MessageId={MessageId}",
                     entry.MessageId);
             }
         }
@@ -172,7 +172,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             try
             {
                 _logger.LogWarning(
-                    "ImmediateRetry: Attempt {Attempt}/{Max} MessageId={MessageId}",
+                    "Retry immédiat : tentative {Attempt}/{Max}. MessageId={MessageId}",
                     attempt, maxDeliveryCount, message.MessageId);
 
                 if (attempt < maxDeliveryCount)
@@ -201,8 +201,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 }
                 else
                 {
-                    _logger.LogError(
-                        "ImmediateRetry: MaxDeliveryCount reached -> DLQ MessageId={MessageId} DeliveryCount={DeliveryCount}",
+                    _logger.LogWarning(
+                        "Retry immédiat : nombre maximal de tentatives atteint, envoi en file des lettres mortes. MessageId={MessageId} Tentative={DeliveryCount}",
                         message.MessageId, attempt);
 
                     await actions.DeadLetterAsync("MaxDeliveryCountExceeded", TruncateForDeadLetter(exception.Message), cancellationToken);
@@ -231,7 +231,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             catch (Exception ex)
             {
                 _logger.LogError(ex,
-                    "Erreur HandleImmediateRetryAsync -> DLQ forcé MessageId={MessageId} DeliveryCount={DeliveryCount}",
+                    "Erreur inattendue lors du retry immédiat — message envoyé en file des lettres mortes. MessageId={MessageId} Tentative={DeliveryCount}",
                     message.MessageId, message.DeliveryCount);
 
                 await actions.DeadLetterAsync("ImmediateRetryException", TruncateForDeadLetter(exception.Message), cancellationToken);
@@ -314,8 +314,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             // DLQ si max atteint
             if (attempt > maxDeliveryCount)
             {
-                _logger.LogError(
-                    "ExponentialRetry: MaxDeliveryCount reached -> DLQ MessageId={MessageId} DeliveryCount={DeliveryCount} SessionId={SessionId}",
+                _logger.LogWarning(
+                    "Retry exponentiel : nombre maximal de tentatives atteint, envoi en file des lettres mortes. MessageId={MessageId} Tentative={DeliveryCount} SessionId={SessionId}",
                     message.MessageId, attempt, message.SessionId);
 
                 await actions.DeadLetterAsync("MaxDeliveryCountExceeded", TruncateForDeadLetter(exception.Message), cancellationToken);
@@ -347,9 +347,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             double maxMs     = retryPolicy?.MaxDelay.TotalMilliseconds     ?? 60_000; // default 60s
             double computedMs = baseMs * Math.Pow(2, attempt - 1);
 
-            _logger.LogInformation(
-                "ExponentialRetry delay calc: RetryPolicy={IsNull} BaseMs={BaseMs} MaxMs={MaxMs} ComputedMs={ComputedMs} Attempt={Attempt} MessageId={MessageId}",
-                retryPolicy == null ? "NULL (using defaults)" : "loaded from config",
+            _logger.LogDebug(
+                "Retry exponentiel — calcul du délai : politique={Politique} BaseMs={BaseMs} MaxMs={MaxMs} DélaiCalculé={ComputedMs}ms Tentative={Attempt} MessageId={MessageId}",
+                retryPolicy == null ? "défaut" : "configurée",
                 baseMs, maxMs, computedMs, attempt, message.MessageId);
 
             if (retryPolicy?.UseJitter == true)
@@ -414,8 +414,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             // de bout en bout : premier retry → message.MessageId, retries suivants → message.CorrelationId.
             // -----------------------------------------------------------------------------------
             _logger.LogWarning(
-                "ExponentialRetry (no session): Attempt {Attempt}/{Max} MessageId={MessageId} ScheduledAt={ScheduledTime}",
-                attempt, maxDeliveryCount, message.MessageId, scheduledTime);
+                "Retry exponentiel (sans session) : tentative {Attempt}/{Max}, republication planifiée à {ScheduledTime}. MessageId={MessageId}",
+                attempt, maxDeliveryCount, scheduledTime, message.MessageId);
 
             if (!_endpointResolver.TryResolve(_target, _consumer, _action, out var audience) || audience == null)
             {

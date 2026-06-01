@@ -177,7 +177,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
 
                 var journalSw = System.Diagnostics.Stopwatch.StartNew();
                 try { await _journal.WriteRecordAsync(journalEntry, effectiveCt); journalSw.Stop(); _metrics?.RecordJournalWriteDuration(journalSw.Elapsed.TotalMilliseconds); }
-                catch (Exception jEx) { Logger.LogWarning(jEx, "Journal failed (publish) — message sent but not journalized. MessageId={MessageId}", context.MessageId); }
+                catch (Exception jEx) { Logger.LogWarning(jEx, "Journal non écrit après publication (pattern A5 — message envoyé). MessageId={MessageId}", context.MessageId); }
 
                 return MapToResponseContext(context, null);
             }
@@ -203,13 +203,13 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                         {
                             await StorageProvider.DeleteAsync(blobRef, CancellationToken.None);
                             Logger.LogInformation(
-                                "Claim-check orphan compensated: blob '{BlobRef}' deleted after send failure. MessageId={MessageId}",
+                                "Compensation claim-check : blob orphelin '{BlobRef}' supprimé après échec d'envoi. MessageId={MessageId}",
                                 blobRef, context.MessageId);
                         }
                         catch (Exception cleanupEx)
                         {
                             Logger.LogWarning(cleanupEx,
-                                "Claim-check orphan: blob '{BlobRef}' could not be cleaned up. MessageId={MessageId}",
+                                "Impossible de supprimer le blob orphelin claim-check '{BlobRef}'. MessageId={MessageId}",
                                 blobRef, context.MessageId);
                         }
                     }
@@ -329,7 +329,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Producer
                 catch (Exception jEx)
                 {
                     Logger.LogWarning(jEx,
-                        "Journal batch failed — {Count} messages sent but not journalized.",
+                        "Journal batch non écrit (pattern A5 — {Count} messages envoyés).",
                         contextsList.Count);
                 }
             }

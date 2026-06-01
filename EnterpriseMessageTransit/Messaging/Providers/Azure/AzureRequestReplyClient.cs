@@ -153,7 +153,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 activity?.SetTag("messaging.request_reply.duration_ms", sw.ElapsedMilliseconds);
                 activity?.SetStatus(ActivityStatusCode.Ok);
                 _logger.LogWarning(
-                    "Pas de réponse R/R (timeout {Timeout:g}) MessageId={MessageId}",
+                    "Aucune réponse reçue dans le délai imparti pour le requête-réponse (timeout {Timeout:g}). MessageId={MessageId}",
                     timeout, context.MessageId);
                 return null;
             }
@@ -167,7 +167,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             if (!deserResult.IsSuccess)
             {
                 _logger.LogWarning(
-                    "Échec désérialisation réponse R/R ({Reason}) MessageId={MessageId}",
+                    "Désérialisation de la réponse requête-réponse échouée ({Raison}). MessageId={MessageId}",
                     deserResult.FailureReason, context.MessageId);
                 activity?.SetStatus(ActivityStatusCode.Error, deserResult.FailureReason.ToString());
                 return null;
@@ -197,7 +197,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             try { await _journal.WriteRecordAsync(journalEntry, cancellationToken); }
             catch (Exception jEx)
             {
-                _logger.LogWarning(jEx, "Journal failed (R/R) MessageId={MessageId}", context.MessageId);
+                _logger.LogWarning(jEx, "Journal non écrit après requête-réponse (pattern A5). MessageId={MessageId}", context.MessageId);
             }
 
             return replyContext;

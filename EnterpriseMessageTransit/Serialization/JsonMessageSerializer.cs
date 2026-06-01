@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Configuration;
 
@@ -9,20 +9,19 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Serialization
         private readonly IMessageTransitConfigurationService _config;
         private readonly ILogger<JsonMessageSerializer> _logger;
 
-        // Safety defaults; these can be tuned later or exposed via configuration.
-        private const int DefaultMaxDepth = 64;
-        private const int DefaultMaxJsonLength = 1_000_000; // 1 MB
+        private const int DefaultMaxDepth      = 64;
+        private const int DefaultMaxJsonLength = 1_000_000; // 1 Mo
 
-        // Cache JsonSerializerOptions instances to avoid recreating them per call.
-        private static readonly JsonSerializerOptions s_serializeOptionsIndented = new JsonSerializerOptions { WriteIndented = true };
-        private static readonly JsonSerializerOptions s_serializeOptionsCompact = new JsonSerializerOptions { WriteIndented = false };
+        private static readonly JsonSerializerOptions s_serializeOptionsIndented = new() { WriteIndented = true };
+        private static readonly JsonSerializerOptions s_serializeOptionsCompact  = new() { WriteIndented = false };
 
         static JsonMessageSerializer()
         {
             s_serializeOptionsIndented.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
             s_serializeOptionsCompact.Converters.Add(new System.Text.Json.Serialization.JsonStringEnumConverter());
         }
-        private static readonly JsonSerializerOptions s_deserializeOptions = new JsonSerializerOptions { MaxDepth = DefaultMaxDepth };
+
+        private static readonly JsonSerializerOptions s_deserializeOptions = new() { MaxDepth = DefaultMaxDepth };
 
         public JsonMessageSerializer(IMessageTransitConfigurationService config, ILogger<JsonMessageSerializer> logger)
         {
@@ -32,8 +31,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Serialization
 
         public string Serialize<TMessage>(TMessage obj) where TMessage : class
         {
-            var enableIndent = _config.AppSettings?.EnableJsonIndentation ?? false;
-            var options = enableIndent ? s_serializeOptionsIndented : s_serializeOptionsCompact;
+            var options = (_config.AppSettings?.EnableJsonIndentation ?? false)
+                ? s_serializeOptionsIndented
+                : s_serializeOptionsCompact;
             return JsonSerializer.Serialize(obj, options);
         }
 
@@ -41,31 +41,31 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Serialization
         {
             if (string.IsNullOrWhiteSpace(json))
             {
-                _logger.LogWarning("Attempted to deserialize empty or whitespace JSON into {TypeName}.", typeof(TMessage).FullName);
+                // Debug : précondition non remplie — ne constitue pas une erreur opérationnelle.
+                _logger.LogDebug("Désérialisation ignorée : JSON vide ou null pour {TypeName}.", typeof(TMessage).FullName);
                 return null;
             }
 
             if (json.Length > DefaultMaxJsonLength)
             {
-                _logger.LogWarning("JSON payload too large ({Length} chars) trying to deserialize to {TypeName}; max allowed is {Max}.", json.Length, typeof(TMessage).FullName, DefaultMaxJsonLength);
+                // Warning : payload anormalement volumineux — à investiguer.
+                _logger.LogWarning("Payload trop volumineux ({Longueur} caractères) pour la désérialisation en {TypeName} (max : {Max}).",
+                    json.Length, typeof(TMessage).FullName, DefaultMaxJsonLength);
                 return null;
             }
 
             try
             {
-                // Single deserialization pass. Pre-validation (JsonDocument.Parse) was eliminated
-                // for performance — messages from Azure Service Bus are considered trusted.
-                // If strict validation is needed, enable via configuration or override this method.
                 return JsonSerializer.Deserialize<TMessage>(json, s_deserializeOptions);
             }
             catch (JsonException jex)
             {
-                _logger.LogError(jex, "Deserialization failed for type {TypeName}: {Message}", typeof(TMessage).FullName, jex.Message);
+                _logger.LogError(jex, "Échec de désérialisation JSON pour le type {TypeName}.", typeof(TMessage).FullName);
                 return null;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Unexpected error during deserialization for type {TypeName}: {Message}", typeof(TMessage).FullName, ex.Message);
+                _logger.LogError(ex, "Erreur inattendue lors de la désérialisation pour le type {TypeName}.", typeof(TMessage).FullName);
                 return null;
             }
         }
@@ -74,13 +74,14 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Serialization
         {
             if (string.IsNullOrWhiteSpace(data))
             {
-                _logger.LogWarning("DeserializeSafe: empty or whitespace JSON for {TypeName}.", typeof(TMessage).FullName);
+                _logger.LogDebug("DeserializeSafe : JSON vide ou null pour {TypeName}.", typeof(TMessage).FullName);
                 return DeserializationResult<TMessage>.EmptyPayload();
             }
 
             if (data.Length > DefaultMaxJsonLength)
             {
-                _logger.LogWarning("DeserializeSafe: payload too large ({Length} chars) for {TypeName}; max={Max}.", data.Length, typeof(TMessage).FullName, DefaultMaxJsonLength);
+                _logger.LogWarning("DeserializeSafe : payload trop volumineux ({Longueur} caractères) pour {TypeName} (max : {Max}).",
+                    data.Length, typeof(TMessage).FullName, DefaultMaxJsonLength);
                 return DeserializationResult<TMessage>.PayloadTooLarge(data.Length, DefaultMaxJsonLength);
             }
 
@@ -89,19 +90,19 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Serialization
                 var result = JsonSerializer.Deserialize<TMessage>(data, s_deserializeOptions);
                 if (result == null)
                 {
-                    _logger.LogWarning("DeserializeSafe: JsonSerializer returned null for {TypeName}.", typeof(TMessage).FullName);
+                    _logger.LogDebug("DeserializeSafe : le désérialiseur a retourné null pour {TypeName}.", typeof(TMessage).FullName);
                     return DeserializationResult<TMessage>.EmptyPayload();
                 }
                 return DeserializationResult<TMessage>.Success(result);
             }
             catch (JsonException jex)
             {
-                _logger.LogError(jex, "DeserializeSafe: malformed JSON for {TypeName}: {Message}", typeof(TMessage).FullName, jex.Message);
+                _logger.LogError(jex, "DeserializeSafe : JSON malformé pour le type {TypeName}.", typeof(TMessage).FullName);
                 return DeserializationResult<TMessage>.Malformed(jex);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "DeserializeSafe: unexpected error for {TypeName}: {Message}", typeof(TMessage).FullName, ex.Message);
+                _logger.LogError(ex, "DeserializeSafe : erreur inattendue pour le type {TypeName}.", typeof(TMessage).FullName);
                 return DeserializationResult<TMessage>.UnexpectedError(ex);
             }
         }

@@ -48,13 +48,13 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             try
             {
                 await table.AddEntityAsync(entity, cancellationToken);
-                _logger.LogInformation(
+                _logger.LogDebug(
                     "Entrée de journal écrite : Partition={Partition} Ligne={Row} IdMessage={MessageId}",
                     entity.PartitionKey, entity.RowKey, entry.MessageId);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Failed to write journal entry MessageId={MessageId} Partition={Partition}",
+                _logger.LogError(ex, "Échec d'écriture dans le journal. MessageId={MessageId} Partition={Partition}",
                     entry.MessageId, entry.Target);
                 throw;
             }
