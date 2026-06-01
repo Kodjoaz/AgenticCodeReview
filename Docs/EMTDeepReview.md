@@ -681,6 +681,55 @@ Retry #2        : MessageId=CCC, CorrelationId=AAA  ← AAA toujours là
 
 > ℹ️ **Retry avec session** (`ImmediateRetry` ou `ExponentialRetry` session) : le message est abandonné (`AbandonAsync`) et re-livré par Service Bus — **même `MessageId`**, pas de régénération. L'ordre FIFO de session est préservé.
 
+#### Sample idempotence — pseudo-code end-to-end
+
+> 💡 **Scénario RAMQ :** un service publie une commande `ValiderAdresse` pour un dossier patient. Le réseau coupe après l'envoi. Le caller retente. Sans idempotence → doublon métier (adresse validée 2 fois). Avec idempotence → Service Bus ignore le 2ème envoi silencieusement.
+
+**Configuration broker (`local.settings.json`)**
+```json
+"Endpoints": [{
+  "Target": "valider-adresse",
+  "Endpoint": {
+    "EntityName":                    "sbq-individu-valider-adresse",
+    "EntityType":                    "Queue",
+    "RequiresDuplicateDetection":    true
+  }
+}]
+// Côté Bicep :
+// duplicateDetectionHistoryTimeWindow: 'PT10M'  ← fenêtre 10 minutes
+// maxDeliveryCount: 10
+```
+
+**Worker — 2 envois du même message (simulation retry caller)**
+```
+// Cas 1 : 1er envoi → MessageId déterministe basé sur les clés métier
+MessageId = Hash("D-001" + "ValiderAdresse")   // ex. "d001-valider-7a3f..."
+PublishAsync(ctx)   → Service Bus ACCEPTE → Consumer reçoit le message → log: "Adresse validée"
+
+// Cas 2 : timeout réseau, caller retente AVEC LE MÊME MessageId
+MessageId = Hash("D-001" + "ValiderAdresse")   // même résultat : "d001-valider-7a3f..."
+PublishAsync(ctx)   → Service Bus DÉDUPLIQUE → Consumer NE REÇOIT PAS le message
+                    → ✅ 0 doublon, adresse validée une seule fois
+```
+
+**Consumer — démontre DeliveryCount = 1 toujours**
+```
+Consumer reçoit IdempotentCommand { DossierId="D-001", Operation="ValiderAdresse" }
+  → Logger.LogInformation("Commande reçue DeliveryCount={Count}", context.Attempt)
+  // Même si le Worker a publié 3 fois le même message,
+  // ce log n'apparaît qu'UNE seule fois — preuve de la déduplication.
+  → CompleteMessageAsync()
+```
+
+**Ce que ce sample enseigne :**
+
+| Observation | Explication |
+|---|---|
+| 2 `PublishAsync` → 1 seul message consommé | Service Bus déduplique par `MessageId` dans la fenêtre configurée |
+| `CorrelationId` identique sur les 2 envois | Traçabilité préservée même si le 2ème est ignoré |
+| `DeliveryCount = 1` toujours | Confirme que ce n'est pas un retry Service Bus — c'est bien une déduplication côté broker |
+| Fast-fail au démarrage si config manquante | `RequiresDuplicateDetection = true` + `ConfigurationException` si broker pas configuré |
+
 ### 6.6 Retry, Circuit Breaker et Dead Letter Queue
 
 Trois politiques de retry :
