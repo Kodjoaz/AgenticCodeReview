@@ -27,7 +27,6 @@ var builder = new HostBuilder()
         services.ConfigureFunctionsApplicationInsights();
 
         // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
-        var otlpEndpoint               = ctx.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
         var appInsightsConnectionString = ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
 
         var telemetryBuilder = services.AddOpenTelemetry()
@@ -36,14 +35,10 @@ var builder = new HostBuilder()
                 t.AddSource(EMTInstrumentation.SourceName);
                 t.AddSource(BookingTelemetry.SourceName);
                 t.AddHttpClientInstrumentation();
-                if (!string.IsNullOrWhiteSpace(otlpEndpoint))
-                    t.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
             })
             .WithMetrics(m =>
             {
                 m.AddMeter(EMTInstrumentation.SourceName);
-                if (!string.IsNullOrWhiteSpace(otlpEndpoint))
-                    m.AddOtlpExporter(o => o.Endpoint = new Uri(otlpEndpoint));
             })
             .UseFunctionsWorkerDefaults();
 

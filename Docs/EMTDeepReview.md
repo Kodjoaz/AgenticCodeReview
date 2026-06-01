@@ -112,7 +112,7 @@ EMT n'est pas une librairie monolithique, c'est en réalité **trois produits im
 
 | Package | Version en solution | Rôle |
 |---|---|---|
-| `Microsoft.Azure.Functions.Worker` | **2.0.0 – 2.51.0** ⚠️ | Host isolation worker — versions mixtes dans la solution |
+| `Microsoft.Azure.Functions.Worker` | **2.51.0** | Host isolation worker |
 | `Microsoft.Azure.Functions.Worker.Sdk` | **2.0.2 – 2.0.7** | Build SDK worker |
 | `Microsoft.Azure.Functions.Worker.Extensions.ServiceBus` | **5.22.2** | Trigger `[ServiceBusTrigger]`, `ServiceBusReceivedMessage`, sessions |
 | `Microsoft.Azure.Functions.Worker.Extensions.Http` | **3.1.0 – 3.3.0** | Trigger `[HttpTrigger]`, `HttpRequestData` |
@@ -144,7 +144,7 @@ EMT n'est pas une librairie monolithique, c'est en réalité **trois produits im
 | Package | Version en solution | Rôle |
 |---|---|---|
 | `OpenTelemetry.Extensions.Hosting` | **1.15.3** | `AddOpenTelemetry()`, `WithMetrics()`, `WithTracing()` |
-| `OpenTelemetry.Exporter.OpenTelemetryProtocol` | **1.9.0** ⚠️ | Export OTLP (Jaeger, Grafana Tempo) — vulnérabilité modérée connue |
+| ~~`OpenTelemetry.Exporter.OpenTelemetryProtocol`~~ | ~~1.9.0~~ | **Supprimé** — dépendance retirée (vulnérabilité `GHSA-4625-4j76-fww9`). Export via `Azure.Monitor.OpenTelemetry.Exporter` uniquement. |
 | `OpenTelemetry.Instrumentation.Http` | **1.9.0** | Instrumentation automatique `HttpClient` |
 | `Microsoft.ApplicationInsights.WorkerService` | **2.23.0** | Application Insights pour Worker Service |
 
@@ -154,14 +154,15 @@ EMT n'est pas une librairie monolithique, c'est en réalité **trois produits im
 |---|---|---|
 | `Refit.HttpClientFactory` | **8.0.0** | Client HTTP typé (TDF Frontend → Producer) |
 | `Microsoft.Extensions.Http.Resilience` | **8.10.0** | Politiques de retry sur `HttpClient` |
-| `Microsoft.CodeAnalysis.PublicApiAnalyzers` | **3.3.4** | Gel de la surface publique EMT (`PublicAPI.Shipped.txt`) |
+| ~~`Microsoft.CodeAnalysis.PublicApiAnalyzers`~~ | ~~3.3.4~~ | **Supprimé** — retiré de tous les csproj. |
 
-#### ⚠️ Points d'attention sur les versions
+#### ✅ Points d'attention résolus
 
-| Composant | Problème | Action recommandée |
+| Composant | Problème initial | Résolution |
 |---|---|---|
-| `Microsoft.Azure.Functions.Worker` | Versions mixtes (2.0.0, 2.1.0, 2.51.0) dans la solution — certains samples utilisent des versions différentes de la librairie | Aligner tous les projets sur **2.51.0** (dernière stable) |
-| `OpenTelemetry.Exporter.OpenTelemetryProtocol` 1.9.0 | Vulnérabilité modérée `GHSA-4625-4j76-fww9` | Mettre à jour vers **≥ 1.10.0** quand disponible |
+| `Microsoft.Azure.Functions.Worker` | Versions mixtes (2.0.0, 2.1.0, 2.51.0) | ✅ Tous alignés sur **2.51.0** |
+| `OpenTelemetry.Exporter.OpenTelemetryProtocol` 1.9.0 | Vulnérabilité modérée `GHSA-4625-4j76-fww9` | ✅ **Dépendance supprimée** — export via `Azure.Monitor.OpenTelemetry.Exporter` uniquement |
+| `Microsoft.CodeAnalysis.PublicApiAnalyzers` | Analyseur de surface publique obsolète dans ce contexte | ✅ **Supprimé** de tous les csproj |
 
 ---
 
