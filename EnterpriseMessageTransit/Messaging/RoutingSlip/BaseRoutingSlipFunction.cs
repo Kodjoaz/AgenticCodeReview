@@ -1,4 +1,6 @@
+using Azure.Messaging.ServiceBus;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using RAMQ.COM.EnterpriseMessageTransit.Exceptions;
 using RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers;
 
@@ -13,13 +15,16 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
     /// </summary>
     public abstract class BaseRoutingSlipFunction
     {
+        private readonly ILogger _logger;
         private readonly IMessagingProvider _messagingProvider;
         private readonly IServiceScopeFactory _scopeFactory;
 
         protected BaseRoutingSlipFunction(
+            ILogger logger,
             IMessagingProvider messagingProvider,
             IServiceScopeFactory scopeFactory)
         {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _messagingProvider = messagingProvider ?? throw new ArgumentNullException(nameof(messagingProvider));
             _scopeFactory = scopeFactory ?? throw new ArgumentNullException(nameof(scopeFactory));
         }
@@ -73,16 +78,36 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
             _messagingProvider.SetInvocationMetadata(functionName, null, null);
             _messagingProvider.BindContext(message, actions);
 
+            var sbMessage = message as ServiceBusReceivedMessage;
+
+            // R13 — BeginScope : injecte MessageId/CorrelationId/SessionId/DeliveryCount dans
+            // customDimensions pour tous les logs émis pendant le traitement de cette étape
+            // (executor, activité, retry, DLQ). Identique à la stratégie BaseConsumer.
+            using var logScope = _logger.BeginScope(new Dictionary<string, object?>
+            {
+                ["MessageId"]     = sbMessage?.MessageId,
+                ["CorrelationId"] = sbMessage?.CorrelationId,
+                ["SessionId"]     = sbMessage?.SessionId,
+                ["DeliveryCount"] = sbMessage?.DeliveryCount ?? 0,
+                ["Function"]      = functionName
+            });
+
             try
             {
                 await executeAsync(executor, _messagingProvider, cancellationToken);
             }
             catch (ImmediateRetryException ex)
             {
+                _logger.LogWarning(
+                    "BaseRoutingSlipFunction: ImmediateRetry livraison={DeliveryCount} — {Reason}",
+                    sbMessage?.DeliveryCount ?? 0, ex.Message);
                 await _messagingProvider.ImmediateRetryAsync(ex, cancellationToken);
             }
             catch (ExponentialRetryException ex)
             {
+                _logger.LogWarning(
+                    "BaseRoutingSlipFunction: ExponentialRetry livraison={DeliveryCount} — {Reason}",
+                    sbMessage?.DeliveryCount ?? 0, ex.Message);
                 await _messagingProvider.ExponentialRetryAsync(ex, cancellationToken);
             }
         }

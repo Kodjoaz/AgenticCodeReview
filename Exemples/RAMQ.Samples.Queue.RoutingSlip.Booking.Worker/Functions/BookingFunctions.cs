@@ -32,7 +32,7 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Functions
             ILogger<BookingFunctions> logger,
             IMessagingProvider messagingProvider,
             IServiceScopeFactory scopeFactory)
-            : base(messagingProvider, scopeFactory)
+            : base(logger, messagingProvider, scopeFactory)
         {
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
