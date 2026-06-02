@@ -26,20 +26,17 @@ namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Functions
     ///   - Aucune logique métier ici.
     ///   - Aucun try/catch — l'IRoutingSlipExecutor gère les erreurs.
     /// </summary>
-    public class BookingFunctions
+    public class BookingFunctions : BaseRoutingSlipFunction
     {
         private readonly ILogger<BookingFunctions> _logger;
-        private readonly IMessagingProvider _messagingProvider;
-        private readonly IServiceScopeFactory _scopeFactory;
 
         public BookingFunctions(
             ILogger<BookingFunctions> logger,
             IMessagingProvider messagingProvider,
             IServiceScopeFactory scopeFactory)
+            : base(messagingProvider, scopeFactory)
         {
-            _logger            = logger            ?? throw new ArgumentNullException(nameof(logger));
-            _messagingProvider = messagingProvider ?? throw new ArgumentNullException(nameof(messagingProvider));
-            _scopeFactory      = scopeFactory      ?? throw new ArgumentNullException(nameof(scopeFactory));
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         }
 
         // ── Étape 1 : Réserver la voiture (Topic → abonnement voiture) ───────────
@@ -59,12 +56,7 @@ namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Functions
                 "ReserverVoiture (Topic) — MessageId={Id}, DeliveryCount={Count}",
                 message.MessageId, message.DeliveryCount);
 
-            using (var scope = _scopeFactory.CreateScope())
-            {
-                var executor = scope.ServiceProvider.GetRequiredKeyedService<IRoutingSlipExecutor>(typeof(BookCarArgs));
-                _messagingProvider.BindContext(message, actions);
-                await executor.ExecuteAsync(_messagingProvider, cancellationToken);
-            }
+            await ExecuteStepAsync<BookCarArgs>("ReserverVoiture", message, actions, cancellationToken);
         }
 
         // ── Étape 2 : Réserver l'hôtel (Topic → abonnement hôtel) ────────────────
@@ -84,12 +76,7 @@ namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Functions
                 "ReserverHotel (Topic) — MessageId={Id}, DeliveryCount={Count}",
                 message.MessageId, message.DeliveryCount);
 
-            using (var scope = _scopeFactory.CreateScope())
-            {
-                var executor = scope.ServiceProvider.GetRequiredKeyedService<IRoutingSlipExecutor>(typeof(BookHotelArgs));
-                _messagingProvider.BindContext(message, actions);
-                await executor.ExecuteAsync(_messagingProvider, cancellationToken);
-            }
+            await ExecuteStepAsync<BookHotelArgs>("ReserverHotel", message, actions, cancellationToken);
         }
 
         // ── Étape 3 : Réserver le vol (Topic → abonnement vol) ───────────────────
@@ -109,12 +96,7 @@ namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Functions
                 "ReserverVol (Topic) — MessageId={Id}, DeliveryCount={Count}",
                 message.MessageId, message.DeliveryCount);
 
-            using (var scope = _scopeFactory.CreateScope())
-            {
-                var executor = scope.ServiceProvider.GetRequiredKeyedService<IRoutingSlipExecutor>(typeof(BookFlightArgs));
-                _messagingProvider.BindContext(message, actions);
-                await executor.ExecuteAsync(_messagingProvider, cancellationToken);
-            }
+            await ExecuteStepAsync<BookFlightArgs>("ReserverVol", message, actions, cancellationToken);
         }
     }
 }

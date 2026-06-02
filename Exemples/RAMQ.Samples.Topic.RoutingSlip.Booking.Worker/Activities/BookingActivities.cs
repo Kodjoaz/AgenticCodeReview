@@ -62,11 +62,13 @@ namespace RAMQ.Samples.Topic.RoutingSlip.Booking.Worker.Activities
 
             // ── Simulation : panne permanente (CRASH-) → DLQ après épuisement ───────────────
             if (ctx.Arguments.CarModel.StartsWith("CRASH-", StringComparison.OrdinalIgnoreCase))
-            {                span?.SetStatus(ActivityStatusCode.Error, "Panne permanente — DLQ après épuisement des retries");
+            {
+                span?.SetStatus(ActivityStatusCode.Error, "Panne permanente — DLQ après épuisement des retries");
                 span?.SetTag("booking.retry.type",   "RetryExponential.Permanent");
                 span?.SetTag("booking.retry.reason", "HTTP 504 Gateway Timeout");
                 span?.AddEvent(new ActivityEvent("dlq.budget_consumption",
-                    tags: new ActivityTagsCollection { ["attempt"] = ctx.Attempt }));                _logger.LogError(
+                    tags: new ActivityTagsCollection { ["attempt"] = ctx.Attempt }));
+                _logger.LogError(
                     "[{Step}] Service voiture en panne permanente (CRASH-) — tentative {Attempt}, SlipId={SlipId}",
                     ctx.StepName, ctx.Attempt, ctx.SlipId);
                 return ActivityResult.RetryExponential(

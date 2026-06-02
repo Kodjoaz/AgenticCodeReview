@@ -1,5 +1,0 @@
-#nullable enable
-RAMQ.COM.EnterpriseMessageTransit.Configuration.AppSettings.Endpoints.get -> System.Collections.Generic.List<RAMQ.COM.EnterpriseMessageTransit.Configuration.EndpointSettings>!
-RAMQ.COM.EnterpriseMessageTransit.Configuration.AppSettings.Endpoints.set -> void
-*REMOVED*RAMQ.COM.EnterpriseMessageTransit.Configuration.AppSettings.Itinerary.get -> System.Collections.Generic.List<RAMQ.COM.EnterpriseMessageTransit.Configuration.EndpointSettings>!
-*REMOVED*RAMQ.COM.EnterpriseMessageTransit.Configuration.AppSettings.Itinerary.set -> void

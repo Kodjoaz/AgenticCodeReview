@@ -5,6 +5,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
     /// <summary>
     /// Chef d'orchestre interne du routing slip.
     /// Enregistré par <c>AddRoutingSlipActivity</c> et appelé depuis le Worker ou l'Azure Function.
+    /// Le code applicatif devrait préférer <see cref="BaseRoutingSlipFunction"/> plutôt que
+    /// résoudre directement cet exécuteur par clé.
     ///
     /// Une instance de ce type = une étape = un type TArgs.
     /// </summary>

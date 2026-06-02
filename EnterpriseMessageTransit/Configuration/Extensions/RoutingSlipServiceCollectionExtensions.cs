@@ -30,13 +30,15 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Configuration.Extensions
         /// services.AddRoutingSlipActivity&lt;ValiderAdmissibiliteActivity, ValiderArgs&gt;("ValiderAdmissibilite");
         /// services.AddRoutingSlipActivity&lt;EnrichirDonneesActivity, EnrichirArgs&gt;("EnrichirDonnees");
         ///
-        /// // Dans le Function trigger (résolution par clé = typeof(TArgs)) :
-        /// public async Task Run(
-        ///     [ServiceBusTrigger(...)] ServiceBusReceivedMessage message,
-        ///     [FromKeyedServices(typeof(ValiderArgs))] IRoutingSlipExecutor executor,
-        ///     CancellationToken ct)
+        /// // Dans la Function : dériver de BaseRoutingSlipFunction pour masquer
+        /// // la résolution keyed/scoped et le binding du message.
+        /// public sealed class WorkerFunctions : BaseRoutingSlipFunction
         /// {
-        ///     await executor.ProcessAsync(_provider, ct);
+        ///     public WorkerFunctions(IMessagingProvider provider, IServiceScopeFactory scopeFactory)
+        ///         : base(provider, scopeFactory) { }
+        ///
+        ///     public Task Run(ServiceBusReceivedMessage message, ServiceBusMessageActions actions, CancellationToken ct)
+        ///         => ProcessStepAsync&lt;ValiderArgs&gt;("ValiderAdmissibilite", message, actions, ct);
         /// }
         /// </code>
         /// </example>

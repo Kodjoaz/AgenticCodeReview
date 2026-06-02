@@ -163,7 +163,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                     await SafeJournalAsync(JournalEntry.ForSlipStep(
                         envelope.Header.SlipId, envelope.Header.SlipName,
                         envelope.Cursor, currentStep.Name, SlipStepStatus.Completed,
-                        currentStep.EntityName, ctx.CorrelationId ?? envelope.Header.CorrelationId), ct);
+                        currentStep.EntityName, ctx.CorrelationId ?? envelope.Header.CorrelationId ?? string.Empty), ct);
                     await HandleNextAsync(provider, ctx, envelope, next, ct);
                     break;
 
@@ -174,7 +174,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                     await SafeJournalAsync(JournalEntry.ForSlipComplete(
                         envelope.Header.SlipId, envelope.Header.SlipName,
                         envelope.Steps.Count, currentStep.EntityName,
-                        ctx.CorrelationId ?? envelope.Header.CorrelationId), ct);
+                        ctx.CorrelationId ?? envelope.Header.CorrelationId ?? string.Empty), ct);
                     await provider.CompleteMessageAsync(ct);
                     stepActivity?.SetStatus(ActivityStatusCode.Ok);
                     break;
@@ -202,12 +202,12 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                         await SafeJournalAsync(JournalEntry.ForSlipStep(
                             envelope.Header.SlipId, envelope.Header.SlipName,
                             envelope.Cursor, currentStep.Name, SlipStepStatus.Faulted,
-                            currentStep.EntityName, ctx.CorrelationId ?? envelope.Header.CorrelationId,
+                            currentStep.EntityName, ctx.CorrelationId ?? envelope.Header.CorrelationId ?? string.Empty,
                             deadLetterReason: fault.Exception.Message), ct);
                         await SafeJournalAsync(JournalEntry.ForSlipCompensation(
                             envelope.Header.SlipId, envelope.Header.SlipName,
                             envelope.Cursor, currentStep.Name, currentStep.EntityName,
-                            ctx.CorrelationId ?? envelope.Header.CorrelationId,
+                            ctx.CorrelationId ?? envelope.Header.CorrelationId ?? string.Empty,
                             compensationReason: fault.Exception.Message), ct);
                     }
                     await provider.DeadLetterMessageAsync(fault.Exception, ct);
@@ -255,7 +255,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
                 await SafeJournalAsync(JournalEntry.ForSlipComplete(
                     envelope.Header.SlipId, envelope.Header.SlipName,
                     envelope.Steps.Count, envelope.CurrentStep.EntityName,
-                    ctx.CorrelationId ?? envelope.Header.CorrelationId), ct);
+                    ctx.CorrelationId ?? envelope.Header.CorrelationId ?? string.Empty), ct);
                 await provider.CompleteMessageAsync(ct);
                 return;
             }

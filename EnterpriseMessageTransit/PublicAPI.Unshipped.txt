@@ -1,4 +1,8 @@
 #nullable enable
+RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip.BaseRoutingSlipFunction
+RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip.BaseRoutingSlipFunction.BaseRoutingSlipFunction(RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.IMessagingProvider! messagingProvider, Microsoft.Extensions.DependencyInjection.IServiceScopeFactory! scopeFactory) -> void
+RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip.BaseRoutingSlipFunction.ExecuteStepAsync<TArgs>(string! functionName, object! message, object! actions, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
+RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip.BaseRoutingSlipFunction.ProcessStepAsync<TArgs>(string! functionName, object! message, object! actions, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
 RAMQ.COM.EnterpriseMessageTransit.Configuration.AppSettings.Endpoints.get -> System.Collections.Generic.List<RAMQ.COM.EnterpriseMessageTransit.Configuration.EndpointSettings>!
 RAMQ.COM.EnterpriseMessageTransit.Configuration.AppSettings.Endpoints.set -> void
 *REMOVED*RAMQ.COM.EnterpriseMessageTransit.Configuration.AppSettings.Itinerary.get -> System.Collections.Generic.List<RAMQ.COM.EnterpriseMessageTransit.Configuration.EndpointSettings>!
