@@ -26,6 +26,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="host.json">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\EnterpriseMessageTransit\EnterpriseMessageTransit.csproj" />
     <ProjectReference Include="..\RAMQ.Samples.RoutingSlip.Booking.Message\RAMQ.Samples.RoutingSlip.Booking.Message.csproj" />
     <ProjectReference Include="..\RAMQ.Samples.ConfigurationService\RAMQ.Samples.ConfigurationService.csproj" />
