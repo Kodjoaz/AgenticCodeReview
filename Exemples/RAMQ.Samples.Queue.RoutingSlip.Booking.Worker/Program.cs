@@ -25,7 +25,10 @@ var builder = new HostBuilder()
         // être overridé par AddApplicationInsightsTelemetryWorkerService ni par
         // ConfigureFunctionsWorkerDefaults, contrairement à SetMinimumLevel/AddFilter.
         // RAMQ.* → Information ; frameworks → Warning ; reste → Information.
-        logging.SetMinimumLevel(LogLevel.None); // laisser passer, le lambda décide
+        logging.SetMinimumLevel(LogLevel.None);
+        // AddConsole : le stdout du worker est pipé au terminal du func CLI.
+        // Contourne le relay gRPC qui ne transmet pas les logs avec 2.51.0/net8.
+        logging.AddConsole();
         logging.AddFilter((category, level) =>
         {
             if (category is null) return level >= LogLevel.Information;
