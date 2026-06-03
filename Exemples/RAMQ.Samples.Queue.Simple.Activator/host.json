@@ -2,6 +2,7 @@
   "version": "2.0",
   "logging": {
     "logLevel": {
+      "RAMQ":                "Information",
       "Azure.Identity":     "None",
       "Microsoft.Identity": "None"
     },
