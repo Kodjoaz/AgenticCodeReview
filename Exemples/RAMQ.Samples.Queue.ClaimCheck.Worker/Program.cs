@@ -12,20 +12,10 @@ var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
     {
-        // Le relay gRPC worker→host ne fonctionne pas avec Functions.Worker 2.51.0/net8.
-        // AddSimpleConsole écrit directement sur stdout du worker, pipé au terminal func CLI.
-        // Les filtres provider-spécifiques ne peuvent pas être overridés par AppInsights.
-        logging.SetMinimumLevel(LogLevel.None);
-        logging.AddSimpleConsole(opts =>
-        {
-            opts.ColorBehavior = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
-            opts.IncludeScopes  = false;
-            opts.TimestampFormat = "HH:mm:ss.fff ";
-        });
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("RAMQ",       LogLevel.Information);
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Azure",      LogLevel.Warning);
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Microsoft",  LogLevel.Warning);
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("System",     LogLevel.Warning);
+        logging.SetMinimumLevel(LogLevel.Information);
+        logging.AddFilter("Azure",     LogLevel.Warning);
+        logging.AddFilter("Microsoft", LogLevel.Warning);
+        logging.AddFilter("System",    LogLevel.Warning);
     })
     .ConfigureAppConfiguration((_, config) =>
         config.AddJsonFile("local.settings.json", optional: false, reloadOnChange: true))
@@ -33,6 +23,16 @@ var builder = new HostBuilder()
     {
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
+        // AppInsights injecte opts.MinLevel = Warning ET des règles Warning.
+        // PostConfigure reset les deux → logs RAMQ.* passent via relay gRPC → host (couleurs natives func CLI).
+        services.PostConfigure<LoggerFilterOptions>(opts =>
+        {
+            opts.MinLevel = LogLevel.None;
+            opts.Rules.Add(new LoggerFilterRule(null, "RAMQ",      LogLevel.Information, null));
+            opts.Rules.Add(new LoggerFilterRule(null, "Azure",     LogLevel.Warning,     null));
+            opts.Rules.Add(new LoggerFilterRule(null, "Microsoft", LogLevel.Warning,     null));
+            opts.Rules.Add(new LoggerFilterRule(null, "System",    LogLevel.Warning,     null));
+        });
 
 
         // R12 — Boilerplate EMT réduit à un appel.
@@ -43,6 +43,7 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
 
 
 

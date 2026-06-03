@@ -16,12 +16,7 @@ var builder = new HostBuilder()
     })
     .ConfigureLogging(logging =>
     {
-        logging.SetMinimumLevel(LogLevel.Information);        logging.AddSimpleConsole(opts =>
-        {
-            opts.ColorBehavior = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
-            opts.IncludeScopes  = false;
-            opts.TimestampFormat = "HH:mm:ss.fff ";
-        });
+        logging.SetMinimumLevel(LogLevel.Information);
     })
     .ConfigureServices((hostContext, services) =>
     {
@@ -41,6 +36,7 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
 
 
 

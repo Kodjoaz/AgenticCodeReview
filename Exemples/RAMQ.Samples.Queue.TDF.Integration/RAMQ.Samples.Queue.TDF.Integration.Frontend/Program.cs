@@ -44,12 +44,10 @@ var host = Host.CreateDefaultBuilder(args)
     })
     .ConfigureLogging(logging =>
     {
-        logging.ClearProviders();        logging.AddSimpleConsole(opts =>
-        {
-            opts.ColorBehavior = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
-            opts.IncludeScopes  = false;
-            opts.TimestampFormat = "HH:mm:ss.fff ";
-        });
+        logging.SetMinimumLevel(LogLevel.Information);
+        logging.AddFilter("Azure",     LogLevel.Warning);
+        logging.AddFilter("Microsoft", LogLevel.Warning);
+        logging.AddFilter("System",    LogLevel.Warning);
     })
     .Build();
 

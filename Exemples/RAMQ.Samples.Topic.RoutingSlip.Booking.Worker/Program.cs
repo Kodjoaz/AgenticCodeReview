@@ -19,12 +19,7 @@ var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
     {
-        logging.SetMinimumLevel(LogLevel.None);        logging.AddSimpleConsole(opts =>
-        {
-            opts.ColorBehavior = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
-            opts.IncludeScopes  = false;
-            opts.TimestampFormat = "HH:mm:ss.fff ";
-        }); // laisser passer, le lambda décide
+        logging.SetMinimumLevel(LogLevel.Information); // laisser passer, le lambda décide
         logging.AddFilter((category, level) =>
         {
             if (category is null) return level >= LogLevel.Information;
@@ -77,6 +72,7 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
 
 
 
