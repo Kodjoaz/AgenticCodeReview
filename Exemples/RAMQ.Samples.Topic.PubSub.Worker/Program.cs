@@ -12,10 +12,17 @@ var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
     {
-        logging.SetMinimumLevel(LogLevel.Information);
-        logging.AddFilter("Azure",     LogLevel.Warning);
-        logging.AddFilter("Microsoft", LogLevel.Warning);
-        logging.AddFilter("System",    LogLevel.Warning);
+        logging.SetMinimumLevel(LogLevel.None);
+        logging.AddSimpleConsole(opts =>
+        {
+            opts.ColorBehavior  = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
+            opts.IncludeScopes  = false;
+            opts.TimestampFormat = "HH:mm:ss.fff ";
+        });
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("RAMQ",       LogLevel.Information);
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Azure",      LogLevel.Warning);
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Microsoft",  LogLevel.Warning);
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("System",     LogLevel.Warning);
     })
     .ConfigureAppConfiguration((_, config) =>
     {
@@ -44,6 +51,7 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
 
 
 
