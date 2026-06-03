@@ -18,6 +18,7 @@ var host = new HostBuilder()
     .ConfigureLogging(logging =>
     {
         logging.SetMinimumLevel(LogLevel.Information);
+        logging.AddSimpleConsole(opts => { opts.IncludeScopes = false; opts.TimestampFormat = "HH:mm:ss.fff "; });
         logging.AddFilter("Azure",     LogLevel.Warning);
         logging.AddFilter("Microsoft", LogLevel.Warning);
         logging.AddFilter("System",    LogLevel.Warning);
@@ -51,3 +52,4 @@ var host = new HostBuilder()
     .Build();
 
 await host.RunAsync();
+
