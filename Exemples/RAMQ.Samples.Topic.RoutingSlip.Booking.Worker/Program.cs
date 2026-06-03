@@ -19,17 +19,10 @@ var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
     {
-        logging.SetMinimumLevel(LogLevel.None);
-        logging.AddSimpleConsole(opts =>
-        {
-            opts.ColorBehavior  = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
-            opts.IncludeScopes  = false;
-            opts.TimestampFormat = "HH:mm:ss.fff ";
-        });
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("RAMQ",       LogLevel.Information);
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Azure",      LogLevel.Warning);
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Microsoft",  LogLevel.Warning);
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("System",     LogLevel.Warning);
+        logging.SetMinimumLevel(LogLevel.Information);
+        logging.AddFilter("Azure",     LogLevel.Warning);
+        logging.AddFilter("Microsoft", LogLevel.Warning);
+        logging.AddFilter("System",    LogLevel.Warning);
     })
     .ConfigureAppConfiguration((_, config) =>
     {
@@ -37,12 +30,16 @@ var builder = new HostBuilder()
     })
     .ConfigureServices((ctx, services) =>
     {
-        services.AddApplicationInsightsTelemetryWorkerService();
-        services.ConfigureFunctionsApplicationInsights();
-
-
-        // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
         var appInsightsConnectionString = ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
+
+        // AppInsights enregistré seulement si la connection string est présente.
+        // Sans AppInsights (local) : relay gRPC natif → couleurs func CLI correctes.
+        // Avec AppInsights (production) : logs envoyés à Azure Monitor.
+        if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
+        {
+            services.AddApplicationInsightsTelemetryWorkerService();
+            services.ConfigureFunctionsApplicationInsights();
+        }
 
         var telemetryBuilder = services.AddOpenTelemetry()
             .WithTracing(t =>
@@ -73,13 +70,3 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
-
-
-
-
-
-
-
-
-
-

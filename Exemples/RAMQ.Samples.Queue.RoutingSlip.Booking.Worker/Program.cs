@@ -15,8 +15,6 @@ using RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities;
 using RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Services;
 using RAMQ.Samples.RoutingSlip.Booking.Message;
 
-
-
 var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
@@ -71,11 +69,6 @@ var builder = new HostBuilder()
         services.AddRoutingSlipActivity<BookHotelActivity,  BookHotelArgs>("ReserverHotel");
         services.AddRoutingSlipActivity<BookFlightActivity, BookFlightArgs>("ReserverVol");
 
-
     });
 
 builder.Build().Run();
-
-
-
-
