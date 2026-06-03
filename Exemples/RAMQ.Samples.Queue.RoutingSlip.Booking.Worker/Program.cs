@@ -21,13 +21,20 @@ var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
     {
-        // Dotnet-isolated : le SDK ApplicationInsights ajoute un filtre global Warning
-        // qui bloque les Information avant le relay gRPC → host. On impose ici le niveau
-        // voulu au niveau worker, indépendamment du host.json.
-        logging.SetMinimumLevel(LogLevel.Information);
-        logging.AddFilter("Azure",     LogLevel.Warning);
-        logging.AddFilter("Microsoft", LogLevel.Warning);
-        logging.AddFilter("System",    LogLevel.Warning);
+        // Dotnet-isolated : le filtre lambda a la priorité absolue — il ne peut pas
+        // être overridé par AddApplicationInsightsTelemetryWorkerService ni par
+        // ConfigureFunctionsWorkerDefaults, contrairement à SetMinimumLevel/AddFilter.
+        // RAMQ.* → Information ; frameworks → Warning ; reste → Information.
+        logging.SetMinimumLevel(LogLevel.None); // laisser passer, le lambda décide
+        logging.AddFilter((category, level) =>
+        {
+            if (category is null) return level >= LogLevel.Information;
+            if (category.StartsWith("RAMQ"))       return level >= LogLevel.Information;
+            if (category.StartsWith("Azure"))      return level >= LogLevel.Warning;
+            if (category.StartsWith("Microsoft"))  return level >= LogLevel.Warning;
+            if (category.StartsWith("System"))     return level >= LogLevel.Warning;
+            return level >= LogLevel.Information;
+        });
     })
     .ConfigureAppConfiguration((_, config) =>
     {
