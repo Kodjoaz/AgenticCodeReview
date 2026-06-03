@@ -21,23 +21,20 @@ var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
     {
-        // Dotnet-isolated : le filtre lambda a la priorité absolue — il ne peut pas
-        // être overridé par AddApplicationInsightsTelemetryWorkerService ni par
-        // ConfigureFunctionsWorkerDefaults, contrairement à SetMinimumLevel/AddFilter.
-        // RAMQ.* → Information ; frameworks → Warning ; reste → Information.
+        // Le relay gRPC worker→host ne fonctionne pas avec Functions.Worker 2.51.0/net8.
+        // AddSimpleConsole écrit directement sur stdout du worker, pipé au terminal func CLI.
+        // Les filtres provider-spécifiques ne peuvent pas être overridés par AppInsights.
         logging.SetMinimumLevel(LogLevel.None);
-        // AddConsole : le stdout du worker est pipé au terminal du func CLI.
-        // Contourne le relay gRPC qui ne transmet pas les logs avec 2.51.0/net8.
-        logging.AddConsole();
-        logging.AddFilter((category, level) =>
+        logging.AddSimpleConsole(opts =>
         {
-            if (category is null) return level >= LogLevel.Information;
-            if (category.StartsWith("RAMQ"))       return level >= LogLevel.Information;
-            if (category.StartsWith("Azure"))      return level >= LogLevel.Warning;
-            if (category.StartsWith("Microsoft"))  return level >= LogLevel.Warning;
-            if (category.StartsWith("System"))     return level >= LogLevel.Warning;
-            return level >= LogLevel.Information;
+            opts.ColorBehavior = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
+            opts.IncludeScopes  = false;
+            opts.TimestampFormat = "HH:mm:ss.fff ";
         });
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("RAMQ",       LogLevel.Information);
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Azure",      LogLevel.Warning);
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Microsoft",  LogLevel.Warning);
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("System",     LogLevel.Warning);
     })
     .ConfigureAppConfiguration((_, config) =>
     {
@@ -47,26 +44,6 @@ var builder = new HostBuilder()
     {
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
-
-        // PostConfigure s'exécute EN DERNIER — après AppInsights ET après
-        // ConfigureFunctionsWorkerDefaults. Le filtre lambda ajouté ici est donc
-        // le DERNIER évalué dans la chaîne, ce qui lui donne la priorité effective.
-        services.PostConfigure<Microsoft.Extensions.Logging.LoggerFilterOptions>(opts =>
-        {
-            opts.Rules.Add(new Microsoft.Extensions.Logging.LoggerFilterRule(
-                providerName: null,
-                categoryName: null,
-                logLevel:     null,
-                filter: (provider, category, level) =>
-                {
-                    if (category is null) return level >= LogLevel.Information;
-                    if (category.StartsWith("RAMQ"))      return level >= LogLevel.Information;
-                    if (category.StartsWith("Azure"))     return level >= LogLevel.Warning;
-                    if (category.StartsWith("Microsoft")) return level >= LogLevel.Warning;
-                    if (category.StartsWith("System"))    return level >= LogLevel.Warning;
-                    return level >= LogLevel.Information;
-                }));
-        });
 
         // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
         var appInsightsConnectionString = ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
@@ -102,3 +79,5 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
+

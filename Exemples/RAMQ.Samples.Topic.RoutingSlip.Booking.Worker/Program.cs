@@ -19,13 +19,12 @@ var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
     {
-        // Dotnet-isolated : le filtre lambda a la priorité absolue — il ne peut pas
-        // être overridé par AddApplicationInsightsTelemetryWorkerService ni par
-        // ConfigureFunctionsWorkerDefaults, contrairement à SetMinimumLevel/AddFilter.
-        // RAMQ.* → Information ; frameworks → Warning ; reste → Information.
-        logging.SetMinimumLevel(LogLevel.None);
-        // AddConsole : le stdout du worker est pipe au terminal du func CLI.
-        logging.AddConsole(); // laisser passer, le lambda décide
+        logging.SetMinimumLevel(LogLevel.None);        logging.AddSimpleConsole(opts =>
+        {
+            opts.ColorBehavior = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
+            opts.IncludeScopes  = false;
+            opts.TimestampFormat = "HH:mm:ss.fff ";
+        }); // laisser passer, le lambda décide
         logging.AddFilter((category, level) =>
         {
             if (category is null) return level >= LogLevel.Information;
@@ -45,12 +44,6 @@ var builder = new HostBuilder()
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
 
-        // Override filtre Warning AppInsights pour RAMQ.*
-        services.Configure<Microsoft.Extensions.Logging.LoggerFilterOptions>(opts =>
-            opts.Rules.Add(new Microsoft.Extensions.Logging.LoggerFilterRule(
-                providerName: null, categoryName: "RAMQ",
-                logLevel: Microsoft.Extensions.Logging.LogLevel.Information,
-                filter: null)));
 
         // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
         var appInsightsConnectionString = ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
@@ -84,6 +77,10 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
+
+
+
 
 
 

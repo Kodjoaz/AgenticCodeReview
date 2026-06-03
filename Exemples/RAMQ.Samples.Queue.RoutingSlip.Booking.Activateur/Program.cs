@@ -20,12 +20,20 @@ var builder = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
     {
-        // Dotnet-isolated : AddApplicationInsightsTelemetryWorkerService injecte un filtre Warning
-        // global qui bloque les Information avant le relay gRPC → host.
-        logging.SetMinimumLevel(LogLevel.Information);
-        logging.AddFilter("Azure",     LogLevel.Warning);
-        logging.AddFilter("Microsoft", LogLevel.Warning);
-        logging.AddFilter("System",    LogLevel.Warning);
+        // Le relay gRPC worker→host ne fonctionne pas avec Functions.Worker 2.51.0/net8.
+        // AddSimpleConsole écrit directement sur stdout du worker, pipé au terminal func CLI.
+        // Les filtres provider-spécifiques ne peuvent pas être overridés par AppInsights.
+        logging.SetMinimumLevel(LogLevel.None);
+        logging.AddSimpleConsole(opts =>
+        {
+            opts.ColorBehavior = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
+            opts.IncludeScopes  = false;
+            opts.TimestampFormat = "HH:mm:ss.fff ";
+        });
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("RAMQ",       LogLevel.Information);
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Azure",      LogLevel.Warning);
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Microsoft",  LogLevel.Warning);
+        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("System",     LogLevel.Warning);
     })
     .ConfigureAppConfiguration((_, config) =>
     {
@@ -36,12 +44,6 @@ var builder = new HostBuilder()
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
 
-        // Override filtre Warning AppInsights pour RAMQ.*
-        services.Configure<Microsoft.Extensions.Logging.LoggerFilterOptions>(opts =>
-            opts.Rules.Add(new Microsoft.Extensions.Logging.LoggerFilterRule(
-                providerName: null, categoryName: "RAMQ",
-                logLevel: Microsoft.Extensions.Logging.LogLevel.Information,
-                filter: null)));
 
         // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
         var appInsightsConnectionString = ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
@@ -75,6 +77,10 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
+
+
+
 
 
 

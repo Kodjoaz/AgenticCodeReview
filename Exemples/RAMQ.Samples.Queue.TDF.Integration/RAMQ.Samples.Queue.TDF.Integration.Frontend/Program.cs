@@ -44,10 +44,16 @@ var host = Host.CreateDefaultBuilder(args)
     })
     .ConfigureLogging(logging =>
     {
-        logging.ClearProviders();
-        logging.AddConsole();
+        logging.ClearProviders();        logging.AddSimpleConsole(opts =>
+        {
+            opts.ColorBehavior = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
+            opts.IncludeScopes  = false;
+            opts.TimestampFormat = "HH:mm:ss.fff ";
+        });
     })
     .Build();
 
 await host.RunAsync();
+
+
 
