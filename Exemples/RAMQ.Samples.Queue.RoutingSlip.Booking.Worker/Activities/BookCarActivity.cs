@@ -46,6 +46,13 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 "[{Step}] Tentative {Attempt} — ReservationId={Id}, Modèle={Model}, SlipId={SlipId}",
                 ctx.StepName, ctx.Attempt, ctx.Arguments.ReservationId, ctx.Arguments.CarModel, ctx.SlipId);
 
+            _logger.LogWarning(
+               "[{Step}] Tentative {Attempt} — ReservationId={Id}, Modèle={Model}, SlipId={SlipId}",
+               ctx.StepName, ctx.Attempt, ctx.Arguments.ReservationId, ctx.Arguments.CarModel, ctx.SlipId);
+
+            _logger.LogError(
+               "[{Step}] Tentative {Attempt} — ReservationId={Id}, Modèle={Model}, SlipId={SlipId}",
+               ctx.StepName, ctx.Attempt, ctx.Arguments.ReservationId, ctx.Arguments.CarModel, ctx.SlipId);
             // Span métier — enfant du routing_slip.step émis par EMT.
             // Visible dans Jaeger : routing_slip.step > booking.car.reserve
             using var span = BookingTelemetry.Source.StartActivity("booking.car.reserve", ActivityKind.Client);
@@ -129,6 +136,9 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 span?.SetStatus(ActivityStatusCode.Error, "Voiture indisponible — Fault → DLQ");
                 span?.SetTag("booking.car.available", false);
                 span?.SetTag("error.type",           "Fault");
+                _logger.LogWarning(
+                    "[{Step}] Voiture '{Model}' indisponible → Fault. SlipId={SlipId}",
+                    ctx.StepName, ctx.Arguments.CarModel, ctx.SlipId);
                 return ActivityResult.Fault(
                     new InvalidOperationException(
                         $"Voiture '{ctx.Arguments.CarModel}' indisponible pour ReservationId={ctx.Arguments.ReservationId}."));

@@ -1,0 +1,16 @@
+{
+  "version": "2.0",
+  "logging": {
+    "logLevel": {
+      "Azure.Identity":    "None",
+      "Microsoft.Identity": "None"
+    },
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled": true,
+        "excludedTypes": "Request"
+      },
+      "enableLiveMetricsFilters": true
+    }
+  }
+}

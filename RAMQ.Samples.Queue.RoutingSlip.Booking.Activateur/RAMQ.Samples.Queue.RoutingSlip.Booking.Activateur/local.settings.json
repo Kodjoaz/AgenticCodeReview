@@ -1,0 +1,43 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
+    "APPLICATIONINSIGHTS_CONNECTION_STRING": "",
+    "ServiceBusConnection__fullyQualifiedNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net"
+  },
+  "AppSettings": {
+    "ServiceBusNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net",
+    "Endpoints": [
+      {
+        "Target": "ReserverVoiture",
+        "Endpoint": {
+          "EntityName": "sbq-rcp-routingslipcarreservation-unit",
+          "EntityType": "Queue"
+        }
+      },
+      {
+        "Target": "ReserverHotel",
+        "Endpoint": {
+          "EntityName": "sbq-rcp-routingsliphotelreservation-unit",
+          "EntityType": "Queue"
+        }
+      },
+      {
+        "Target": "ReserverVol",
+        "Endpoint": {
+          "EntityName": "sbq-rcp-routingslipflightreservation-unit",
+          "EntityType": "Queue"
+        }
+      }
+    ],
+    "MessageTransitJournalStoreUri": "https://stxalpum.table.core.windows.net",
+    "MessageTransitJournalName": "COMJournalAISUnit"
+  },
+  "BlobStorageSetting": {
+    "BlobServiceUri": "https://stxalpum.blob.core.windows.net",
+    "ContainerName": "claimcheck",
+    "FolderName": "messages",
+    "ClaimCheckThresholdBytes": 262144
+  }
+}

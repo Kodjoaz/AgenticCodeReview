@@ -105,6 +105,9 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 span?.SetStatus(ActivityStatusCode.Error, "Hôtel complet — Fault → compensation + DLQ");
                 span?.SetTag("booking.hotel.available", false);
                 span?.SetTag("error.type",              "Fault");
+                _logger.LogWarning(
+                    "[{Step}] Hôtel '{Hotel}' complet → Fault + compensation. SlipId={SlipId}",
+                    ctx.StepName, ctx.Arguments.HotelName, ctx.SlipId);
 
                 var logExistant = ctx.GetVariable<List<CompensationLogEntry>>("CompensationLog") ?? [];
 
