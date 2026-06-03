@@ -36,6 +36,13 @@ var builder = new HostBuilder()
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
 
+        // Override filtre Warning AppInsights pour RAMQ.*
+        services.Configure<Microsoft.Extensions.Logging.LoggerFilterOptions>(opts =>
+            opts.Rules.Add(new Microsoft.Extensions.Logging.LoggerFilterRule(
+                providerName: null, categoryName: "RAMQ",
+                logLevel: Microsoft.Extensions.Logging.LogLevel.Information,
+                filter: null)));
+
         // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
         var appInsightsConnectionString = ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
 
