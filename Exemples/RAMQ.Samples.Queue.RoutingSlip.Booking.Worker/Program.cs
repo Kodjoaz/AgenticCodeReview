@@ -45,15 +45,25 @@ var builder = new HostBuilder()
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
 
-        // AppInsights injecte un filtre Warning global APRÈS ConfigureLogging.
-        // On l'override ici (après l'enregistrement AppInsights) pour garantir
-        // que RAMQ.* passe à Information jusqu'au relay gRPC → host console.
-        services.Configure<Microsoft.Extensions.Logging.LoggerFilterOptions>(opts =>
+        // PostConfigure s'exécute EN DERNIER — après AppInsights ET après
+        // ConfigureFunctionsWorkerDefaults. Le filtre lambda ajouté ici est donc
+        // le DERNIER évalué dans la chaîne, ce qui lui donne la priorité effective.
+        services.PostConfigure<Microsoft.Extensions.Logging.LoggerFilterOptions>(opts =>
+        {
             opts.Rules.Add(new Microsoft.Extensions.Logging.LoggerFilterRule(
-                providerName:  null,
-                categoryName:  "RAMQ",
-                logLevel:      Microsoft.Extensions.Logging.LogLevel.Information,
-                filter:        null)));
+                providerName: null,
+                categoryName: null,
+                logLevel:     null,
+                filter: (provider, category, level) =>
+                {
+                    if (category is null) return level >= LogLevel.Information;
+                    if (category.StartsWith("RAMQ"))      return level >= LogLevel.Information;
+                    if (category.StartsWith("Azure"))     return level >= LogLevel.Warning;
+                    if (category.StartsWith("Microsoft")) return level >= LogLevel.Warning;
+                    if (category.StartsWith("System"))    return level >= LogLevel.Warning;
+                    return level >= LogLevel.Information;
+                }));
+        });
 
         // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
         var appInsightsConnectionString = ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
