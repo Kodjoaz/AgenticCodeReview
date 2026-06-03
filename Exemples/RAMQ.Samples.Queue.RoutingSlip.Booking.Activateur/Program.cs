@@ -1,5 +1,5 @@
-using Microsoft.Extensions.Logging;
 extern alias AzureIdentity;
+using Microsoft.Extensions.Logging;
 using Azure.Monitor.OpenTelemetry.Exporter;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.OpenTelemetry;
