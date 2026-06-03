@@ -15,7 +15,7 @@
     <PackageReference Include="Microsoft.Azure.Functions.Worker.OpenTelemetry" Version="1.1.0" />
     <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
     <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.9.0" />
-      <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="2.0.0" />
+      <PackageReference Include="Microsoft.Azure.Functions.Worker" Version="2.1.0" />
       <PackageReference Include="Microsoft.Azure.Functions.Worker.Sdk" Version="2.0.7" />
       <PackageReference Include="Azure.Identity" Version="1.13.0">
         <Aliases>AzureIdentity</Aliases>
@@ -36,4 +36,5 @@
   </ItemGroup>
 
 </Project>
+
 
