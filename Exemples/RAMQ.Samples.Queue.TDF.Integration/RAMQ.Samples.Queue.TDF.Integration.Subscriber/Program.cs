@@ -17,17 +17,10 @@ var host = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
     .ConfigureLogging(logging =>
     {
-        logging.SetMinimumLevel(LogLevel.None);
-        logging.AddSimpleConsole(opts =>
-        {
-            opts.ColorBehavior  = Microsoft.Extensions.Logging.Console.LoggerColorBehavior.Enabled;
-            opts.IncludeScopes  = false;
-            opts.TimestampFormat = "HH:mm:ss.fff ";
-        });
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("RAMQ",       LogLevel.Information);
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Azure",      LogLevel.Warning);
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("Microsoft",  LogLevel.Warning);
-        logging.AddFilter<Microsoft.Extensions.Logging.Console.ConsoleLoggerProvider>("System",     LogLevel.Warning);
+        logging.SetMinimumLevel(LogLevel.Information);
+        logging.AddFilter("Azure",     LogLevel.Warning);
+        logging.AddFilter("Microsoft", LogLevel.Warning);
+        logging.AddFilter("System",    LogLevel.Warning);
     })
     .ConfigureAppConfiguration((_, cfg) =>
     {
@@ -39,17 +32,6 @@ var host = new HostBuilder()
         services.AddApplicationInsightsTelemetryWorkerService();
         services.ConfigureFunctionsApplicationInsights();
         // AppInsights injecte opts.MinLevel = Warning ET des règles Warning.
-        // PostConfigure reset les deux → logs RAMQ.* passent via relay gRPC → host (couleurs natives func CLI).
-        services.PostConfigure<LoggerFilterOptions>(opts =>
-        {
-            opts.MinLevel = LogLevel.None;
-            opts.Rules.Add(new LoggerFilterRule(null, "RAMQ",      LogLevel.Information, null));
-            opts.Rules.Add(new LoggerFilterRule(null, "Azure",     LogLevel.Warning,     null));
-            opts.Rules.Add(new LoggerFilterRule(null, "Microsoft", LogLevel.Warning,     null));
-            opts.Rules.Add(new LoggerFilterRule(null, "System",    LogLevel.Warning,     null));
-        });
-
-
         services.Configure<AppSettings>(ctx.Configuration.GetSection("AppSettings"));
         services.Configure<BlobStorageSetting>(ctx.Configuration.GetSection("BlobStorageSetting"));
 
@@ -69,6 +51,7 @@ var host = new HostBuilder()
     .Build();
 
 await host.RunAsync();
+
 
 
 
