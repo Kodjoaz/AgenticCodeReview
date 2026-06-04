@@ -32,8 +32,16 @@ var builder = new HostBuilder()
     .ConfigureServices((ctx, services) =>
     {
         // AppInsights lit APPLICATIONINSIGHTS_CONNECTION_STRING automatiquement depuis les env vars.
-        services.AddApplicationInsightsTelemetryWorkerService();
-        services.ConfigureFunctionsApplicationInsights();
+        var appInsightsCs =
+            ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]
+            ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
+            ?? string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(appInsightsCs))
+        {
+            services.AddApplicationInsightsTelemetryWorkerService();
+            services.ConfigureFunctionsApplicationInsights();
+        }
 
         var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
 
@@ -50,7 +58,7 @@ var builder = new HostBuilder()
             })
             .UseFunctionsWorkerDefaults();
 
-        telemetryBuilder.UseAzureMonitorExporter(o => o.Credential = credential);
+        if (!string.IsNullOrWhiteSpace(appInsightsCs)) telemetryBuilder.UseAzureMonitorExporter(o => { o.ConnectionString = appInsightsCs; o.Credential = credential; });
 
         // R12 — Boilerplate EMT réduit à un appel.
         services.AddEMTSampleConsumerDefaults(ctx.Configuration, credential);
@@ -63,6 +71,7 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
 
 
 

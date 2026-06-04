@@ -31,13 +31,19 @@ var builder = new HostBuilder()
     })
     .ConfigureServices((ctx, services) =>
     {
-        // AppInsights lit APPLICATIONINSIGHTS_CONNECTION_STRING automatiquement
-        // depuis les variables d'environnement (propagées par func CLI depuis local.settings.json).
-        // Pas besoin de condition — toujours enregistrer.
-        services.AddApplicationInsightsTelemetryWorkerService();
-        services.ConfigureFunctionsApplicationInsights();
+        // Lire la connection string depuis la config ou l'env var directement.
+        var appInsightsCs =
+            ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]
+            ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
+            ?? string.Empty;
 
         var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
+
+        if (!string.IsNullOrWhiteSpace(appInsightsCs))
+        {
+            services.AddApplicationInsightsTelemetryWorkerService();
+            services.ConfigureFunctionsApplicationInsights();
+        }
 
         var telemetryBuilder = services.AddOpenTelemetry()
             .WithTracing(t =>
@@ -52,8 +58,12 @@ var builder = new HostBuilder()
             })
             .UseFunctionsWorkerDefaults();
 
-        // UseAzureMonitorExporter lit aussi APPLICATIONINSIGHTS_CONNECTION_STRING automatiquement.
-        telemetryBuilder.UseAzureMonitorExporter(o => o.Credential = credential);
+        if (!string.IsNullOrWhiteSpace(appInsightsCs))
+            telemetryBuilder.UseAzureMonitorExporter(o =>
+            {
+                o.ConnectionString = appInsightsCs;
+                o.Credential = credential;
+            });
 
         // R12 — Boilerplate EMT réduit à un appel.
         services.AddEMTSampleConsumerDefaults(ctx.Configuration, credential);
