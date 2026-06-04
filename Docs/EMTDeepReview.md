@@ -3218,7 +3218,7 @@ Chaque item Application Insights = JSON enrichi (opération, cloud, session, cus
 
 ---
 
-#### Récapitulatif par saga complète
+#### Récapitulatif par saga complète — chemin nominal (0 retry)
 
 | App | Invocations | Information | Warning |
 |---|---|---|---|
@@ -3226,51 +3226,119 @@ Chaque item Application Insights = JSON enrichi (opération, cloud, session, cus
 | **Worker** ReserverVoiture | 1 | 14 KB | 10 KB |
 | **Worker** ReserverHotel | 1 | 14 KB | 10 KB |
 | **Worker** ReserverVol | 1 | 11 KB | 8 KB |
-| **TOTAL saga** | **4 invocations** | **~45 KB** | **~32 KB** |
+| **TOTAL saga nominale** | **4 invocations** | **~45 KB** | **~32 KB** |
+
+---
+
+#### Impact des retries sur le coût
+
+> ⚠️ **Chaque retry = une nouvelle invocation Azure Functions.** Pour le retry exponentiel (sans session), EMT crée un nouveau message avec un nouveau `MessageId` — c'est une **nouvelle entrée facturable** dans Application Insights.
+
+**Télémétrie d'un retry exponentiel :**
+
+| Table | Contenu | Taille |
+|---|---|---|
+| `requests` | Nouvelle invocation SB (nouveau `MessageId`) | 2 KB |
+| `dependencies` | SB receive + re-schedule (send différé) | 4 KB |
+| `traces` Warning | RetryPolicyHandler: "Retry exponentiel tentative N/10" | 1 KB |
+| `traces` Warning | RoutingSlipExecutor: "RetryExponential à l'étape..." | 1 KB |
+| **Total par retry** | | **~8 KB** |
+
+**Télémétrie d'un DLQ (MaxDeliveryCount atteint) :**
+
+| Table | Contenu | Taille |
+|---|---|---|
+| `requests` | Invocation finale | 2 KB |
+| `dependencies` | SB receive + DLQ send | 4 KB |
+| `traces` Warning | "Nombre maximal de tentatives atteint → DLQ" | 1 KB |
+| `exceptions` | Exception EMT (si Fault) | 3 KB |
+| **Total DLQ** | | **~10 KB** |
+
+---
+
+#### Coût réel selon le taux de retry
+
+**Formule :**
+```
+Volume/saga = Volume nominal + (nb retries moyen × 8 KB/retry)
+```
+
+| Taux retry | Retries moy./saga | Volume/saga (Warning) | Δ vs nominal |
+|---|---|---|---|
+| 0 % (chemin parfait) | 0 | 32 KB | référence |
+| 5 % de sagas avec 1 retry | 0,05 | 32,4 KB | +1 % |
+| 10 % avec 2 retries | 0,2 | 33,6 KB | +5 % |
+| 20 % avec 3 retries | 0,6 | 36,8 KB | +15 % |
+| Infrastructure dégradée (50 % avec 5 retries) | 2,5 | 52 KB | +63 % |
+| Outage total (100 % → DLQ, 10 retries) | 10 | 112 KB | +250 % |
+
+> 💡 **Pour RAMQ :** en production stable, 5-10 % de sagas avec 1-2 retries est normal. Le volume réel est ~5-10 % supérieur au calcul nominal. C'est négligeable.
+> En cas d'incident Service Bus (outage partiel), le taux de retry peut exploser → c'est pourquoi le **Daily Cap est non-négociable** : il protège contre les pics de coût en cas d'infrastructure dégradée.
 
 ---
 
 ---
 
-#### Scénario A — Information (développement, sans filtre)
+#### Base de calcul — nominal vs worst case
+
+```
+MaxDeliveryCount = 10 (config RetryPolicy)
+→ 1 tentative initiale + 9 retries max avant DLQ
+
+Worst case par étape = 1 tentative + 9 retries + 1 DLQ
+  = 14 KB + (9 × 8 KB) + 10 KB = 96 KB/étape
+
+Worst case par saga (3 étapes, tous les retries épuisés) :
+  Activateur          :   4 KB  (ne retente pas)
+  + Step 1 worst case :  96 KB
+  + Step 2 worst case :  96 KB  (si Step 1 finit par réussir)
+  + Step 3 worst case :  96 KB  (si Step 2 finit par réussir)
+  = ~292 KB/saga Warning — worst case absolu
+```
+
+> ⚠️ Le worst case se produit lors d'un **incident infrastructure** (Service Bus throttling, panne réseau). C'est exactement le moment où le volume de télémétrie explose — et où le **Daily Cap est indispensable**.
+
+---
+
+#### Scénario A — Information, worst case
 
 ```
 host.json : "ApplicationInsights": "Information"
-Base de calcul : 45 KB/saga
+Base worst case : ~400 KB/saga (retries + logs détaillés)
 ```
 
 | Sagas/mois | Calcul | Volume | Coût ingestion |
 |---|---|---|---|
-| 1 000 | 1 000 × 45 KB | 45 MB | **Gratuit** |
-| 10 000 | 10 000 × 45 KB | 450 MB | **Gratuit** |
-| 100 000 | 100 000 × 45 KB | 4,5 GB | **Gratuit** |
-| 115 000 | 115 000 × 45 KB | 5,2 GB | **(5,2-5)×2,30 = 0,46 USD** ← seuil |
-| 300 000 | 300 000 × 45 KB | 13,5 GB | **(13,5-5)×2,30 = 19,55 USD** |
-| 1 000 000 | 1 000 000 × 45 KB | 45 GB | **(45-5)×2,30 = 92 USD** |
+| 1 000 | 1 000 × 400 KB | 400 MB | **Gratuit** |
+| 10 000 | 10 000 × 400 KB | 4 GB | **Gratuit** |
+| **12 500** | **12 500 × 400 KB** | **5 GB** | **← seuil gratuit** |
+| 50 000 | 50 000 × 400 KB | 20 GB | **(20-5)×2,30 = 34,50 USD** |
+| 100 000 | 100 000 × 400 KB | 40 GB | **(40-5)×2,30 = 80,50 USD** |
+| 300 000 | 300 000 × 400 KB | 120 GB | **(120-5)×2,30 = 264,50 USD** |
 
-> ⚠️ Non recommandé en production — très verbeux, seuil gratuit atteint à ~115K sagas/mois.
+> ⚠️ En incident, 12 500 sagas avec retries max dépassent déjà 5 GB. Sans Daily Cap → **facture imprévisible**.
 
 ---
 
-#### Scénario B — Warning uniquement (production standard)
+#### Scénario B — Warning, worst case
 
 ```
 host.json : "ApplicationInsights": "Warning"
-Base de calcul : 32 KB/saga
+Base worst case : ~292 KB/saga
 ```
 
 | Sagas/mois | Calcul | Volume | Coût ingestion |
 |---|---|---|---|
-| 1 000 | 1 000 × 32 KB | 32 MB | **Gratuit** |
-| 10 000 | 10 000 × 32 KB | 320 MB | **Gratuit** |
-| 100 000 | 100 000 × 32 KB | 3,2 GB | **Gratuit** |
-| 160 000 | 160 000 × 32 KB | 5,1 GB | **(5,1-5)×2,30 = 0,23 USD** ← seuil |
-| 300 000 | 300 000 × 32 KB | 9,6 GB | **(9,6-5)×2,30 = 10,58 USD** |
-| 1 000 000 | 1 000 000 × 32 KB | 32 GB | **(32-5)×2,30 = 62,10 USD** |
+| 1 000 | 1 000 × 292 KB | 292 MB | **Gratuit** |
+| 10 000 | 10 000 × 292 KB | 2,9 GB | **Gratuit** |
+| **17 000** | **17 000 × 292 KB** | **5 GB** | **← seuil gratuit** |
+| 50 000 | 50 000 × 292 KB | 14,6 GB | **(14,6-5)×2,30 = 22,08 USD** |
+| 100 000 | 100 000 × 292 KB | 29,2 GB | **(29,2-5)×2,30 = 55,66 USD** |
+| 300 000 | 300 000 × 292 KB | 87,6 GB | **(87,6-5)×2,30 = 190,08 USD** |
 
 ---
 
-#### Scénario C — Warning + Sampling adaptatif
+#### Scénario C — Warning + Sampling, worst case
 
 ```
 host.json : "ApplicationInsights": "Warning"
@@ -3278,37 +3346,39 @@ host.json : "ApplicationInsights": "Warning"
             excludedTypes: "Exception;Request"
 ```
 
-Avec sampling à 80 % de réduction sur les `traces` et `dependencies` samplées :
+Les `requests` (invocations) **ne sont jamais samplées** — en worst case avec 10 retries × 3 étapes = 30 invocations non samplées par saga.
+
 ```
-Volume effectif = (requests non samplés × 2 KB) + (autres × 32 KB × 20%)
-               = (4 invocations × 2 KB) + (32 KB - 8 KB) × 20%
-               = 8 KB + 4,8 KB ≈ 13 KB/saga samplée
+Volume effectif worst case :
+  requests non samplés = 30 invocations × 2 KB = 60 KB (toujours facturé)
+  traces + dependencies samplés à 80% = (292-60) KB × 20% = 46 KB
+  Total ≈ 106 KB/saga
 ```
 
 | Sagas/mois | Calcul | Volume | Coût ingestion |
 |---|---|---|---|
-| 100 000 | 100 000 × 13 KB | 1,3 GB | **Gratuit** |
-| 385 000 | 385 000 × 13 KB | ~5 GB | **≈ Gratuit** ← seuil |
-| 1 000 000 | 1 000 000 × 13 KB | 13 GB | **(13-5)×2,30 = 18,40 USD** |
-| 3 000 000 | 3 000 000 × 13 KB | 39 GB | **(39-5)×2,30 = 78,20 USD** |
+| 10 000 | 10 000 × 106 KB | 1,1 GB | **Gratuit** |
+| **47 000** | **47 000 × 106 KB** | **5 GB** | **← seuil gratuit** |
+| 100 000 | 100 000 × 106 KB | 10,6 GB | **(10,6-5)×2,30 = 12,88 USD** |
+| 300 000 | 300 000 × 106 KB | 31,8 GB | **(31,8-5)×2,30 = 61,74 USD** |
 
 ---
 
-#### Scénario D — Configuration actuelle (Warning + Sampling + Daily Cap 167 MB/jour)
+#### Scénario D — Daily Cap 167 MB/jour (configuration actuelle)
 
 ```
-host.json : "ApplicationInsights": "Warning"
-            maxTelemetryItemsPerSecond: 5
 Azure Portal : Daily Cap = 167 MB/jour = 5 GB/mois
 ```
 
-| Volume réel | Résultat |
+| Scénario | Résultat |
 |---|---|
-| Quel que soit le trafic | **Toujours ≤ 5 GB/mois = Gratuit (ingestion)** |
-| Si cap atteint en journée | Ingestion s'arrête jusqu'au lendemain |
+| Nominal (0 retry) | **Gratuit** — 32 KB/saga, seuil à 160K sagas/mois |
+| Worst case (tous retries) | **Gratuit** — cap bloque à 167 MB/jour |
+| Incident Service Bus | **Gratuit** — cap protège quelle que soit la tempête |
 
-> ✅ **Configuration recommandée pour le développement et les pilotes RAMQ.**
-> Le Daily Cap est le seul mécanisme qui **garantit** de rester dans la tranche gratuite.
+> ✅ **Le Daily Cap est le seul mécanisme qui protège contre le worst case.**
+> Sans Daily Cap, un incident Service Bus de 24h peut générer des centaines de GB de retries en télémétrie → facture imprévisible.
+> **La configuration actuelle (`host.json` + Daily Cap Azure Portal) garantit ≤ 5 GB/mois dans tous les scénarios.**
 
 ---
 
