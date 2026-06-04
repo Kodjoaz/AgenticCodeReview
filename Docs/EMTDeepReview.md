@@ -5131,6 +5131,345 @@ volumes
 
 ---
 
+### 13.10.8 Filtres anti-bruit AppInsights et corrélation bout-en-bout
+
+#### Pourquoi des traces parasites apparaissent ?
+
+Par défaut, `AddHttpClientInstrumentation()` capture **TOUS** les appels HTTP du worker, y compris les appels internes Azure. Voici ce qui pollue Application Insights Search :
+
+| Trace visible | Source | Impact |
+|---|---|---|
+| `POST /v2.1/track` | SDK AppInsights qui s'auto-enregistre | Boucle : AppInsights trace ses propres envois |
+| `VisualStudioCredential.GetToken` | Azure Identity renouvelle les tokens | Token refresh toutes les ~60 min |
+| `POST /AzureFunctionsRpcMessages.FunctionRpc/EventStream` | Canal gRPC worker↔host | Infrastructure interne Functions |
+| `QuickPulseService.svc` | Live Metrics heartbeat | Ping toutes les secondes |
+
+#### Solution appliquée — 2 niveaux de filtrage
+
+**Niveau 1 — Dans le code : `FilterHttpRequestMessage` (OTel)**
+
+```csharp
+// Program.cs — RoutingSlip Worker/Activateur
+t.AddHttpClientInstrumentation(opts =>
+{
+    // Ne capturer que les appels HTTP de votre application
+    // Exclure tout ce qui est infrastructure Azure interne
+    opts.FilterHttpRequestMessage = req =>
+    {
+        var host = req.RequestUri?.Host ?? "";
+        return !host.Contains("applicationinsights.azure.com")     // AppInsights ingestion (/v2.1/track)
+            && !host.Contains("livediagnostics.monitor.azure.com")  // Live Metrics heartbeat
+            && !host.Contains("login.microsoftonline.com")           // Renouvellement tokens AAD
+            && !host.Contains("management.azure.com")               // Azure Management API
+            && req.RequestUri?.AbsolutePath?.Contains("/v2.1/track") != true;
+    };
+});
+```
+
+**Niveau 2 — Dans `host.json` : filtres logLevel**
+
+```json
+{
+  "logging": {
+    "logLevel": {
+      "RAMQ":                                    "Information",
+      "ApplicationInsights":                     "Warning",
+      "Azure.Identity":                          "None",
+      "Microsoft.Identity":                      "None",
+      "Grpc":                                    "None",
+      "Microsoft.Azure.Functions.Worker.Grpc":   "None"
+    }
+  }
+}
+```
+
+**Après filtrage :** Application Insights Search ne montre que :
+- `ReserverVoiture` ← ton application ✅
+- `ReserverHotel` ← ton application ✅
+- `ReserverVol` ← ton application ✅
+
+---
+
+#### Corrélation bout-en-bout — le `operation_Id`
+
+> **C'est la clé de voûte du DFO.** Le `operation_Id` est le **W3C TraceId** propagé par R14 via `traceparent` dans les `ApplicationProperties` de chaque message Service Bus. Il relie toutes les invocations d'une même saga en un seul arbre de trace.
+
+```
+Activateur (HTTP POST)
+  └── operation_Id = "abc123"     ← généré au premier appel
+       ↓ traceparent: abc123 dans ApplicationProperties
+  ReserverVoiture (SB Trigger)
+    └── operation_Id = "abc123"   ← hérité du message
+         ↓ traceparent: abc123 dans ApplicationProperties
+    ReserverHotel (SB Trigger)
+      └── operation_Id = "abc123" ← hérité
+           ↓ traceparent: abc123
+      ReserverVol (SB Trigger)
+        └── operation_Id = "abc123" ← même arbre de bout en bout
+```
+
+Dans AppInsights : cliquer sur une trace → **End-to-end transaction details** → vue visuelle complète de la saga.
+
+---
+
+### 13.10.9 Requêtes enterprise — transactions bout-en-bout
+
+> **Syntaxe :** Application Insights → Logs  
+> Ces requêtes exploitent `operation_Id` (W3C TraceId) pour corréler les 4 invocations d'une saga en une seule transaction bout-en-bout.
+
+---
+
+#### 🏢 E1 — Tableau de bord executive : santé plateforme en temps réel
+
+```kusto
+// RAPPORT EXÉCUTIF TEMPS RÉEL
+// Pour le directeur technique : état de la plateforme en 5 indicateurs
+// Rafraîchir toutes les 5 minutes sur un dashboard Azure Monitor
+
+let periode = ago(1h);
+
+// ── Indicateur 1 : Volume et taux de succès ──────────────────────────────
+let kpi_volume = requests
+| where timestamp > periode
+| where cloud_RoleName contains "Booking"
+| summarize
+    total_invocations = count(),
+    succes            = countif(success == true),
+    echecs            = countif(success == false)
+| extend taux_succes_pct = round(100.0 * succes / total_invocations, 2);
+
+// ── Indicateur 2 : Latence bout-en-bout par saga ──────────────────────────
+let kpi_latence = requests
+| where timestamp > periode
+| where cloud_RoleName contains "Booking"
+| summarize debut = min(timestamp), fin = max(timestamp)
+  by operation_Id                            // chaque operation_Id = 1 saga
+| extend duree_saga_sec = datetime_diff('second', fin, debut)
+| summarize
+    p50_sec = percentile(duree_saga_sec, 50),
+    p95_sec = percentile(duree_saga_sec, 95),
+    p99_sec = percentile(duree_saga_sec, 99);
+
+// ── Résultat fusionné ──────────────────────────────────────────────────────
+kpi_volume
+| extend p50_sec = toscalar(kpi_latence | project p50_sec),
+         p95_sec = toscalar(kpi_latence | project p95_sec),
+         taux_sla_ok = iff(toscalar(kpi_latence | project p95_sec) < 30,
+                           "✅ SLA respecté (p95 < 30s)",
+                           "⚠️ SLA dégradé")
+| project total_invocations, taux_succes_pct, p50_sec, p95_sec, taux_sla_ok
+```
+
+---
+
+#### 🔍 E2 — Reconstruire une transaction complète depuis n'importe quel identifiant
+
+```kusto
+// INVESTIGATION ENTERPRISE : partir de N'IMPORTE QUEL identifiant
+// MessageId SB, SlipId, CorrelationId, DossierId, TraceId — tout fonctionne
+// Use case : l'équipe support reçoit un ticket avec "le dossier D-001 est bloqué"
+
+let identifiant = "D-001";   // ← MessageId, SlipId, CorrelationId ou DossierId
+
+// Étape 1 : trouver l'operation_Id (TraceId W3C) à partir de l'identifiant
+let operation = traces
+| where timestamp > ago(7d)
+| where tostring(customDimensions.SlipId)       contains identifiant
+       or tostring(customDimensions.CorrelationId) contains identifiant
+       or tostring(customDimensions.MessageId)     contains identifiant
+| project operation_Id, SlipId = tostring(customDimensions.SlipId)
+| take 1;
+
+// Étape 2 : reconstruire TOUTE la transaction depuis cet operation_Id
+let monOperationId = toscalar(operation | project operation_Id);
+
+union requests, dependencies, traces, exceptions
+| where timestamp > ago(7d)
+| where operation_Id == monOperationId
+| project
+    timestamp,
+    // Quel composant a émis cet événement
+    composant    = replace_string(cloud_RoleName,
+                       "RAMQ.Samples.Queue.RoutingSlip.Booking.", ""),
+    // Type d'événement
+    type_event   = case(
+        itemType == "request",    "📥 Invocation",
+        itemType == "dependency", "🔗 Appel SB/API",
+        itemType == "trace" and severityLevel == 3, "❌ Erreur",
+        itemType == "trace" and severityLevel == 2, "⚠️ Warning",
+        itemType == "trace",      "ℹ️ Log",
+        itemType == "exception",  "💥 Exception",
+        "autre"),
+    // L'étape saga courante
+    etape        = tostring(customDimensions.StepName),
+    // Le message ou nom de l'opération
+    detail       = coalesce(message, name, outerMessage),
+    // Durée si c'est une invocation ou un appel
+    duree_ms     = duration
+| order by timestamp asc
+```
+
+---
+
+#### 📊 E3 — Analyse de performance : goulots d'étranglement dans la chaîne saga
+
+```kusto
+// ANALYSE DES GOULOTS D'ÉTRANGLEMENT
+// Objectif : identifier quelle étape ralentit la saga bout-en-bout
+// Montre la durée réelle de chaque étape + temps d'attente entre étapes
+
+requests
+| where timestamp > ago(24h)
+| where cloud_RoleName contains "Booking"
+| project
+    timestamp,
+    operation_Id,
+    // Nom de l'étape = nom de la Function (ReserverVoiture, ReserverHotel, ReserverVol)
+    etape         = name,
+    // Durée d'exécution de cette invocation
+    duree_exec_ms = duration,
+    // La Function a-t-elle réussi ?
+    succes        = success
+// Calculer l'heure de fin de chaque invocation
+| extend fin_invocation = timestamp + totimespan(strcat(tostring(toint(duree_exec_ms)), "ms"))
+// Joindre avec la prochaine étape pour calculer le temps d'attente SB
+| join kind=leftouter (
+    requests
+    | where cloud_RoleName contains "Booking"
+    | project operation_Id, etape_suivante = name, debut_suivante = timestamp
+  ) on operation_Id
+| where debut_suivante > fin_invocation            // étape suivante APRÈS l'actuelle
+| summarize
+    duree_exec_p95_ms   = percentile(duree_exec_ms, 95),
+    attente_sb_p95_ms   = percentile(datetime_diff('millisecond', debut_suivante, fin_invocation), 95),
+    nb_invocations      = count()
+  by etape
+// Total = exécution + attente Service Bus
+| extend total_p95_ms = duree_exec_p95_ms + attente_sb_p95_ms
+| order by total_p95_ms desc
+// ← L'étape en tête est le goulot d'étranglement
+```
+
+---
+
+#### 🏥 E4 — Conformité CAI : audit complet d'un domaine sur une période
+
+```kusto
+// RAPPORT CONFORMITÉ CAI
+// Objectif : prouver l'exhaustivité du traitement sur une période
+// Pour la direction CAI/conformité : chaque dossier a-t-il été traité ?
+
+let date_debut = datetime(2026-06-01);
+let date_fin   = datetime(2026-06-04);
+
+traces
+| where timestamp between (date_debut .. date_fin)
+| where isnotempty(customDimensions.CorrelationId)    // = DossierId RAMQ
+| summarize
+    // Pour chaque dossier
+    nb_sagas_lancees    = dcount(tostring(customDimensions.SlipId)),
+    nb_sagas_terminees  = dcountif(tostring(customDimensions.SlipId),
+                              message contains "slip complet"),
+    nb_sagas_dlq        = dcountif(tostring(customDimensions.SlipId),
+                              message contains "lettre morte" or message contains "DLQ"),
+    nb_sagas_en_cours   = dcountif(tostring(customDimensions.SlipId),
+                              message !contains "slip complet"
+                              and message !contains "DLQ"),
+    premiere_activite   = min(timestamp),
+    derniere_activite   = max(timestamp)
+  by DossierId = tostring(customDimensions.CorrelationId)
+| extend
+    // Statut CAI : le dossier est-il entièrement traité ?
+    statut_cai = case(
+        nb_sagas_en_cours == 0 and nb_sagas_dlq == 0,  "✅ TRAITÉ",
+        nb_sagas_dlq > 0,                               "❌ EN DLQ — action requise",
+        nb_sagas_en_cours > 0,                          "⏳ EN COURS",
+        "⚠️ INCONNU"),
+    // Alerter si dernière activité > 48h (dossier potentiellement gelé)
+    alerte_gel = iff(datetime_diff('hour', now(), derniere_activite) > 48,
+                     "🚨 INACTIF > 48h", "OK")
+| where statut_cai != "✅ TRAITÉ"                       // ← dossiers qui nécessitent attention
+| order by statut_cai, derniere_activite asc
+```
+
+---
+
+#### 🔗 E5 — Comparaison avant/après déploiement (regression testing)
+
+```kusto
+// ANALYSE D'IMPACT D'UN DÉPLOIEMENT
+// Objectif : comparer automatiquement les métriques avant/après une mise en prod
+// Use case : valider qu'un nouveau déploiement n'a pas dégradé les performances
+
+let heure_deploiement = datetime(2026-06-04 14:00:00);
+let fenetre_min       = 60;    // minutes à comparer de chaque côté
+
+let avant = requests
+| where timestamp between ((heure_deploiement - totimespan(strcat(tostring(fenetre_min), "m")))
+                            .. heure_deploiement)
+| where cloud_RoleName contains "Booking"
+| summarize
+    nb_invocations = count(),
+    p95_ms         = percentile(duration, 95),
+    taux_echec_pct = round(100.0 * countif(success == false) / count(), 2)
+  by etape = name;
+
+let apres = requests
+| where timestamp between (heure_deploiement
+                            .. (heure_deploiement + totimespan(strcat(tostring(fenetre_min), "m"))))
+| where cloud_RoleName contains "Booking"
+| summarize
+    nb_invocations = count(),
+    p95_ms         = percentile(duration, 95),
+    taux_echec_pct = round(100.0 * countif(success == false) / count(), 2)
+  by etape = name;
+
+// Comparaison avant/après avec indicateur de régression
+avant
+| join kind=leftouter apres on etape
+| project
+    etape,
+    p95_avant_ms   = p95_ms,
+    p95_apres_ms   = p95_ms1,
+    echec_avant    = taux_echec_pct,
+    echec_apres    = taux_echec_pct1,
+    // Détecter une régression : p95 augmente de > 20% ou taux d'échec double
+    regression     = case(
+        p95_ms1 > p95_ms * 1.2,              "🔴 RÉGRESSION LATENCE",
+        taux_echec_pct1 > taux_echec_pct * 2, "🔴 RÉGRESSION TAUX ERREUR",
+        p95_ms1 < p95_ms * 0.8,              "🟢 AMÉLIORATION",
+        "🟡 STABLE")
+| order by regression desc
+```
+
+---
+
+#### 🌐 E6 — Vue multi-domaines : tous les types de sagas RAMQ
+
+```kusto
+// CONSOLIDATION MULTI-DOMAINES
+// Objectif : tableau de bord unifié pour toutes les sagas RAMQ
+// (Booking, TraiterDossier, ValiderAdresse, etc.)
+
+requests
+| where timestamp > ago(24h)
+| where cloud_RoleName contains "RAMQ"
+| summarize
+    // Métriques par type de saga (SlipName)
+    by_saga = make_bag(pack(
+        "invocations", count(),
+        "p95_ms",      percentile(duration, 95),
+        "taux_echec",  round(100.0 * countif(success == false) / count(), 1)
+    ))
+  by SlipName = tostring(customDimensions.SlipName),
+     composant = cloud_RoleName
+| where isnotempty(SlipName)
+| project SlipName, composant, by_saga
+| order by SlipName, composant
+```
+
+---
+
 ### 13.11 Pour démarrer — checklist Design For Operation pour un nouveau domaine RAMQ
 
 > 💡 **Pour un Lead technique qui démarre l'observabilité sur une nouvelle app RAMQ** — voici les 12 cases à cocher avant d'aller en prod.
