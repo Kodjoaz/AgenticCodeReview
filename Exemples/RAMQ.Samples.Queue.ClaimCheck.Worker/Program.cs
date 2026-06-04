@@ -22,8 +22,16 @@ var builder = new HostBuilder()
         config.AddJsonFile("local.settings.json", optional: false, reloadOnChange: true))
     .ConfigureServices((ctx, services) =>
     {
-        services.AddApplicationInsightsTelemetryWorkerService();
-        services.ConfigureFunctionsApplicationInsights();
+        var appInsightsCs =
+            ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]
+            ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
+            ?? string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(appInsightsCs))
+        {
+            services.AddApplicationInsightsTelemetryWorkerService();
+            services.ConfigureFunctionsApplicationInsights();
+        }
         // AppInsights injecte opts.MinLevel = Warning ET des règles Warning.
         // R12 — Boilerplate EMT réduit à un appel.
         services.AddEMTSampleProducerDefaults(ctx.Configuration, new VisualStudioCredential());
@@ -33,5 +41,6 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
 
 

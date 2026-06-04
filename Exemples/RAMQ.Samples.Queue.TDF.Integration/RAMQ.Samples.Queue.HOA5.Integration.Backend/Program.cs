@@ -9,11 +9,20 @@ var host = new HostBuilder()
     .ConfigureServices((_, services) =>
     {
         services.AddSingleton<ITelemetryInitializer, BackendTelemetryInitializer>();
-        services.AddApplicationInsightsTelemetryWorkerService();
-        services.ConfigureFunctionsApplicationInsights();
+        var appInsightsCs =
+            ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]
+            ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
+            ?? string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(appInsightsCs))
+        {
+            services.AddApplicationInsightsTelemetryWorkerService();
+            services.ConfigureFunctionsApplicationInsights();
+        }
         // AppInsights injecte opts.MinLevel = Warning ET des règles Warning.
     })
     .Build();
 
 await host.RunAsync();
+
 

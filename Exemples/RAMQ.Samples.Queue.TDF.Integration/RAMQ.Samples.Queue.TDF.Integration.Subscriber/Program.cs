@@ -30,8 +30,16 @@ var host = new HostBuilder()
     .ConfigureServices((ctx, services) =>
     {
         services.AddSingleton<ITelemetryInitializer, SubscriberTelemetryInitializer>();
-        services.AddApplicationInsightsTelemetryWorkerService();
-        services.ConfigureFunctionsApplicationInsights();
+        var appInsightsCs =
+            ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"]
+            ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
+            ?? string.Empty;
+
+        if (!string.IsNullOrWhiteSpace(appInsightsCs))
+        {
+            services.AddApplicationInsightsTelemetryWorkerService();
+            services.ConfigureFunctionsApplicationInsights();
+        }
         // AppInsights injecte opts.MinLevel = Warning ET des règles Warning.
         services.Configure<AppSettings>(ctx.Configuration.GetSection("AppSettings"));
         services.Configure<BlobStorageSetting>(ctx.Configuration.GetSection("BlobStorageSetting"));
@@ -52,5 +60,6 @@ var host = new HostBuilder()
     .Build();
 
 await host.RunAsync();
+
 
 
