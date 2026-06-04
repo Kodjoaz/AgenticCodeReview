@@ -4466,6 +4466,186 @@ Sections :
 | **A5** | Claim check slow | `claim_check_download_duration_ms` p99 > 2 s | Fenêtre 5 min | 🟡 Medium | Teams |
 | **A6** | Active sessions exhausted | `active_sessions` ≥ `MaxConcurrentSessions` × 0.9 | Fenêtre 1 min | 🟠 High | Teams |
 
+### 13.10.5 Requêtes KQL essentielles — validation DFO Routing Slip
+
+> **Comment accéder :** Azure Portal → Application Insights → Logs  
+> (ou Log Analytics Workspace → Logs)
+
+---
+
+#### 🔍 Découverte — trouver les sagas récentes
+
+```kusto
+// Lister les sagas des dernière heure avec leur statut
+traces
+| where timestamp > ago(1h)
+| where isnotempty(customDimensions.SlipId)
+| summarize
+    debut        = min(timestamp),
+    fin          = max(timestamp),
+    nb_steps     = dcountif(customDimensions.StepName, isnotempty(customDimensions.StepName)),
+    nb_warnings  = countif(severityLevel == 2),
+    nb_errors    = countif(severityLevel == 3),
+    statut       = iff(countif(message contains "slip complet") > 0, "✅ Terminé",
+                   iff(countif(severityLevel == 3) > 0, "❌ Erreur", "⏳ En cours"))
+  by SlipId = tostring(customDimensions.SlipId),
+     SlipName = tostring(customDimensions.SlipName)
+| extend duree_sec = datetime_diff('second', fin, debut)
+| order by debut desc
+```
+
+---
+
+#### 📋 Timeline complète d'une saga
+
+```kusto
+// Remplacer 'TON-SLIP-ID' par un SlipId obtenu ci-dessus
+let monSlipId = "TON-SLIP-ID";
+union traces, dependencies, exceptions
+| where timestamp > ago(24h)
+| where tostring(customDimensions.SlipId) == monSlipId
+       or operation_Id == monSlipId
+| project
+    timestamp,
+    type     = itemType,
+    niveau   = case(severityLevel == 1, "INFO ",
+                    severityLevel == 2, "WARN ",
+                    severityLevel == 3, "ERROR", "SPAN "),
+    etape    = tostring(customDimensions.StepName),
+    message  = coalesce(message, name, outerMessage),
+    attempt  = tostring(customDimensions.Attempt)
+| order by timestamp asc
+```
+
+---
+
+#### ✅ Validation — toutes les étapes d'une saga ont-elles été journalisées ?
+
+```kusto
+// Vérifie que les 3 étapes (R16 journal) sont présentes pour chaque saga
+traces
+| where timestamp > ago(1h)
+| where customDimensions.SlipName == "Booking"
+| where message contains "ForSlipStep" or message contains "slip complet"
+| summarize
+    etapes_completees = make_set(customDimensions.StepName)
+  by SlipId = tostring(customDimensions.SlipId)
+| extend nb_etapes = array_length(etapes_completees)
+| where nb_etapes < 3  // ← sagas incomplètes
+| order by SlipId
+```
+
+---
+
+#### ❌ Détection des échecs et compensations
+
+```kusto
+// Sagas en erreur avec détail de l'étape fautive
+union traces, exceptions
+| where timestamp > ago(24h)
+| where severityLevel >= 2
+      and customDimensions.SlipName == "Booking"
+| project
+    timestamp,
+    SlipId   = tostring(customDimensions.SlipId),
+    etape    = tostring(customDimensions.StepName),
+    niveau   = iff(severityLevel == 3, "ERROR", "WARN"),
+    message  = coalesce(message, outerMessage)
+| order by timestamp desc
+```
+
+---
+
+#### 🔁 Analyse des retries — identifier les étapes fragiles
+
+```kusto
+// Nombre de retries par étape sur 24h
+traces
+| where timestamp > ago(24h)
+| where message contains "Retry exponentiel" or message contains "Retry immédiat"
+      and customDimensions.SlipName == "Booking"
+| summarize
+    nb_retries = count(),
+    sagas_distinctes = dcount(customDimensions.SlipId)
+  by etape = tostring(customDimensions.StepName)
+| extend taux_retry = round(100.0 * nb_retries / sagas_distinctes, 1)
+| order by nb_retries desc
+```
+
+---
+
+#### 📊 Métriques opérationnelles EMT
+
+```kusto
+// messages_sent_total, circuit_state, routing_slip_compensation_total
+customMetrics
+| where timestamp > ago(1h)
+| where name in (
+    "messages_sent_total",
+    "routing_slip_compensation_total",
+    "circuit_state",
+    "circuit_transitions_total"
+  )
+| summarize valeur = sum(valueSum) by name, bin(timestamp, 5m)
+| render timechart
+```
+
+---
+
+#### 🚨 Circuit Breaker — détecter les ouvertures
+
+```kusto
+// Historique des transitions de circuit breaker
+customMetrics
+| where timestamp > ago(24h)
+| where name == "circuit_transitions_total"
+| extend
+    entite = tostring(customDimensions.entity),
+    de     = tostring(customDimensions.from),
+    vers   = tostring(customDimensions.to)
+| where vers == "Open"  // ← seulement les ouvertures
+| project timestamp, entite, de, vers, valueSum
+| order by timestamp desc
+```
+
+---
+
+#### ⏱️ SLA — durée moyenne des sagas
+
+```kusto
+// Durée bout-en-bout par saga (Activateur → dernière étape)
+traces
+| where timestamp > ago(24h)
+| where customDimensions.SlipName == "Booking"
+| summarize debut = min(timestamp), fin = max(timestamp)
+  by SlipId = tostring(customDimensions.SlipId)
+| extend duree_sec = datetime_diff('second', fin, debut)
+| summarize
+    p50 = percentile(duree_sec, 50),
+    p95 = percentile(duree_sec, 95),
+    p99 = percentile(duree_sec, 99),
+    max = max(duree_sec)
+```
+
+---
+
+#### 🗂️ Audit CAI — reconstruire l'historique d'un dossier
+
+```kusto
+// Toutes les sagas liées à un dossier (via CorrelationId = DossierId)
+traces
+| where timestamp > ago(90d)  // rétention interactive
+| where tostring(customDimensions.CorrelationId) contains "D-001"
+| summarize
+    nb_sagas = dcount(customDimensions.SlipId),
+    premiere = min(timestamp),
+    derniere = max(timestamp),
+    etapes   = make_set(customDimensions.StepName)
+  by DossierId = tostring(customDimensions.CorrelationId)
+```
+
+---
+
 ### 13.11 Pour démarrer — checklist Design For Operation pour un nouveau domaine RAMQ
 
 > 💡 **Pour un Lead technique qui démarre l'observabilité sur une nouvelle app RAMQ** — voici les 12 cases à cocher avant d'aller en prod.
