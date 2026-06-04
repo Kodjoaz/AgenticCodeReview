@@ -4737,6 +4737,166 @@ AppTraces
 
 ---
 
+### 13.10.6 Requêtes KQL essentielles — Application Insights spécifiques
+
+> Ces requêtes utilisent des fonctionnalités **propres à Application Insights** non disponibles dans Log Analytics seul :
+> - `operation_Id` : identifiant de trace W3C qui relie toutes les invocations d'une saga
+> - `cloud_RoleName` : nom de l'application source (Activateur, Worker…)
+> - `itemType` : type d'item (trace, request, dependency, exception)
+> - Fonction `app()` : jointure cross-ressource entre plusieurs AppInsights
+>
+> **Accès :** Azure Portal → Application Insights → Logs
+
+---
+
+#### 🗺️ Q9 — Application Map en KQL — flux entre composants
+
+```kusto
+// Voir les appels entre Activateur et Worker (nœuds de l'Application Map)
+dependencies
+| where timestamp > ago(1h)
+| where cloud_RoleName contains "Booking"
+| summarize
+    nb_appels      = count(),
+    duree_moy_ms   = avg(duration),
+    taux_echec     = round(100.0 * countif(success == false) / count(), 1)
+  by source    = cloud_RoleName,
+     cible     = target,
+     operation = name
+| order by nb_appels desc
+```
+
+---
+
+#### 🔗 Q10 — Corréler toutes les invocations d'une saga via operation_Id
+
+```kusto
+// operation_Id = TraceId W3C — relie Activateur + 3 Workers en un seul arbre
+// Trouver l'operation_Id d'une saga :
+requests
+| where timestamp > ago(1h)
+| where cloud_RoleName contains "Activateur"
+| project timestamp, operation_Id, name, duration, success
+| order by timestamp desc
+| take 10
+```
+
+```kusto
+// Puis reconstruire tout l'arbre depuis cet operation_Id :
+let monOperationId = "COLLE-TON-OPERATION-ID";
+union requests, dependencies, traces, exceptions
+| where timestamp > ago(24h)
+| where operation_Id == monOperationId
+| project
+    timestamp,
+    composant = cloud_RoleName,
+    type      = itemType,
+    nom       = coalesce(name, message, outerMessage),
+    duree_ms  = duration,
+    succes    = tostring(success)
+| order by timestamp asc
+```
+
+---
+
+#### 🏷️ Q11 — Performance par composant (Activateur vs Worker)
+
+```kusto
+// Durée moyenne des invocations par composant
+requests
+| where timestamp > ago(24h)
+| where cloud_RoleName contains "Booking"
+| summarize
+    nb_invocations = count(),
+    duree_p50_ms   = percentile(duration, 50),
+    duree_p95_ms   = percentile(duration, 95),
+    taux_echec_pct = round(100.0 * countif(success == false) / count(), 1)
+  by composant = cloud_RoleName, operation = name
+| order by duree_p95_ms desc
+```
+
+---
+
+#### 🔍 Q12 — Trouver une saga depuis un MessageId Service Bus
+
+```kusto
+// Remonter d'un MessageId SB vers le SlipId et la trace complète
+traces
+| where timestamp > ago(24h)
+| where customDimensions.MessageId == "TON-MESSAGE-ID"
+| project
+    timestamp,
+    SlipId      = tostring(customDimensions.SlipId),
+    operation_Id,
+    composant   = cloud_RoleName,
+    message
+| take 1
+// → copier le SlipId ou operation_Id → lancer Q2 ou Q10
+```
+
+---
+
+#### 📈 Q13 — Taux de succès global des sagas (healthcheck)
+
+```kusto
+// Vue d'ensemble : ratio sagas réussies vs échouées sur 24h
+traces
+| where timestamp > ago(24h)
+| where isnotempty(customDimensions.SlipId)
+| summarize
+    terminées = dcountif(tostring(customDimensions.SlipId),
+                    message contains "slip complet"),
+    en_erreur = dcountif(tostring(customDimensions.SlipId),
+                    severityLevel == 3),
+    total     = dcount(tostring(customDimensions.SlipId))
+  by SlipName = tostring(customDimensions.SlipName)
+| extend taux_succes = round(100.0 * terminées / total, 1)
+| project SlipName, total, terminées, en_erreur, taux_succes
+```
+
+---
+
+#### 🔔 Q14 — Alertes — sagas bloquées depuis plus de N minutes
+
+```kusto
+// Sagas démarrées depuis > 10 min sans completion (stuck sagas)
+let seuil_min = 10;
+traces
+| where timestamp > ago(2h)
+| where isnotempty(customDimensions.SlipId)
+| summarize
+    debut    = min(timestamp),
+    derniere = max(timestamp),
+    complete = countif(message contains "slip complet")
+  by SlipId = tostring(customDimensions.SlipId),
+     SlipName = tostring(customDimensions.SlipName)
+| where complete == 0  // pas encore terminée
+| extend age_min = datetime_diff('minute', now(), debut)
+| where age_min > seuil_min
+| project SlipId, SlipName, debut, age_min
+| order by age_min desc
+// → Brancher en alerte Azure Monitor sur ce résultat
+```
+
+---
+
+#### 🔀 Q15 — Jointure cross-ressource (Activateur + Worker dans 2 AppInsights)
+
+```kusto
+// Si Activateur et Worker ont des AppInsights SÉPARÉS
+// Utiliser app() pour croiser les données
+union
+    app("nom-appinsights-activateur").traces,
+    app("nom-appinsights-worker").traces
+| where timestamp > ago(1h)
+| where tostring(customDimensions.SlipId) == "TON-SLIP-ID"
+| project timestamp, cloud_RoleName, message
+| order by timestamp asc
+// Note : dans votre config actuelle, un seul AppInsights suffit
+```
+
+---
+
 ### 13.11 Pour démarrer — checklist Design For Operation pour un nouveau domaine RAMQ
 
 > 💡 **Pour un Lead technique qui démarre l'observabilité sur une nouvelle app RAMQ** — voici les 12 cases à cocher avant d'aller en prod.
