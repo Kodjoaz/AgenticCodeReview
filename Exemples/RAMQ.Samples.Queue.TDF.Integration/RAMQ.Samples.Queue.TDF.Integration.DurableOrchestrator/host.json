@@ -2,44 +2,30 @@
   "version": "2.0",
   "extensions": {
     "durableTask": {
-      // Stockage Azure Table Storage pour l'historique des orchestrations.
-      "storageProvider": { "type": "azure" },
-      // DFO — Fenêtre de débogage opérationnelle.
-      // Les orchestrations en échec restent visibles 7 jours dans Durable Functions Monitor.
-      // En production, ajuster selon la politique de rétention et le coût de stockage.
+      "storageProvider": {
+        "type": "azure"
+      },
       "maxOrchestrationRetentionDays": 7,
-      // Concurrence : limiter pour éviter la saturation du Storage et du Service Bus.
       "maxConcurrentOrchestratorFunctions": 5,
       "maxConcurrentActivityFunctions": 10,
-      // extendedSessionsEnabled : false en production pour éviter la surconsommation mémoire.
       "extendedSessionsEnabled": false,
       "keepAliveInterval": "00:02:00"
     }
   },
   "logging": {
     "logLevel": {
-      // Niveaux de log par espace de nommage — DFO : verbosité ciblée, pas globale.
-      // "default": Warning  → réduit le bruit des bibliothèques tierces.
-      // "RAMQ": Information → capture tous les logs métier (happy path + avertissements).
       "default": "Warning",
       "RAMQ": "Information",
       "Microsoft.DurableTask": "Warning",
-      "Microsoft.Azure.Functions.Worker": "Warning"
+      "Microsoft.Azure.Functions.Worker": "Warning",
+      "ApplicationInsights": "Warning"
     },
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": true,
-        "maxTelemetryItemsPerSecond": 20,
-        // DFO CRITIQUE — Les exceptions ne doivent JAMAIS être échantillonnées.
-        // Sans cette ligne, sous forte charge, des exceptions peuvent être exclues
-        // de l'échantillonnage → alertes manquées → incidents silencieux.
+        "maxTelemetryItemsPerSecond": 5,
         "excludedTypes": "Exception"
       },
-      // DFO CRITIQUE — includeScopeProperties: true fait en sorte que les
-      // propriétés de Logger.BeginScope({...}) soient transmises à Application Insights
-      // comme customDimensions sur chaque élément de télémétrie.
-      // Sans cette ligne, tous les appels BeginScope(...) sont silencieusement ignorés
-      // dans AI — les SessionId, MessageId, NumeroEchange disparaissent des logs.
       "enableScopeProperties": true
     }
   }

@@ -4,12 +4,13 @@
     "logLevel": {
       "default": "Warning",
       "RAMQ": "Information",
-      "Microsoft.Azure.Functions.Worker": "Warning"
+      "Microsoft.Azure.Functions.Worker": "Warning",
+      "ApplicationInsights": "Warning"
     },
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": true,
-        "maxTelemetryItemsPerSecond": 20,
+        "maxTelemetryItemsPerSecond": 5,
         "excludedTypes": "Exception"
       },
       "enableScopeProperties": true

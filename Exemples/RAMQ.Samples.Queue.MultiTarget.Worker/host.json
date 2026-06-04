@@ -5,9 +5,12 @@
       "samplingSettings": {
         "isEnabled": true,
         "excludedTypes": "Exception;Request",
-        "maxTelemetryItemsPerSecond": 20
+        "maxTelemetryItemsPerSecond": 5
       },
       "enableLiveMetricsFilters": true
+    },
+    "logLevel": {
+      "ApplicationInsights": "Warning"
     }
   }
 }

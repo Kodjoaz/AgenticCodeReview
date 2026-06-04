@@ -4,13 +4,14 @@
     "logLevel": {
       "RAMQ": "Information",
       "Azure.Identity": "None",
-      "Microsoft.Identity": "None"
+      "Microsoft.Identity": "None",
+      "ApplicationInsights": "Warning"
     },
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": true,
         "excludedTypes": "Exception;Request",
-        "maxTelemetryItemsPerSecond": 20
+        "maxTelemetryItemsPerSecond": 5
       }
     }
   }

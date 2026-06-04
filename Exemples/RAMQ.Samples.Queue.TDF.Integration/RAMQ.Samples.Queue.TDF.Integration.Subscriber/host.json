@@ -2,7 +2,9 @@
   "version": "2.0",
   "extensions": {
     "durableTask": {
-      "storageProvider": { "type": "azure" }
+      "storageProvider": {
+        "type": "azure"
+      }
     }
   },
   "logging": {
@@ -10,12 +12,13 @@
       "default": "Warning",
       "RAMQ": "Information",
       "Microsoft.DurableTask": "Warning",
-      "Microsoft.Azure.Functions.Worker": "Warning"
+      "Microsoft.Azure.Functions.Worker": "Warning",
+      "ApplicationInsights": "Warning"
     },
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": true,
-        "maxTelemetryItemsPerSecond": 20,
+        "maxTelemetryItemsPerSecond": 5,
         "excludedTypes": "Exception"
       },
       "enableScopeProperties": true
