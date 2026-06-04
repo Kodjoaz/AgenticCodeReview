@@ -3,6 +3,7 @@ using Azure.Monitor.OpenTelemetry.Exporter;
 using Microsoft.ApplicationInsights.Channel;
 using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.ApplicationInsights.Extensibility;
+using System.Diagnostics;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.OpenTelemetry;
 using Microsoft.Extensions.Configuration;
@@ -47,6 +48,7 @@ var builder = new HostBuilder()
             services.AddApplicationInsightsTelemetryWorkerService();
             services.ConfigureFunctionsApplicationInsights();
             services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
+            services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
         }
 
         var telemetryBuilder = services.AddOpenTelemetry()
@@ -84,6 +86,25 @@ builder.Build().Run();
 // Filtre les dépendances capturées automatiquement par le SDK AppInsights (bruit infra).
 // DependencyTrackingTelemetryModule intercepte TOUS les HttpClient — y compris les appels
 // de l'OTel exporter vers /v2/track et le canal gRPC FunctionRpc.
+// Restaure le même operation_Id (TraceId W3C) que l'activateur sur toute la télémétrie
+// du worker — y compris le RequestTelemetry de l'invocation Azure Functions.
+// En dotnet-isolated, le Service Bus trigger crée une nouvelle Activity racine (TraceId ≠),
+// ce qui empêche la corrélation automatique. Ce initializer lit le tag posé par
+// BaseConsumer.DeserializeMessageAsync et aligne l'operation_Id sur celui du producteur.
+internal sealed class ServiceBusCorrelationInitializer : ITelemetryInitializer
+{
+    public void Initialize(ITelemetry telemetry)
+    {
+        var traceparent = Activity.Current?.GetTagItem("messaging.source.traceparent") as string;
+        if (traceparent == null) return;
+        // Format W3C : "00-{traceId:32hex}-{spanId:16hex}-{flags:2hex}"
+        var parts = traceparent.Split('-');
+        if (parts.Length < 4 || parts[1].Length != 32) return;
+        telemetry.Context.Operation.Id       = parts[1]; // TraceId du producteur
+        telemetry.Context.Operation.ParentId = parts[2]; // SpanId du messaging.send
+    }
+}
+
 internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITelemetryProcessor
 {
     public void Process(ITelemetry item)

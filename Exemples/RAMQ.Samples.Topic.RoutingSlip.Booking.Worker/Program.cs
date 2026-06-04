@@ -3,6 +3,7 @@ using Azure.Monitor.OpenTelemetry.Exporter;
 using Microsoft.ApplicationInsights.Channel;
 using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.ApplicationInsights.Extensibility;
+using System.Diagnostics;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.OpenTelemetry;
 using Microsoft.Extensions.Configuration;
@@ -45,6 +46,7 @@ var builder = new HostBuilder()
             services.AddApplicationInsightsTelemetryWorkerService();
             services.ConfigureFunctionsApplicationInsights();
             services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
+            services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
         }
 
         var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
@@ -74,6 +76,19 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
+internal sealed class ServiceBusCorrelationInitializer : ITelemetryInitializer
+{
+    public void Initialize(ITelemetry telemetry)
+    {
+        var traceparent = Activity.Current?.GetTagItem("messaging.source.traceparent") as string;
+        if (traceparent == null) return;
+        var parts = traceparent.Split('-');
+        if (parts.Length < 4 || parts[1].Length != 32) return;
+        telemetry.Context.Operation.Id       = parts[1];
+        telemetry.Context.Operation.ParentId = parts[2];
+    }
+}
 
 internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITelemetryProcessor
 {

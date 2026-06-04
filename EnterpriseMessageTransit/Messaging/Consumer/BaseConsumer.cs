@@ -70,7 +70,13 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
             ResetInvocationMetadata();
             var sw = Stopwatch.StartNew();
 
-            using var scope = _telemetry.BeginReceive(_resolver.GetTraceparent());
+            var traceparent = _resolver.GetTraceparent();
+            // P4-T3 — En dotnet-isolated, Azure Functions crée une Activity racine propre
+            // pour chaque invocation. Le traceparent du message est donc ignoré par le runtime.
+            // On tague l'Activity d'invocation pour que le ServiceBusCorrelationInitializer
+            // du worker puisse restaurer le même operation_Id que l'activateur.
+            Activity.Current?.SetTag("messaging.source.traceparent", traceparent);
+            using var scope = _telemetry.BeginReceive(traceparent);
 
             var result = _deserializer.DeserializeMessageSafe<TAnyMessage>();
 
