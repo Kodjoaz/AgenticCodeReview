@@ -55,6 +55,22 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
 
         private async Task RunAsync(IMessagingProvider provider, CancellationToken ct)
         {
+            // P4-T3 — RoutingSlipExecutor n'utilise pas BaseConsumer.DeserializeMessageAsync,
+            // donc la propagation W3C TraceContext doit être initialisée ici explicitement.
+            //
+            // (1) Tag l'Activity Azure Functions (TraceId ≠) avec le traceparent du producteur,
+            //     pour que ServiceBusCorrelationInitializer aligne l'operation_Id AppInsights.
+            // (2) Démarre messaging.consume avec parentId: traceparent → tous les spans
+            //     descendants (routing_slip.step, booking.*.reserve, …) héritent du même
+            //     TraceId que l'activateur. Le traceparent écrit sur le message suivant
+            //     (dans SendAsync) propagera ce TraceId à l'étape suivante du slip.
+            var traceparent = provider.GetTraceparent();
+            Activity.Current?.SetTag("messaging.source.traceparent", traceparent);
+            using var consumeActivity = traceparent != null
+                ? MessagingActivitySource.Source.StartActivity("messaging.consume", ActivityKind.Consumer, parentId: traceparent)
+                : MessagingActivitySource.Source.StartActivity("messaging.consume", ActivityKind.Consumer);
+            consumeActivity?.SetTag("messaging.system", "servicebus");
+
             // 1. Lire l'enveloppe
             var result = provider.DeserializeMessageSafe<SlipEnvelope>();
             if (!result.IsSuccess || result.Value == null)
