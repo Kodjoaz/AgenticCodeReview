@@ -51,18 +51,6 @@ var builder = new HostBuilder()
             {
                 t.AddSource(EMTInstrumentation.SourceName);
                 t.AddSource(BookingTelemetry.SourceName);
-                t.AddHttpClientInstrumentation(o =>
-                {
-                    o.FilterHttpRequestMessage = req =>
-                    {
-                        var host = req.RequestUri?.Host ?? string.Empty;
-                        return !host.Contains("login.microsoftonline.com")
-                            && !host.Contains("dc.applicationinsights")
-                            && !host.Contains("dc.services.visualstudio")
-                            && !host.Contains("livediagnostics.monitor.azure.com")
-                            && req.RequestUri?.AbsolutePath.Contains("FunctionRpc") != true;
-                    };
-                });
             })
             .WithMetrics(m =>
             {
