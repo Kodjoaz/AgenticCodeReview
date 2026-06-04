@@ -18,7 +18,6 @@
       "RAMQ": "Information",
       "Microsoft.DurableTask": "Warning",
       "Microsoft.Azure.Functions.Worker": "Warning",
-      "ApplicationInsights": "Warning",
       "Grpc": "None",
       "Microsoft.Azure.Functions.Worker.Grpc": "None"
     },

@@ -10,9 +10,9 @@
       "enableLiveMetricsFilters": true
     },
     "logLevel": {
-      "ApplicationInsights": "Warning",
       "Grpc": "None",
-      "Microsoft.Azure.Functions.Worker.Grpc": "None"
+      "Microsoft.Azure.Functions.Worker.Grpc": "None",
+      "RAMQ": "Information"
     }
   }
 }
