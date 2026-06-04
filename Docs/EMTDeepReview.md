@@ -5135,58 +5135,127 @@ volumes
 
 #### Pourquoi des traces parasites apparaissent ?
 
-Par défaut, `AddHttpClientInstrumentation()` capture **TOUS** les appels HTTP du worker, y compris les appels internes Azure. Voici ce qui pollue Application Insights Search :
+Les samples EMT utilisent **deux pipelines de télémétrie simultanés** :
 
-| Trace visible | Source | Impact |
+| Pipeline | Enregistrement | Ce qu'il capture |
 |---|---|---|
-| `POST /v2.1/track` | SDK AppInsights qui s'auto-enregistre | Boucle : AppInsights trace ses propres envois |
+| **OTel Azure Monitor exporter** | `UseAzureMonitorExporter()` | Activities (`ActivitySource`) — traces métier RAMQ |
+| **SDK AppInsights** | `AddApplicationInsightsTelemetryWorkerService()` + `ConfigureFunctionsApplicationInsights()` | Logs `ILogger`, corrélation Functions |
+
+Le SDK AppInsights inclut un module `DependencyTrackingTelemetryModule` qui **intercepte automatiquement tous les `HttpClient` sortants** sans exception. Il génère ainsi du bruit dans Application Insights Search :
+
+| Trace parasite | Source réelle | Pourquoi elle passe |
+|---|---|---|
+| `POST /v2/track` | OTel Azure Monitor exporter envoyant ses données | L'exporter utilise `HttpClient` → SDK le capture |
+| `POST /v2.1/track` | AppInsights SDK envoyant sa propre télémétrie | Boucle auto-référentielle |
+| `POST /AzureFunctionsRpcMessages.FunctionRpc/EventStream` | Canal gRPC host ↔ worker isolé | Infrastructure interne Functions |
+| `https://eastus.livediagnostics.monitor.azure.com/QuickPulseService.svc` | Live Metrics heartbeat | Ping toutes les secondes |
 | `VisualStudioCredential.GetToken` | Azure Identity renouvelle les tokens | Token refresh toutes les ~60 min |
-| `POST /AzureFunctionsRpcMessages.FunctionRpc/EventStream` | Canal gRPC worker↔host | Infrastructure interne Functions |
-| `QuickPulseService.svc` | Live Metrics heartbeat | Ping toutes les secondes |
+
+> **Piège : `FilterHttpRequestMessage` ne résout pas ce problème.**
+> Ce filtre OTel contrôle uniquement la création de *spans OTel*. Il ne touche pas le pipeline SDK AppInsights. Pire : s'il bloque `*.in.applicationinsights.azure.com`, l'OTel exporter ne peut plus envoyer de données (les spans OTel deviennent orphelins). **Ne pas l'utiliser pour filtrer le bruit.**
+
+> **Autre piège : `AddFilter("Microsoft", Warning)` dans `Program.cs` ne filtre pas AppInsights.**
+> Ce filtre s'applique uniquement aux sinks in-process (console). AppInsights a son propre pipeline contrôlé par `host.json`. Les logs de démarrage (`Initializing Warmup Extension`, `Host.Startup`) contournent le filtre in-memory et atteignent AppInsights.
+
+---
 
 #### Solution appliquée — 2 niveaux de filtrage
 
-**Niveau 1 — Dans le code : `FilterHttpRequestMessage` (OTel)**
+**Niveau 1 — `ITelemetryProcessor` dans `Program.cs`**
+
+Le `ITelemetryProcessor` s'insère dans le pipeline SDK AppInsights **avant l'export**. Il est la seule façon de filtrer les `DependencyTelemetry` générés par `DependencyTrackingTelemetryModule`.
 
 ```csharp
-// Program.cs — RoutingSlip Worker/Activateur
-t.AddHttpClientInstrumentation(opts =>
+// Program.cs — RoutingSlip Worker / Activateur
+
+if (!string.IsNullOrWhiteSpace(appInsightsCs))
 {
-    // Ne capturer que les appels HTTP de votre application
-    // Exclure tout ce qui est infrastructure Azure interne
-    opts.FilterHttpRequestMessage = req =>
-    {
-        var host = req.RequestUri?.Host ?? "";
-        return !host.Contains("applicationinsights.azure.com")     // AppInsights ingestion (/v2.1/track)
-            && !host.Contains("livediagnostics.monitor.azure.com")  // Live Metrics heartbeat
-            && !host.Contains("login.microsoftonline.com")           // Renouvellement tokens AAD
-            && !host.Contains("management.azure.com")               // Azure Management API
-            && req.RequestUri?.AbsolutePath?.Contains("/v2.1/track") != true;
-    };
-});
+    services.AddApplicationInsightsTelemetryWorkerService();
+    services.ConfigureFunctionsApplicationInsights();
+    services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>(); // ← ajouter
+}
+
+// ... rest of DI setup ...
 ```
 
-**Niveau 2 — Dans `host.json` : filtres logLevel**
+Classe du filtre (à placer en bas du fichier `Program.cs`) :
+
+```csharp
+// Filtre les DependencyTelemetry auto-capturées par DependencyTrackingTelemetryModule.
+// Ces dépendances sont du bruit infra — aucune valeur opérationnelle pour RAMQ.
+internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITelemetryProcessor
+{
+    public void Process(ITelemetry item)
+    {
+        if (item is DependencyTelemetry dep)
+        {
+            var data = dep.Data ?? string.Empty;
+            if (data.Contains("applicationinsights.azure.com") ||   // OTel exporter + SDK ingestion
+                data.Contains("livediagnostics.monitor.azure.com") || // Live Metrics heartbeat
+                data.Contains("FunctionRpc") ||                       // canal gRPC host ↔ worker
+                data.Contains("/v2/track") ||                         // OTel Azure Monitor
+                data.Contains("/v2.1/track"))                         // AppInsights SDK v2
+                return; // supprimer — ne pas exporter
+        }
+        next.Process(item); // laisser passer tout le reste
+    }
+}
+```
+
+Les usings nécessaires (`Microsoft.ApplicationInsights.WorkerService` déjà référencé dans le `.csproj`) :
+
+```csharp
+using Microsoft.ApplicationInsights.Channel;
+using Microsoft.ApplicationInsights.DataContracts;
+using Microsoft.ApplicationInsights.Extensibility;
+```
+
+**Niveau 2 — `host.json` : logLevel pour les logs de démarrage**
+
+Le filtre `host.json` contrôle ce que le SDK AppInsights reçoit depuis le pipeline de logs. Les catégories `Microsoft.*` et `Host.*` génèrent du bruit au démarrage (`Initializing Warmup Extension`, host startup) non filtré par le code.
 
 ```json
 {
+  "version": "2.0",
   "logging": {
     "logLevel": {
       "RAMQ":                                    "Information",
-      "ApplicationInsights":                     "Warning",
+      "Microsoft":                               "Warning",
+      "Host":                                    "Warning",
       "Azure.Identity":                          "None",
       "Microsoft.Identity":                      "None",
       "Grpc":                                    "None",
       "Microsoft.Azure.Functions.Worker.Grpc":   "None"
+    },
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled":                 true,
+        "excludedTypes":             "Exception;Request",
+        "maxTelemetryItemsPerSecond": 20
+      },
+      "enableLiveMetricsFilters": true
     }
   }
 }
 ```
 
-**Après filtrage :** Application Insights Search ne montre que :
-- `ReserverVoiture` ← ton application ✅
-- `ReserverHotel` ← ton application ✅
-- `ReserverVol` ← ton application ✅
+> **Règle :** `"Microsoft": "Warning"` dans `host.json` est **indispensable** même si `AddFilter("Microsoft", Warning)` est déjà dans `Program.cs`. Les deux filtres sont indépendants et contrôlent des pipelines différents.
+
+---
+
+#### Résultat après les deux correctifs
+
+Application Insights Search ne montre que les traces métier RAMQ :
+
+| Trace | Attendu |
+|---|---|
+| `BookingActivateur` | ✅ saga déclenchée |
+| `ReserverVoiture` | ✅ activité 1 |
+| `ReserverHotel` | ✅ activité 2 |
+| `ReserverVol` | ✅ activité 3 |
+
+Toutes corrélées par le même `operation_Id` (W3C TraceId propagé par R14 via `traceparent` dans les `ApplicationProperties` Service Bus).
 
 ---
 
