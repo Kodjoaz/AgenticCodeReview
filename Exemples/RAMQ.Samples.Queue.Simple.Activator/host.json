@@ -2,14 +2,15 @@
   "version": "2.0",
   "logging": {
     "logLevel": {
-      "RAMQ":                "Information",
-      "Azure.Identity":     "None",
+      "RAMQ": "Information",
+      "Azure.Identity": "None",
       "Microsoft.Identity": "None"
     },
     "applicationInsights": {
       "samplingSettings": {
         "isEnabled": true,
-        "excludedTypes": "Request"
+        "excludedTypes": "Exception;Request",
+        "maxTelemetryItemsPerSecond": 20
       },
       "enableLiveMetricsFilters": true
     }
@@ -23,5 +24,4 @@
       }
     }
   }
-
 }
