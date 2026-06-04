@@ -3102,6 +3102,157 @@ resource diagSettings 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview'
 
 Sans cette configuration, un message bloqué par throttling Service Bus apparaîtra comme un timeout côté EMT sans cause visible.
 
+### 13.3.2 Rôle d'Application Insights dans la solution EMT
+
+#### Architecture : collecteur → stockage
+
+```
+Applications EMT (workers Azure Functions)
+    ↓ SDK AppInsights + UseAzureMonitorExporter
+Application Insights
+    │  (façade UI : Application Map, Live Metrics, Transaction Search)
+    ↓ stocke dans
+Log Analytics Workspace (Canada East)
+    ├── table "requests"       → invocations Azure Functions
+    ├── table "dependencies"   → spans OTel (saga steps, SB calls)
+    ├── table "traces"         → logs applicatifs (Warning+)
+    ├── table "exceptions"     → erreurs avec stack trace
+    └── table "customMetrics"  → métriques EMT (messages_sent, circuit_state…)
+```
+
+> ⚠️ **Distinction fondamentale :**
+> - **INGESTION** = trafic entrant vers Log Analytics (facturé ~2,30 USD/GB · 5 GB/mois gratuits)
+> - **STOCKAGE** = données déjà ingérées (gratuit 90 jours · archive ~0,02 USD/GB/mois)
+>
+> Application Insights est un **collecteur-façade** : il ne stocke rien lui-même depuis 2020. Toutes les données sont dans Log Analytics. "Purger AppInsights" = réduire la rétention dans Log Analytics.
+
+#### Stratégie de contrôle des coûts — 3 leviers
+
+| Levier | Où configurer | Effet |
+|---|---|---|
+| **Daily Cap** | Azure Portal → Log Analytics → Usage → Daily Cap | Plafond dur : 167 MB/jour = 5 GB/mois max |
+| **Niveau de log AppInsights** | `host.json` : `"ApplicationInsights": "Warning"` | Seuls Warning/Error ingérés — Information reste en console locale |
+| **Sampling adaptatif** | `host.json` : `maxTelemetryItemsPerSecond: 5` | Réduit le volume à fort débit, Exceptions et Requests toujours conservées |
+
+#### Rétention recommandée pour RAMQ (CAI 7 ans)
+
+| Table | Rétention interactive | Archive (CAI) |
+|---|---|---|
+| `exceptions` | 90 jours | 7 ans (~0,02 USD/GB/mois) |
+| `requests` | 90 jours | 7 ans |
+| `traces` | 30 jours | 3 ans |
+| `dependencies` | 30 jours | 3 ans |
+| `customMetrics` | 30 jours | 1 an |
+
+> Configuration : Azure Portal → Log Analytics → Tables → sélectionner chaque table → Retention settings.
+
+---
+
+### 13.3.3 Analyse de coût mensuel — Routing Slip Booking (3 étapes)
+
+#### Volume de télémétrie par saga complète
+
+Une saga Booking (ReserverVoiture → ReserverHotel → ReserverVol) génère :
+
+| Élément | Quantité | Taille | Volume/saga |
+|---|---|---|---|
+| `requests` (invocations) | 3 | ~2 KB | 6 KB |
+| `dependencies` (spans SB + OTel) | 6 | ~2 KB | 12 KB |
+| `traces` Information (logs détaillés) | ~15 | ~1 KB | 15 KB |
+| `traces` Warning uniquement | ~2 | ~1 KB | 2 KB |
+| `exceptions` (si Fault) | 0-1 | ~3 KB | 0-3 KB |
+
+→ **~33 KB/saga en mode Information · ~20 KB/saga en mode Warning**
+
+*(Note : `requests` et `exceptions` sont toujours exclus du sampling — garantie d'audit)*
+
+---
+
+#### Scénario A — Information (développement, sans filtre)
+
+```
+host.json : "ApplicationInsights": "Information"
+```
+
+| Sagas/mois | Volume brut | Coût ingestion/mois |
+|---|---|---|
+| 1 000 | 33 MB | **Gratuit** |
+| 10 000 | 330 MB | **Gratuit** |
+| 100 000 | 3,3 GB | **Gratuit** |
+| 300 000 | 10 GB | **11,50 USD** |
+| 1 000 000 | 33 GB | **64,40 USD** |
+
+> ⚠️ Non recommandé en production — très verbeux, coût croît vite.
+
+---
+
+#### Scénario B — Warning uniquement (production standard)
+
+```
+host.json : "ApplicationInsights": "Warning"
+```
+
+| Sagas/mois | Volume | Coût ingestion/mois |
+|---|---|---|
+| 1 000 | 20 MB | **Gratuit** |
+| 10 000 | 200 MB | **Gratuit** |
+| 100 000 | 2 GB | **Gratuit** |
+| 300 000 | 6 GB | **2,30 USD** |
+| 1 000 000 | 20 GB | **34,50 USD** |
+
+---
+
+#### Scénario C — Warning + Sampling adaptatif (recommandé RAMQ)
+
+```
+host.json : "ApplicationInsights": "Warning"
+            maxTelemetryItemsPerSecond: 5
+            excludedTypes: "Exception;Request"
+```
+
+Le sampling réduit les `traces` et `dependencies` de ~80 % à fort débit.
+
+| Sagas/mois | Volume avant sampling | Volume après sampling | Coût/mois |
+|---|---|---|---|
+| 100 000 | 2 GB | ~0,8 GB | **Gratuit** |
+| 300 000 | 6 GB | ~2,4 GB | **Gratuit** |
+| 1 000 000 | 20 GB | ~8 GB | **6,90 USD** |
+| 3 000 000 | 60 GB | ~24 GB | **43,70 USD** |
+
+---
+
+#### Scénario D — Configuration actuelle (Warning + Sampling + Daily Cap 167 MB/jour)
+
+```
+host.json : "ApplicationInsights": "Warning"
+            maxTelemetryItemsPerSecond: 5
+Azure Portal : Daily Cap = 167 MB/jour
+```
+
+| Volume réel | Résultat |
+|---|---|
+| Quel que soit le trafic | **Toujours ≤ 5 GB/mois = Gratuit (ingestion)** |
+| Si cap atteint en journée | Ingestion s'arrête jusqu'au lendemain |
+
+> ✅ **Configuration recommandée pour le développement et les pilotes RAMQ.**
+> Le Daily Cap est le seul mécanisme qui **garantit** de rester dans la tranche gratuite.
+
+---
+
+#### Coût de stockage archive (CAI 7 ans)
+
+Pour 5 GB ingérés/mois (cap maximum) :
+
+| Période | Données cumulées | Coût archive/mois |
+|---|---|---|
+| 1 an | 60 GB | **1,20 USD** |
+| 3 ans | 180 GB | **3,60 USD** |
+| 7 ans | 420 GB | **8,40 USD** |
+
+> 💡 Le coût total sur 7 ans pour un pilote à 5 GB/mois : **~0 USD ingestion + ~350 USD archive** = moins de 50 USD/an pour la conformité CAI complète.
+
+---
+
 ### 13.4 ILogger vs OpenTelemetry — la nuance critique
 
 > 💡 **C'est probablement la confusion #1 d'un junior qui débute en observabilité.** Le code écrit `_logger.LogInformation(...)`, mais qu'est-ce qui se passe vraiment ? Est-ce que ça « part » dans Application Insights ? Sous quel nom de table ? Avec quels filtres ? La réponse demande de comprendre 3 couches.
