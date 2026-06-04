@@ -47,19 +47,7 @@ var builder = new HostBuilder()
             {
                 t.AddSource(EMTInstrumentation.SourceName);
                 t.AddSource(BookingTelemetry.SourceName);
-                t.AddHttpClientInstrumentation(opts =>
-                {
-                    // Filtrer les appels HTTP internes — non pertinents pour le DFO
-                    opts.FilterHttpRequestMessage = req =>
-                    {
-                        var host = req.RequestUri?.Host ?? "";
-                        return !host.Contains("applicationinsights.azure.com")    // AppInsights ingestion
-                            && !host.Contains("livediagnostics.monitor.azure.com") // Live Metrics heartbeat
-                            && !host.Contains("login.microsoftonline.com")          // Token AAD
-                            && !host.Contains("management.azure.com")              // Azure Management
-                            && req.RequestUri?.AbsolutePath?.Contains("/v2.1/track") != true; // SDK auto-tracking
-                    };
-                });
+                t.AddHttpClientInstrumentation();
             })
             .WithMetrics(m =>
             {
@@ -83,6 +71,7 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
 
 
 
