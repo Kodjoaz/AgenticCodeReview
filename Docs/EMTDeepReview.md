@@ -3150,21 +3150,85 @@ Log Analytics Workspace (Canada East)
 
 ### 13.3.3 Analyse de coût mensuel — Routing Slip Booking (3 étapes)
 
-#### Volume de télémétrie par saga complète
+#### Formule de calcul
 
-Une saga Booking (ReserverVoiture → ReserverHotel → ReserverVol) génère :
+```
+Coût mensuel = MAX(0, Volume ingéré (GB) - 5 GB) × 2,30 USD/GB
 
-| Élément | Quantité | Taille | Volume/saga |
+Volume ingéré = Σ (items non samplés × taille)
+              + Σ (items samplés × taille × taux de sampling)
+
+Items jamais samplés (toujours facturés) : requests, exceptions
+Items samplés : traces, dependencies (jusqu'à maxTelemetryItemsPerSecond)
+```
+
+Chaque item Application Insights = JSON enrichi (opération, cloud, session, customDimensions) → **~1-2 KB par item**.
+
+---
+
+#### Télémétrie générée par app
+
+**App 1 — Activateur** *(HTTP trigger → construit SlipEnvelope → publie sur Service Bus)*
+
+| Table | Quantité | Taille | Total | Samplé ? |
+|---|---|---|---|---|
+| `requests` | 1 (invocation HTTP) | 2 KB | 2 KB | ❌ Jamais |
+| `dependencies` | 1 (SB send `PublishAsync`) | 2 KB | 2 KB | ✅ Oui |
+| `traces` — Information | 2 (RoutingSlipBuilder + publish log) | 1 KB | 2 KB | ✅ Oui |
+| `traces` — Warning | 0 (chemin nominal) | — | 0 KB | — |
+| `customMetrics` | agrégés / 60 sec | ~0,1 KB | ~0 KB | ❌ Jamais |
+| **Total Information** | | | **~6 KB** | |
+| **Total Warning** | | | **~4 KB** | |
+
+---
+
+**App 2 — Worker, Étape 1 : ReserverVoiture** *(SB trigger → BookCarActivity → publie vers ReserverHotel)*
+
+| Table | Quantité | Taille | Total | Samplé ? |
+|---|---|---|---|---|
+| `requests` | 1 (SB trigger) | 2 KB | 2 KB | ❌ Jamais |
+| `dependencies` | 3 (SB receive + span `routing_slip.step` + span `booking.car.reserve` + SB send) | 2 KB | 6 KB | ✅ Oui |
+| `traces` — Information | 3 (Info + Warning + Error = BookCarActivity, lignes 45-55) + 2 (RoutingSlipExecutor: début étape + avance vers) | 1 KB | 5 KB | ✅ Oui |
+| `traces` — Warning | 1 (Warning BookCarActivity) + 0 RoutingSlipExecutor | 1 KB | 1 KB | ✅ Oui |
+| `traces` — ForSlipStep (journal R16) | 1 (JournalEntry.ForSlipStep Completed) | 1 KB | 1 KB | ✅ Oui |
+| **Total Information** | | | **~14 KB** | |
+| **Total Warning** | | | **~10 KB** | |
+
+---
+
+**App 2 — Worker, Étape 2 : ReserverHotel** *(identique à Étape 1)*
+
+| | Information | Warning |
+|---|---|---|
+| Total | **~14 KB** | **~10 KB** |
+
+---
+
+**App 2 — Worker, Étape 3 : ReserverVol** *(dernière étape → ForSlipComplete, pas de SB send)*
+
+| Table | Quantité | Taille | Total |
 |---|---|---|---|
-| `requests` (invocations) | 3 | ~2 KB | 6 KB |
-| `dependencies` (spans SB + OTel) | 6 | ~2 KB | 12 KB |
-| `traces` Information (logs détaillés) | ~15 | ~1 KB | 15 KB |
-| `traces` Warning uniquement | ~2 | ~1 KB | 2 KB |
-| `exceptions` (si Fault) | 0-1 | ~3 KB | 0-3 KB |
+| `requests` | 1 | 2 KB | 2 KB |
+| `dependencies` | 2 (SB receive + spans) | 2 KB | 4 KB |
+| `traces` Info | 4 (BookFlightActivity logs + executor) | 1 KB | 4 KB |
+| `traces` Warning | 1 | 1 KB | 1 KB |
+| `traces` ForSlipComplete | 1 | 1 KB | 1 KB |
+| **Total Information** | | | **~11 KB** |
+| **Total Warning** | | | **~8 KB** |
 
-→ **~33 KB/saga en mode Information · ~20 KB/saga en mode Warning**
+---
 
-*(Note : `requests` et `exceptions` sont toujours exclus du sampling — garantie d'audit)*
+#### Récapitulatif par saga complète
+
+| App | Invocations | Information | Warning |
+|---|---|---|---|
+| **Activateur** | 1 | 6 KB | 4 KB |
+| **Worker** ReserverVoiture | 1 | 14 KB | 10 KB |
+| **Worker** ReserverHotel | 1 | 14 KB | 10 KB |
+| **Worker** ReserverVol | 1 | 11 KB | 8 KB |
+| **TOTAL saga** | **4 invocations** | **~45 KB** | **~32 KB** |
+
+---
 
 ---
 
@@ -3172,17 +3236,19 @@ Une saga Booking (ReserverVoiture → ReserverHotel → ReserverVol) génère :
 
 ```
 host.json : "ApplicationInsights": "Information"
+Base de calcul : 45 KB/saga
 ```
 
-| Sagas/mois | Volume brut | Coût ingestion/mois |
-|---|---|---|
-| 1 000 | 33 MB | **Gratuit** |
-| 10 000 | 330 MB | **Gratuit** |
-| 100 000 | 3,3 GB | **Gratuit** |
-| 300 000 | 10 GB | **11,50 USD** |
-| 1 000 000 | 33 GB | **64,40 USD** |
+| Sagas/mois | Calcul | Volume | Coût ingestion |
+|---|---|---|---|
+| 1 000 | 1 000 × 45 KB | 45 MB | **Gratuit** |
+| 10 000 | 10 000 × 45 KB | 450 MB | **Gratuit** |
+| 100 000 | 100 000 × 45 KB | 4,5 GB | **Gratuit** |
+| 115 000 | 115 000 × 45 KB | 5,2 GB | **(5,2-5)×2,30 = 0,46 USD** ← seuil |
+| 300 000 | 300 000 × 45 KB | 13,5 GB | **(13,5-5)×2,30 = 19,55 USD** |
+| 1 000 000 | 1 000 000 × 45 KB | 45 GB | **(45-5)×2,30 = 92 USD** |
 
-> ⚠️ Non recommandé en production — très verbeux, coût croît vite.
+> ⚠️ Non recommandé en production — très verbeux, seuil gratuit atteint à ~115K sagas/mois.
 
 ---
 
@@ -3190,19 +3256,21 @@ host.json : "ApplicationInsights": "Information"
 
 ```
 host.json : "ApplicationInsights": "Warning"
+Base de calcul : 32 KB/saga
 ```
 
-| Sagas/mois | Volume | Coût ingestion/mois |
-|---|---|---|
-| 1 000 | 20 MB | **Gratuit** |
-| 10 000 | 200 MB | **Gratuit** |
-| 100 000 | 2 GB | **Gratuit** |
-| 300 000 | 6 GB | **2,30 USD** |
-| 1 000 000 | 20 GB | **34,50 USD** |
+| Sagas/mois | Calcul | Volume | Coût ingestion |
+|---|---|---|---|
+| 1 000 | 1 000 × 32 KB | 32 MB | **Gratuit** |
+| 10 000 | 10 000 × 32 KB | 320 MB | **Gratuit** |
+| 100 000 | 100 000 × 32 KB | 3,2 GB | **Gratuit** |
+| 160 000 | 160 000 × 32 KB | 5,1 GB | **(5,1-5)×2,30 = 0,23 USD** ← seuil |
+| 300 000 | 300 000 × 32 KB | 9,6 GB | **(9,6-5)×2,30 = 10,58 USD** |
+| 1 000 000 | 1 000 000 × 32 KB | 32 GB | **(32-5)×2,30 = 62,10 USD** |
 
 ---
 
-#### Scénario C — Warning + Sampling adaptatif (recommandé RAMQ)
+#### Scénario C — Warning + Sampling adaptatif
 
 ```
 host.json : "ApplicationInsights": "Warning"
@@ -3210,14 +3278,19 @@ host.json : "ApplicationInsights": "Warning"
             excludedTypes: "Exception;Request"
 ```
 
-Le sampling réduit les `traces` et `dependencies` de ~80 % à fort débit.
+Avec sampling à 80 % de réduction sur les `traces` et `dependencies` samplées :
+```
+Volume effectif = (requests non samplés × 2 KB) + (autres × 32 KB × 20%)
+               = (4 invocations × 2 KB) + (32 KB - 8 KB) × 20%
+               = 8 KB + 4,8 KB ≈ 13 KB/saga samplée
+```
 
-| Sagas/mois | Volume avant sampling | Volume après sampling | Coût/mois |
+| Sagas/mois | Calcul | Volume | Coût ingestion |
 |---|---|---|---|
-| 100 000 | 2 GB | ~0,8 GB | **Gratuit** |
-| 300 000 | 6 GB | ~2,4 GB | **Gratuit** |
-| 1 000 000 | 20 GB | ~8 GB | **6,90 USD** |
-| 3 000 000 | 60 GB | ~24 GB | **43,70 USD** |
+| 100 000 | 100 000 × 13 KB | 1,3 GB | **Gratuit** |
+| 385 000 | 385 000 × 13 KB | ~5 GB | **≈ Gratuit** ← seuil |
+| 1 000 000 | 1 000 000 × 13 KB | 13 GB | **(13-5)×2,30 = 18,40 USD** |
+| 3 000 000 | 3 000 000 × 13 KB | 39 GB | **(39-5)×2,30 = 78,20 USD** |
 
 ---
 
@@ -3226,7 +3299,7 @@ Le sampling réduit les `traces` et `dependencies` de ~80 % à fort débit.
 ```
 host.json : "ApplicationInsights": "Warning"
             maxTelemetryItemsPerSecond: 5
-Azure Portal : Daily Cap = 167 MB/jour
+Azure Portal : Daily Cap = 167 MB/jour = 5 GB/mois
 ```
 
 | Volume réel | Résultat |
