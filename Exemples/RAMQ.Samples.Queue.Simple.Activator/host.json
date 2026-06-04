@@ -5,7 +5,9 @@
       "RAMQ": "Information",
       "Azure.Identity": "None",
       "Microsoft.Identity": "None",
-      "ApplicationInsights": "Warning"
+      "ApplicationInsights": "Warning",
+      "Grpc": "None",
+      "Microsoft.Azure.Functions.Worker.Grpc": "None"
     },
     "applicationInsights": {
       "samplingSettings": {
