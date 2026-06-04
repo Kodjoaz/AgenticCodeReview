@@ -4468,192 +4468,271 @@ Sections :
 
 ### 13.10.5 Requêtes KQL essentielles — validation DFO Routing Slip
 
-> **⚠️ Noms de tables différents selon le contexte :**
+#### Pourquoi deux noms de tables ?
+
+Application Insights existait avant Log Analytics avec son propre stockage et ses propres noms de tables (`traces`, `requests`…). Quand Microsoft a migré AppInsights vers Log Analytics en 2020, les tables ont été renommées en convention Log Analytics (`AppTraces`, `AppRequests`…). Pour la compatibilité, les anciens noms restent disponibles **uniquement dans le portail Application Insights** comme alias.
+
+> **C'est la même donnée, deux noms, deux portails :**
 >
-> | Table | Application Insights → Logs | Log Analytics → Logs |
-> |---|---|---|
-> | Logs applicatifs | `traces` | `AppTraces` |
-> | Invocations AzFunc | `requests` | `AppRequests` |
-> | Spans OTel | `dependencies` | `AppDependencies` |
-> | Erreurs | `exceptions` | `AppExceptions` |
-> | Métriques custom | `customMetrics` | `AppMetrics` |
-> | Champ timestamp | `timestamp` | `TimeGenerated` |
-> | Champ dimensions | `customDimensions.X` | `Properties.X` |
+> | Portail | Table logs | Table métriques | Timestamp | Dimensions |
+> |---|---|---|---|---|
+> | **Application Insights → Logs** | `traces` | `customMetrics` | `timestamp` | `customDimensions.X` |
+> | **Log Analytics → Logs** | `AppTraces` | `AppMetrics` | `TimeGenerated` | `Properties.X` |
 >
-> Les requêtes ci-dessous utilisent la syntaxe **Application Insights** (`traces`, `timestamp`, `customDimensions`).  
-> Pour Log Analytics, remplacer selon le tableau ci-dessus.
+> Recommandation RAMQ : utiliser **Log Analytics + noms `App*`** — c'est le standard Azure durable.
 
 ---
 
-#### 🔍 Découverte — trouver les sagas récentes
+#### 🔍 Q1 — Trouver les sagas récentes
 
+**Application Insights :**
 ```kusto
-// Lister les sagas des dernière heure avec leur statut
 traces
 | where timestamp > ago(1h)
 | where isnotempty(customDimensions.SlipId)
 | summarize
-    debut        = min(timestamp),
-    fin          = max(timestamp),
-    nb_steps     = dcountif(customDimensions.StepName, isnotempty(customDimensions.StepName)),
-    nb_warnings  = countif(severityLevel == 2),
-    nb_errors    = countif(severityLevel == 3),
-    statut       = iff(countif(message contains "slip complet") > 0, "✅ Terminé",
-                   iff(countif(severityLevel == 3) > 0, "❌ Erreur", "⏳ En cours"))
-  by SlipId = tostring(customDimensions.SlipId),
+    debut    = min(timestamp),
+    fin      = max(timestamp),
+    warnings = countif(severityLevel == 2),
+    errors   = countif(severityLevel == 3),
+    statut   = iff(countif(message contains "slip complet") > 0, "✅ Terminé",
+               iff(countif(severityLevel == 3) > 0, "❌ Erreur", "⏳ En cours"))
+  by SlipId   = tostring(customDimensions.SlipId),
      SlipName = tostring(customDimensions.SlipName)
-| extend duree_sec = datetime_diff('second', fin, debut)
+| order by debut desc
+```
+
+**Log Analytics :**
+```kusto
+AppTraces
+| where TimeGenerated > ago(1h)
+| where isnotempty(Properties.SlipId)
+| summarize
+    debut    = min(TimeGenerated),
+    fin      = max(TimeGenerated),
+    warnings = countif(SeverityLevel == 2),
+    errors   = countif(SeverityLevel == 3),
+    statut   = iff(countif(Message contains "slip complet") > 0, "✅ Terminé",
+               iff(countif(SeverityLevel == 3) > 0, "❌ Erreur", "⏳ En cours"))
+  by SlipId   = tostring(Properties.SlipId),
+     SlipName = tostring(Properties.SlipName)
 | order by debut desc
 ```
 
 ---
 
-#### 📋 Timeline complète d'une saga
+#### 📋 Q2 — Timeline complète d'une saga
 
+**Application Insights :**
 ```kusto
-// Remplacer 'TON-SLIP-ID' par un SlipId obtenu ci-dessus
-let monSlipId = "TON-SLIP-ID";
+let monSlipId = "COLLE-TON-SLIP-ID";
 union traces, dependencies, exceptions
 | where timestamp > ago(24h)
 | where tostring(customDimensions.SlipId) == monSlipId
-       or operation_Id == monSlipId
 | project
     timestamp,
-    type     = itemType,
-    niveau   = case(severityLevel == 1, "INFO ",
-                    severityLevel == 2, "WARN ",
-                    severityLevel == 3, "ERROR", "SPAN "),
-    etape    = tostring(customDimensions.StepName),
-    message  = coalesce(message, name, outerMessage),
-    attempt  = tostring(customDimensions.Attempt)
+    niveau  = case(severityLevel == 1, "INFO ",
+                   severityLevel == 2, "WARN ",
+                   severityLevel == 3, "ERROR", "SPAN "),
+    etape   = tostring(customDimensions.StepName),
+    message = coalesce(message, name, outerMessage)
 | order by timestamp asc
 ```
 
----
-
-#### ✅ Validation — toutes les étapes d'une saga ont-elles été journalisées ?
-
+**Log Analytics :**
 ```kusto
-// Vérifie que les 3 étapes (R16 journal) sont présentes pour chaque saga
-traces
-| where timestamp > ago(1h)
-| where customDimensions.SlipName == "Booking"
-| where message contains "ForSlipStep" or message contains "slip complet"
-| summarize
-    etapes_completees = make_set(customDimensions.StepName)
-  by SlipId = tostring(customDimensions.SlipId)
-| extend nb_etapes = array_length(etapes_completees)
-| where nb_etapes < 3  // ← sagas incomplètes
-| order by SlipId
+let monSlipId = "COLLE-TON-SLIP-ID";
+union AppTraces, AppDependencies, AppExceptions
+| where TimeGenerated > ago(24h)
+| where tostring(Properties.SlipId) == monSlipId
+| project
+    TimeGenerated,
+    niveau  = case(SeverityLevel == 1, "INFO ",
+                   SeverityLevel == 2, "WARN ",
+                   SeverityLevel == 3, "ERROR", "SPAN "),
+    etape   = tostring(Properties.StepName),
+    message = coalesce(Message, Name, OuterMessage)
+| order by TimeGenerated asc
 ```
 
 ---
 
-#### ❌ Détection des échecs et compensations
+#### ❌ Q3 — Détecter les échecs et compensations
 
+**Application Insights :**
 ```kusto
-// Sagas en erreur avec détail de l'étape fautive
 union traces, exceptions
 | where timestamp > ago(24h)
 | where severityLevel >= 2
-      and customDimensions.SlipName == "Booking"
+      and tostring(customDimensions.SlipName) == "Booking"
 | project
     timestamp,
-    SlipId   = tostring(customDimensions.SlipId),
-    etape    = tostring(customDimensions.StepName),
-    niveau   = iff(severityLevel == 3, "ERROR", "WARN"),
-    message  = coalesce(message, outerMessage)
+    SlipId  = tostring(customDimensions.SlipId),
+    etape   = tostring(customDimensions.StepName),
+    niveau  = iff(severityLevel == 3, "ERROR", "WARN"),
+    message = coalesce(message, outerMessage)
 | order by timestamp desc
+```
+
+**Log Analytics :**
+```kusto
+union AppTraces, AppExceptions
+| where TimeGenerated > ago(24h)
+| where SeverityLevel >= 2
+      and tostring(Properties.SlipName) == "Booking"
+| project
+    TimeGenerated,
+    SlipId  = tostring(Properties.SlipId),
+    etape   = tostring(Properties.StepName),
+    niveau  = iff(SeverityLevel == 3, "ERROR", "WARN"),
+    message = coalesce(Message, OuterMessage)
+| order by TimeGenerated desc
 ```
 
 ---
 
-#### 🔁 Analyse des retries — identifier les étapes fragiles
+#### 🔁 Q4 — Identifier les étapes fragiles (retries)
 
+**Application Insights :**
 ```kusto
-// Nombre de retries par étape sur 24h
 traces
 | where timestamp > ago(24h)
 | where message contains "Retry exponentiel" or message contains "Retry immédiat"
-      and customDimensions.SlipName == "Booking"
 | summarize
-    nb_retries = count(),
-    sagas_distinctes = dcount(customDimensions.SlipId)
+    nb_retries       = count(),
+    sagas_distinctes = dcount(tostring(customDimensions.SlipId))
   by etape = tostring(customDimensions.StepName)
+| extend taux_retry = round(100.0 * nb_retries / sagas_distinctes, 1)
+| order by nb_retries desc
+```
+
+**Log Analytics :**
+```kusto
+AppTraces
+| where TimeGenerated > ago(24h)
+| where Message contains "Retry exponentiel" or Message contains "Retry immédiat"
+| summarize
+    nb_retries       = count(),
+    sagas_distinctes = dcount(tostring(Properties.SlipId))
+  by etape = tostring(Properties.StepName)
 | extend taux_retry = round(100.0 * nb_retries / sagas_distinctes, 1)
 | order by nb_retries desc
 ```
 
 ---
 
-#### 📊 Métriques opérationnelles EMT
+#### 📊 Q5 — Métriques opérationnelles EMT
 
+**Application Insights :**
 ```kusto
-// messages_sent_total, circuit_state, routing_slip_compensation_total
 customMetrics
 | where timestamp > ago(1h)
-| where name in (
-    "messages_sent_total",
-    "routing_slip_compensation_total",
-    "circuit_state",
-    "circuit_transitions_total"
-  )
+| where name in ("messages_sent_total", "routing_slip_compensation_total",
+                 "circuit_state", "circuit_transitions_total")
 | summarize valeur = sum(valueSum) by name, bin(timestamp, 5m)
+| render timechart
+```
+
+**Log Analytics :**
+```kusto
+AppMetrics
+| where TimeGenerated > ago(1h)
+| where Name in ("messages_sent_total", "routing_slip_compensation_total",
+                 "circuit_state", "circuit_transitions_total")
+| summarize valeur = sum(Sum) by Name, bin(TimeGenerated, 5m)
 | render timechart
 ```
 
 ---
 
-#### 🚨 Circuit Breaker — détecter les ouvertures
+#### 🚨 Q6 — Circuit Breaker — détecter les ouvertures
 
+**Application Insights :**
 ```kusto
-// Historique des transitions de circuit breaker
 customMetrics
 | where timestamp > ago(24h)
 | where name == "circuit_transitions_total"
-| extend
-    entite = tostring(customDimensions.entity),
-    de     = tostring(customDimensions.from),
-    vers   = tostring(customDimensions.to)
-| where vers == "Open"  // ← seulement les ouvertures
-| project timestamp, entite, de, vers, valueSum
+| where tostring(customDimensions.to) == "Open"
+| project timestamp,
+          entite = tostring(customDimensions.entity),
+          de     = tostring(customDimensions.from),
+          vers   = tostring(customDimensions.to)
 | order by timestamp desc
 ```
 
----
-
-#### ⏱️ SLA — durée moyenne des sagas
-
+**Log Analytics :**
 ```kusto
-// Durée bout-en-bout par saga (Activateur → dernière étape)
-traces
-| where timestamp > ago(24h)
-| where customDimensions.SlipName == "Booking"
-| summarize debut = min(timestamp), fin = max(timestamp)
-  by SlipId = tostring(customDimensions.SlipId)
-| extend duree_sec = datetime_diff('second', fin, debut)
-| summarize
-    p50 = percentile(duree_sec, 50),
-    p95 = percentile(duree_sec, 95),
-    p99 = percentile(duree_sec, 99),
-    max = max(duree_sec)
+AppMetrics
+| where TimeGenerated > ago(24h)
+| where Name == "circuit_transitions_total"
+| where tostring(Properties.to) == "Open"
+| project TimeGenerated,
+          entite = tostring(Properties.entity),
+          de     = tostring(Properties.from),
+          vers   = tostring(Properties.to)
+| order by TimeGenerated desc
 ```
 
 ---
 
-#### 🗂️ Audit CAI — reconstruire l'historique d'un dossier
+#### ⏱️ Q7 — SLA — durée des sagas (p50/p95/p99)
 
+**Application Insights :**
 ```kusto
-// Toutes les sagas liées à un dossier (via CorrelationId = DossierId)
 traces
-| where timestamp > ago(90d)  // rétention interactive
+| where timestamp > ago(24h)
+| where tostring(customDimensions.SlipName) == "Booking"
+| summarize debut = min(timestamp), fin = max(timestamp)
+  by SlipId = tostring(customDimensions.SlipId)
+| extend duree_sec = datetime_diff('second', fin, debut)
+| summarize p50 = percentile(duree_sec, 50),
+            p95 = percentile(duree_sec, 95),
+            p99 = percentile(duree_sec, 99),
+            max = max(duree_sec)
+```
+
+**Log Analytics :**
+```kusto
+AppTraces
+| where TimeGenerated > ago(24h)
+| where tostring(Properties.SlipName) == "Booking"
+| summarize debut = min(TimeGenerated), fin = max(TimeGenerated)
+  by SlipId = tostring(Properties.SlipId)
+| extend duree_sec = datetime_diff('second', fin, debut)
+| summarize p50 = percentile(duree_sec, 50),
+            p95 = percentile(duree_sec, 95),
+            p99 = percentile(duree_sec, 99),
+            max = max(duree_sec)
+```
+
+---
+
+#### 🗂️ Q8 — Audit CAI — historique d'un dossier
+
+**Application Insights :**
+```kusto
+traces
+| where timestamp > ago(90d)
 | where tostring(customDimensions.CorrelationId) contains "D-001"
 | summarize
-    nb_sagas = dcount(customDimensions.SlipId),
+    nb_sagas = dcount(tostring(customDimensions.SlipId)),
     premiere = min(timestamp),
     derniere = max(timestamp),
-    etapes   = make_set(customDimensions.StepName)
+    etapes   = make_set(tostring(customDimensions.StepName))
   by DossierId = tostring(customDimensions.CorrelationId)
+```
+
+**Log Analytics :**
+```kusto
+AppTraces
+| where TimeGenerated > ago(90d)
+| where tostring(Properties.CorrelationId) contains "D-001"
+| summarize
+    nb_sagas = dcount(tostring(Properties.SlipId)),
+    premiere = min(TimeGenerated),
+    derniere = max(TimeGenerated),
+    etapes   = make_set(tostring(Properties.StepName))
+  by DossierId = tostring(Properties.CorrelationId)
 ```
 
 ---
