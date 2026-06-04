@@ -6,7 +6,9 @@
       "Azure.Identity": "None",
       "Microsoft.Identity": "None",
       "Grpc": "None",
-      "Microsoft.Azure.Functions.Worker.Grpc": "None"
+      "Microsoft.Azure.Functions.Worker.Grpc": "None",
+      "Microsoft": "Warning",
+      "Host": "Warning"
     },
     "applicationInsights": {
       "samplingSettings": {

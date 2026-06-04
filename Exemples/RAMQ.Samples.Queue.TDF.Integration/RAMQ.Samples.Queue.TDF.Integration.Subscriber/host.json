@@ -14,7 +14,9 @@
       "Microsoft.DurableTask": "Warning",
       "Microsoft.Azure.Functions.Worker": "Warning",
       "Grpc": "None",
-      "Microsoft.Azure.Functions.Worker.Grpc": "None"
+      "Microsoft.Azure.Functions.Worker.Grpc": "None",
+      "Microsoft": "Warning",
+      "Host": "Warning"
     },
     "applicationInsights": {
       "samplingSettings": {

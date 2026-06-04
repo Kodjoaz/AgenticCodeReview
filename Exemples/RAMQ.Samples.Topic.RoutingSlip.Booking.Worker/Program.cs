@@ -1,5 +1,8 @@
 extern alias AzureIdentity;
 using Azure.Monitor.OpenTelemetry.Exporter;
+using Microsoft.ApplicationInsights.Channel;
+using Microsoft.ApplicationInsights.DataContracts;
+using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.OpenTelemetry;
 using Microsoft.Extensions.Configuration;
@@ -41,6 +44,7 @@ var builder = new HostBuilder()
         {
             services.AddApplicationInsightsTelemetryWorkerService();
             services.ConfigureFunctionsApplicationInsights();
+            services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
         }
 
         var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
@@ -70,6 +74,24 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
+internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITelemetryProcessor
+{
+    public void Process(ITelemetry item)
+    {
+        if (item is DependencyTelemetry dep)
+        {
+            var data = dep.Data ?? string.Empty;
+            if (data.Contains("applicationinsights.azure.com") ||
+                data.Contains("livediagnostics.monitor.azure.com") ||
+                data.Contains("FunctionRpc") ||
+                data.Contains("/v2/track") ||
+                data.Contains("/v2.1/track"))
+                return;
+        }
+        next.Process(item);
+    }
+}
 
 
 
