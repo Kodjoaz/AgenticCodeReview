@@ -3,7 +3,7 @@
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
-    "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=02196579-fc23-49a8-a035-0665fb65f17d;IngestionEndpoint=https://canadaeast-0.in.applicationinsights.azure.com/;LiveEndpoint=https://canadaeast.livediagnostics.monitor.azure.com/;ApplicationId=e9aa0038-a634-435d-89f3f-de3040592be3"
+    "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=62171529-e978-4d2c-aafe-8b189f009293;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus.livediagnostics.monitor.azure.com/;ApplicationId=964ec5a8-e23c-4b8d-835d-b43841393d5e"
   },
   "AppSettings": {
     "ServiceBusNamespace": "sb-tdf-integration.servicebus.windows.net",
