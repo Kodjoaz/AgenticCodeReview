@@ -4468,8 +4468,20 @@ Sections :
 
 ### 13.10.5 Requêtes KQL essentielles — validation DFO Routing Slip
 
-> **Comment accéder :** Azure Portal → Application Insights → Logs  
-> (ou Log Analytics Workspace → Logs)
+> **⚠️ Noms de tables différents selon le contexte :**
+>
+> | Table | Application Insights → Logs | Log Analytics → Logs |
+> |---|---|---|
+> | Logs applicatifs | `traces` | `AppTraces` |
+> | Invocations AzFunc | `requests` | `AppRequests` |
+> | Spans OTel | `dependencies` | `AppDependencies` |
+> | Erreurs | `exceptions` | `AppExceptions` |
+> | Métriques custom | `customMetrics` | `AppMetrics` |
+> | Champ timestamp | `timestamp` | `TimeGenerated` |
+> | Champ dimensions | `customDimensions.X` | `Properties.X` |
+>
+> Les requêtes ci-dessous utilisent la syntaxe **Application Insights** (`traces`, `timestamp`, `customDimensions`).  
+> Pour Log Analytics, remplacer selon le tableau ci-dessus.
 
 ---
 
