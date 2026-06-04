@@ -32,16 +32,11 @@ var builder = new HostBuilder()
     })
     .ConfigureServices((ctx, services) =>
     {
-        var appInsightsConnectionString = ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
-
         // AppInsights enregistré seulement si la connection string est présente.
         // Sans AppInsights (local) : relay gRPC natif → couleurs func CLI correctes.
         // Avec AppInsights (production) : logs envoyés à Azure Monitor.
-        if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
-        {
-            services.AddApplicationInsightsTelemetryWorkerService();
-            services.ConfigureFunctionsApplicationInsights();
-        }
+        services.AddApplicationInsightsTelemetryWorkerService();
+        services.ConfigureFunctionsApplicationInsights();
 
         var telemetryBuilder = services.AddOpenTelemetry()
             .WithTracing(t =>
@@ -56,8 +51,7 @@ var builder = new HostBuilder()
             })
             .UseFunctionsWorkerDefaults();
 
-        if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
-            telemetryBuilder.UseAzureMonitorExporter();
+        telemetryBuilder.UseAzureMonitorExporter();
 
         // R12 — Boilerplate EMT réduit à un appel.
         services.AddEMTSampleProducerDefaults(ctx.Configuration, new AzureIdentity::Azure.Identity.VisualStudioCredential());
@@ -70,6 +64,7 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
 
 
 

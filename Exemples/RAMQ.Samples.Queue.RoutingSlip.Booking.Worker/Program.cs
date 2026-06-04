@@ -31,17 +31,13 @@ var builder = new HostBuilder()
     })
     .ConfigureServices((ctx, services) =>
     {
-        // ── OpenTelemetry : traces distribuées ────────────────────────────────────────
-        var appInsightsConnectionString = ctx.Configuration["APPLICATIONINSIGHTS_CONNECTION_STRING"];
+        // AppInsights lit APPLICATIONINSIGHTS_CONNECTION_STRING automatiquement
+        // depuis les variables d'environnement (propagées par func CLI depuis local.settings.json).
+        // Pas besoin de condition — toujours enregistrer.
+        services.AddApplicationInsightsTelemetryWorkerService();
+        services.ConfigureFunctionsApplicationInsights();
 
-        // AppInsights injecte un filtre Warning global qui casse le relay gRPC en local.
-        // On ne l'enregistre que si la connection string est présente (production/staging).
-        // En local (sans connection string) : relay gRPC natif → couleurs func CLI correctes.
-        if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
-        {
-            services.AddApplicationInsightsTelemetryWorkerService();
-            services.ConfigureFunctionsApplicationInsights();
-        }
+        var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
 
         var telemetryBuilder = services.AddOpenTelemetry()
             .WithTracing(t =>
@@ -56,10 +52,8 @@ var builder = new HostBuilder()
             })
             .UseFunctionsWorkerDefaults();
 
-        var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
-
-        if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
-            telemetryBuilder.UseAzureMonitorExporter(o => { o.ConnectionString = appInsightsConnectionString; o.Credential = credential; });
+        // UseAzureMonitorExporter lit aussi APPLICATIONINSIGHTS_CONNECTION_STRING automatiquement.
+        telemetryBuilder.UseAzureMonitorExporter(o => o.Credential = credential);
 
         // R12 — Boilerplate EMT réduit à un appel.
         services.AddEMTSampleConsumerDefaults(ctx.Configuration, credential);
