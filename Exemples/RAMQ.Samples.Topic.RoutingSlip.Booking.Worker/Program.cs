@@ -58,7 +58,7 @@ var builder = new HostBuilder()
         var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
 
         if (!string.IsNullOrWhiteSpace(appInsightsConnectionString))
-            telemetryBuilder.UseAzureMonitorExporter(o => o.Credential = credential);
+            telemetryBuilder.UseAzureMonitorExporter(o => { o.ConnectionString = appInsightsConnectionString; o.Credential = credential; });
 
         // R12 — Boilerplate EMT réduit à un appel.
         services.AddEMTSampleConsumerDefaults(ctx.Configuration, credential);
@@ -71,5 +71,6 @@ var builder = new HostBuilder()
     });
 
 builder.Build().Run();
+
 
 
