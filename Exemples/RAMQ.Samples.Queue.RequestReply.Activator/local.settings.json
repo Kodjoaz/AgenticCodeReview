@@ -3,7 +3,8 @@
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
-    "ServiceBusConnection__fullyQualifiedNamespace": "sb-wrapca.servicebus.windows.net"
+    "ServiceBusConnection__fullyQualifiedNamespace": "sb-wrapca.servicebus.windows.net",
+    "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=02196579-fc23-49a8-a035-0665fb65f17d;IngestionEndpoint=https://canadaeast-0.in.applicationinsights.azure.com/;LiveEndpoint=https://canadaeast.livediagnostics.monitor.azure.com/;ApplicationId=e9aa0038-a634-435d-89f3f-de3040592be3"
   },
   "AppSettings": {
     "ServiceBusNamespace": "sb-wrapca.servicebus.windows.net",
