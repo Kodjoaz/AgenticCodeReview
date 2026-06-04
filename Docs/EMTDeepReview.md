@@ -4897,6 +4897,240 @@ union
 
 ---
 
+### 13.10.7 Scénarios DFO — requêtes de diagnostic opérationnel
+
+> Ces scénarios répondent aux questions réelles posées à 3h du matin lors d'un incident.  
+> Chaque requête est commentée ligne par ligne pour être compréhensible sans contexte.  
+> **Portail :** Application Insights → Logs (syntaxe `traces` / `customDimensions`)
+
+---
+
+#### 🚨 Scénario 1 — "L'astreinte : qu'est-ce qui se passe en ce moment ?"
+
+```kusto
+// VUE D'ENSEMBLE EN 1 REQUÊTE
+// Objectif : comprendre en 30 secondes l'état de la plateforme
+// Montre : sagas actives, en erreur, taux de retry, dernière activité
+
+traces
+| where timestamp > ago(30m)                          // dernières 30 minutes
+| where isnotempty(customDimensions.SlipId)            // uniquement les saga logs
+| summarize
+    // Compter les sagas par statut
+    terminées  = dcountif(tostring(customDimensions.SlipId),
+                    message contains "slip complet"),
+    en_erreur  = dcountif(tostring(customDimensions.SlipId),
+                    severityLevel == 3),
+    en_retry   = dcountif(tostring(customDimensions.SlipId),
+                    message contains "Retry"),
+    actives    = dcount(tostring(customDimensions.SlipId)),
+    // Dernière activité pour détecter si la plateforme est gelée
+    derniere_activite = max(timestamp)
+  by SlipName = tostring(customDimensions.SlipName)    // groupé par type de saga
+| extend
+    taux_erreur = round(100.0 * en_erreur / actives, 1),
+    // Alerte si plus de 5 min sans activité → possible freeze
+    silence_min = datetime_diff('minute', now(), derniere_activite)
+| project SlipName, actives, terminées, en_erreur, en_retry,
+          taux_erreur, silence_min, derniere_activite
+| order by taux_erreur desc                            // les plus critiques en premier
+```
+
+---
+
+#### 🔥 Scénario 2 — "Les retries explosent — où est le problème ?"
+
+```kusto
+// DÉTECTION D'UNE TEMPÊTE DE RETRIES
+// Objectif : identifier rapidement quelle étape cause une cascade de retries
+// Use case : Service Bus throttle, panne réseau, API downstream indisponible
+
+traces
+| where timestamp > ago(1h)
+| where message contains "Retry exponentiel"           // retries exponent. = infra KO
+      or message contains "Retry immédiat"             // retries imméd. = logique métier
+| summarize
+    nb_retries   = count(),                            // volume total de retries
+    nb_sagas     = dcount(tostring(customDimensions.SlipId)),  // sagas impactées
+    // Calculer la tendance : retries en accélération ?
+    retries_15min = countif(timestamp > ago(15m)),
+    retries_prev  = countif(timestamp <= ago(15m))
+  by
+    etape   = tostring(customDimensions.StepName),     // étape qui plante
+    type_retry = case(
+        message contains "exponentiel", "exponentiel (infra)",
+        message contains "immédiat",    "immédiat (logique)",
+        "autre")
+| extend
+    taux_retry_par_saga = round(1.0 * nb_retries / nb_sagas, 1),
+    // Si retries_15min > retries_prev*2 → tempête en cours
+    acceleration = iff(retries_15min > retries_prev * 2, "⚠️ EN ACCÉLÉRATION", "stable")
+| order by nb_retries desc
+```
+
+---
+
+#### 💀 Scénario 3 — "Combien de dossiers patients ont été impactés par l'incident ?"
+
+```kusto
+// IMPACT MÉTIER D'UN INCIDENT
+// Objectif : répondre à la direction et à CAI en chiffres précis
+// Paramètres : ajuster debut_incident et fin_incident
+
+let debut_incident = datetime(2026-06-04 14:00:00);    // heure début incident
+let fin_incident   = datetime(2026-06-04 15:30:00);    // heure fin incident
+
+traces
+| where timestamp between (debut_incident .. fin_incident)
+| where isnotempty(customDimensions.SlipId)
+| summarize
+    // Nombre de sagas tentées pendant l'incident
+    nb_sagas_tentees = dcount(tostring(customDimensions.SlipId)),
+    // Dossiers avec au moins 1 erreur
+    nb_dossiers_ko   = dcountif(
+        tostring(customDimensions.CorrelationId),
+        severityLevel == 3),
+    // Dossiers qui ont quand même terminé (retry réussi)
+    nb_dossiers_ok   = dcountif(
+        tostring(customDimensions.CorrelationId),
+        message contains "slip complet")
+  by SlipName = tostring(customDimensions.SlipName)
+| extend
+    nb_dossiers_bloques = nb_dossiers_ko - nb_dossiers_ok,   // réellement perdus
+    // Pourcentage d'impact pour le rapport de direction
+    pct_impact = round(100.0 * nb_dossiers_ko / nb_sagas_tentees, 1)
+| project SlipName, nb_sagas_tentees, nb_dossiers_ko,
+          nb_dossiers_ok, nb_dossiers_bloques, pct_impact
+```
+
+---
+
+#### 🔍 Scénario 4 — "Ce dossier est bloqué depuis hier — que s'est-il passé ?"
+
+```kusto
+// INVESTIGATION D'UN DOSSIER SPÉCIFIQUE
+// Objectif : reconstruire la vie complète d'un dossier pour l'équipe support
+// Remplacer D-001 par le vrai identifiant du dossier
+
+let dossier = "D-001";
+
+union traces, exceptions
+| where timestamp > ago(7d)                            // 7 jours d'historique
+| where tostring(customDimensions.CorrelationId) contains dossier
+// --- CHRONOLOGIE COMPLÈTE ---
+| project
+    timestamp,
+    // Simplifier le nom du composant pour la lisibilité
+    composant  = replace_string(cloud_RoleName, "RAMQ.Samples.Queue.RoutingSlip.", ""),
+    SlipId     = tostring(customDimensions.SlipId),
+    etape      = tostring(customDimensions.StepName),
+    tentative  = tostring(customDimensions.Attempt),
+    // Classifier chaque ligne pour faciliter la lecture
+    type_event = case(
+        message contains "slip complet",  "✅ SAGA TERMINÉE",
+        message contains "Fault",         "❌ FAULT → DLQ",
+        message contains "Compens",       "↩️ COMPENSATION",
+        message contains "Retry",         "🔁 RETRY",
+        message contains "début étape",   "▶️ ÉTAPE DÉMARRÉE",
+        message contains "avance vers",   "→ ÉTAPE SUIVANTE",
+        severityLevel == 3,               "🚫 ERREUR",
+        "• log"),
+    detail = coalesce(message, outerMessage)
+| order by timestamp asc
+```
+
+---
+
+#### 💸 Scénario 5 — "Le volume AppInsights a explosé — pourquoi ?"
+
+```kusto
+// ANALYSE D'UNE ANOMALIE DE VOLUME (COÛT)
+// Objectif : identifier d'où vient un pic de données inattendu
+// Use case : facture AppInsights anormale, Daily Cap atteint trop tôt
+
+// Étape 1 : voir la tendance horaire
+traces
+| where timestamp > ago(24h)
+| summarize
+    nb_items  = count(),                               // volume de logs
+    nb_sagas  = dcount(tostring(customDimensions.SlipId))  // sagas correspondantes
+  by heure = bin(timestamp, 1h),
+     composant = cloud_RoleName
+| order by nb_items desc
+```
+
+```kusto
+// Étape 2 : identifier le type de logs qui domine
+traces
+| where timestamp > ago(6h)
+| summarize count() by
+    // Classer par niveau pour voir si c'est un spam de Warning/Info
+    niveau    = case(severityLevel == 1, "INFO",
+                     severityLevel == 2, "WARN",
+                     severityLevel == 3, "ERROR", "autre"),
+    // Et par composant source
+    composant = cloud_RoleName,
+    // Et par étape pour trouver la boucle
+    etape     = tostring(customDimensions.StepName)
+| order by count_ desc
+| take 20
+// → Si 1 étape + 1 composant dominent avec beaucoup de WARN : tempête de retries
+// → Si INFO domine : le niveau de log n'est pas filtré (vérifier ApplicationInsights: Warning)
+```
+
+---
+
+#### 🩺 Scénario 6 — "La plateforme est-elle saine ? Rapport du matin"
+
+```kusto
+// RAPPORT QUOTIDIEN DE SANTÉ — à exécuter chaque matin
+// Objectif : vue d'ensemble sur 24h pour le stand-up ou le rapport direction
+
+let periode = ago(24h);
+
+// Bloc 1 : volumes
+let volumes = traces
+| where timestamp > periode
+| where isnotempty(customDimensions.SlipId)
+| summarize
+    total_sagas    = dcount(tostring(customDimensions.SlipId)),
+    sagas_ok       = dcountif(tostring(customDimensions.SlipId),
+                         message contains "slip complet"),
+    sagas_erreur   = dcountif(tostring(customDimensions.SlipId),
+                         severityLevel == 3),
+    total_retries  = countif(message contains "Retry"),
+    total_dlq      = countif(message contains "DLQ" or message contains "lettre morte")
+  by SlipName = tostring(customDimensions.SlipName);
+
+// Bloc 2 : SLA (durée des sagas)
+let sla = traces
+| where timestamp > periode
+| where isnotempty(customDimensions.SlipId)
+| summarize debut = min(timestamp), fin = max(timestamp)
+  by SlipId = tostring(customDimensions.SlipId),
+     SlipName = tostring(customDimensions.SlipName)
+| extend duree_sec = datetime_diff('second', fin, debut)
+| summarize p50 = percentile(duree_sec, 50),
+            p95 = percentile(duree_sec, 95)
+  by SlipName;
+
+// Jointure et présentation finale
+volumes
+| join kind=leftouter sla on SlipName
+| extend
+    taux_succes = round(100.0 * sagas_ok / total_sagas, 1),
+    // Santé globale : vert si > 99%, orange si > 95%, rouge sinon
+    sante = case(
+        1.0 * sagas_ok / total_sagas >= 0.99, "🟢 SAIN",
+        1.0 * sagas_ok / total_sagas >= 0.95, "🟡 DÉGRADÉ",
+        "🔴 CRITIQUE")
+| project SlipName, sante, total_sagas, sagas_ok, sagas_erreur,
+          taux_succes, total_retries, total_dlq,
+          sla_p50_sec = p50, sla_p95_sec = p95
+```
+
+---
+
 ### 13.11 Pour démarrer — checklist Design For Operation pour un nouveau domaine RAMQ
 
 > 💡 **Pour un Lead technique qui démarre l'observabilité sur une nouvelle app RAMQ** — voici les 12 cases à cocher avant d'aller en prod.
