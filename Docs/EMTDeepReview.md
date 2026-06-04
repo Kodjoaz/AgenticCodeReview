@@ -5261,23 +5261,86 @@ Toutes corrélées par le même `operation_Id` (W3C TraceId propagé par R14 via
 
 #### Corrélation bout-en-bout — le `operation_Id`
 
-> **C'est la clé de voûte du DFO.** Le `operation_Id` est le **W3C TraceId** propagé par R14 via `traceparent` dans les `ApplicationProperties` de chaque message Service Bus. Il relie toutes les invocations d'une même saga en un seul arbre de trace.
+> **C'est la clé de voûte du DFO.** Le `operation_Id` est le **W3C TraceId** propagé par P4-T3 via `traceparent` dans les `ApplicationProperties` de chaque message Service Bus. Il relie toutes les invocations d'une même saga en un seul arbre de trace.
 
 ```
-Activateur (HTTP POST)
-  └── operation_Id = "abc123"     ← généré au premier appel
-       ↓ traceparent: abc123 dans ApplicationProperties
-  ReserverVoiture (SB Trigger)
-    └── operation_Id = "abc123"   ← hérité du message
-         ↓ traceparent: abc123 dans ApplicationProperties
-    ReserverHotel (SB Trigger)
-      └── operation_Id = "abc123" ← hérité
-           ↓ traceparent: abc123
-      ReserverVol (SB Trigger)
-        └── operation_Id = "abc123" ← même arbre de bout en bout
+Activateur (HTTP trigger)
+  └── operation_Id = "abc123"
+       ↓ traceparent: "00-abc123-spanId-01" dans ApplicationProperties
+  ReserverVoiture (SB Trigger) — messaging.consume(parentId:"00-abc123-...")
+    └── operation_Id = "abc123"   ← hérité via RoutingSlipExecutor
+         ↓ routing_slip.step enfant de messaging.consume → écrit "00-abc123-..." sur le suivant
+    ReserverHotel (SB Trigger) — messaging.consume(parentId:"00-abc123-...")
+      └── operation_Id = "abc123" ← idem
+           ↓
+      ReserverVol (SB Trigger) — messaging.consume(parentId:"00-abc123-...")
+        └── operation_Id = "abc123" ← même arbre de bout en bout ✅
 ```
 
 Dans AppInsights : cliquer sur une trace → **End-to-end transaction details** → vue visuelle complète de la saga.
+
+---
+
+#### Implémentation technique — comment EMT propage le TraceId
+
+La propagation ne fonctionne PAS automatiquement en dotnet-isolated Azure Functions. Trois composants EMT coopèrent :
+
+**1. Côté producteur — `AzureMessagingProvider.SendAsync`**
+
+```csharp
+using var activity = MessagingActivitySource.Source.StartActivity("messaging.send", ActivityKind.Producer);
+
+// Injection W3C dans les ApplicationProperties du message Service Bus
+if (Activity.Current?.Id is { } traceId)
+    message.ApplicationProperties["traceparent"] = traceId;
+```
+
+L'ID écrit est `"00-{TraceId}-{SpanId_messaging.send}-01"`. Le TraceId est celui de l'activateur.
+
+**2. Côté worker — `RoutingSlipExecutor.RunAsync` (P4-T3)**
+
+> **Piège** : `RoutingSlipExecutor` appelle `provider.DeserializeMessageSafe()` directement, **contournant** `BaseConsumer.DeserializeMessageAsync`. Sans correctif, il crée un nouveau TraceId à chaque step et propage ce nouveau TraceId sur le message suivant → cascade : 4 operation_Id différents pour une même saga.
+
+```csharp
+// En tête de RunAsync — AVANT DeserializeMessageSafe et StartActivity routing_slip.step
+var traceparent = provider.GetTraceparent(); // lit ApplicationProperties["traceparent"]
+
+// (1) Tag l'Activity Azure Functions (nouveau TraceId) pour ServiceBusCorrelationInitializer
+Activity.Current?.SetTag("messaging.source.traceparent", traceparent);
+
+// (2) Crée messaging.consume avec le parentId du producteur
+//     → routing_slip.step hérite de ce contexte → écrit le bon traceparent sur le suivant
+using var consumeActivity = traceparent != null
+    ? MessagingActivitySource.Source.StartActivity("messaging.consume", ActivityKind.Consumer, parentId: traceparent)
+    : MessagingActivitySource.Source.StartActivity("messaging.consume", ActivityKind.Consumer);
+```
+
+Après ce bloc, `Activity.Current = messaging.consume` avec le **même TraceId** que l'activateur. Tous les spans `routing_slip.step` et `booking.*.reserve` en dessous héritent de ce TraceId. Et `SendAsync` écrit `"00-{TraceId_activateur}-..."` sur le message suivant — propageant le même TraceId à chaque step.
+
+**3. Côté worker — `ServiceBusCorrelationInitializer` (ITelemetryInitializer)**
+
+Le runtime Azure Functions crée l'Activity d'invocation (step 1) **avant** que notre code tourne — cette Activity a un nouveau TraceId. Ce `ITelemetryInitializer` corrige l'`operation_Id` de la télémétrie AppInsights capturée dans ce contexte :
+
+```csharp
+internal sealed class ServiceBusCorrelationInitializer : ITelemetryInitializer
+{
+    public void Initialize(ITelemetry telemetry)
+    {
+        // Tag posé en (1) ci-dessus sur l'Activity Azure Functions
+        var traceparent = Activity.Current?.GetTagItem("messaging.source.traceparent") as string;
+        if (traceparent == null) return;
+        var parts = traceparent.Split('-');
+        if (parts.Length < 4 || parts[1].Length != 32) return;
+        telemetry.Context.Operation.Id       = parts[1]; // TraceId de l'activateur
+        telemetry.Context.Operation.ParentId = parts[2]; // SpanId du messaging.send
+    }
+}
+```
+
+**Enregistrement** dans `Program.cs` de chaque worker (conditionnel à AppInsights) :
+```csharp
+services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
+```
 
 ---
 
