@@ -3515,28 +3515,41 @@ Il y a **4 endroits** où un log peut être supprimé entre le code et Azure Mon
 #### 13.4.3 Configuration recommandée pour les premières prods RAMQ
 
 ```json
-// host.json (Azure Function) — recommandation v1.0
+// host.json (Azure Function dotnet-isolated) — recommandation v1.0
+// ⚠️ Template de base — pour la version complète et validée avec filtres anti-bruit AppInsights
+//    voir §13.10.8 (AppInsightsNoiseFilter + logLevel complet).
 {
   "version": "2.0",
-  "telemetryMode": "OpenTelemetry",
   "logging": {
     "logLevel": {
-      "default": "Information",
-      "Host.General": "Warning",
-      "Host.Aggregator": "Warning",
-      "Microsoft.Azure.WebJobs.Hosting": "Warning",
+      "default":                                 "Information",
 
-      // EMT lib : on garde Information pour la traçabilité
-      "RAMQ.COM.EnterpriseMessageTransit": "Information",
+      // ── Logs infrastructure Azure Functions ───────────────────────────────────
+      "Function":                                "None",
+      // ↑ Supprime "Executing/Executed 'Functions.X'" et "Trigger Details"
+      //   Ces logs sont du bruit infrastructure — catégorie Function.{NomDeLaFunction}
 
-      // Code métier RAMQ : Information (audits)
-      "RAMQ": "Information"
+      "Host":                                    "Warning",
+      // ↑ Supprime les logs de démarrage du host (Warmup Extension, etc.)
+
+      "Microsoft":                               "Warning",
+      "Azure.Identity":                          "None",
+      "Microsoft.Identity":                      "None",
+      "Grpc":                                    "None",
+      "Microsoft.Azure.Functions.Worker.Grpc":   "None",
+
+      // ── Logs métier RAMQ ────────────────────────────────────────────────────
+      "RAMQ.COM.EnterpriseMessageTransit":        "Information",
+      "RAMQ":                                     "Information"
     },
     "applicationInsights": {
       "samplingSettings": {
-        "isEnabled": false,
-        "excludedTypes": "Request;Dependency"
-      }
+        "isEnabled":             true,
+        "excludedTypes":         "Exception;Request",
+        // ↑ Exceptions et invocations : jamais échantillonnées (toujours 100% visibles)
+        "maxTelemetryItemsPerSecond": 20
+      },
+      "enableLiveMetricsFilters": true
     }
   }
 }
@@ -4166,21 +4179,24 @@ public sealed class CalculPrimeService
 }
 ```
 
-**`appsettings.Production.json` ou `host.json` — pour la prod :**
+**`host.json` Azure Functions — pour la prod :**
 ```json
 {
-  "Logging": {
-    "LogLevel": {
-      "Default": "Information",
-      "RAMQ": "Information",
-      "RAMQ.COM.EnterpriseMessageTransit": "Information",
-      "Microsoft": "Warning",
-      "Host.General": "Warning",
-      "Microsoft.Azure.WebJobs.Hosting": "Warning"
+  "version": "2.0",
+  "logging": {
+    "logLevel": {
+      "RAMQ":                                    "Information",
+      "RAMQ.COM.EnterpriseMessageTransit":        "Information",
+      "Function":                                "None",
+      "Microsoft":                               "Warning",
+      "Host":                                    "Warning",
+      "Azure.Identity":                          "None",
+      "Grpc":                                    "None"
     }
   }
 }
 ```
+> Voir §13.10.8 pour la version complète avec les règles AppInsightsNoiseFilter et les annotations junior.
 
 > 💡 **Astuce DFO :** pour activer `LogDebug` ponctuellement en prod (diagnostic d'incident), modifier la config dans Azure App Configuration → reload sans redéploiement → désactiver après le diagnostic.
 
