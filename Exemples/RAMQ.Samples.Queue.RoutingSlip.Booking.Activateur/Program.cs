@@ -84,11 +84,18 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
         if (item is DependencyTelemetry dep)
         {
             var data = dep.Data ?? string.Empty;
+            var type = dep.Type ?? string.Empty;
             if (data.Contains("applicationinsights.azure.com") ||
                 data.Contains("livediagnostics.monitor.azure.com") ||
+                data.Contains("login.microsoftonline.com") ||
                 data.Contains("FunctionRpc") ||
                 data.Contains("/v2/track") ||
-                data.Contains("/v2.1/track"))
+                data.Contains("/v2.1/track") ||
+                data.Contains("/Settlement/") ||
+                type.Contains("Microsoft.AAD") ||
+                type.Contains("Microsoft.Tables") ||
+                type.StartsWith("Azure Service Bus", StringComparison.OrdinalIgnoreCase) ||
+                type.StartsWith("Azure table", StringComparison.OrdinalIgnoreCase))
                 return;
         }
         next.Process(item);
