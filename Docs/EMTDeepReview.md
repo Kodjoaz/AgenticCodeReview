@@ -3408,22 +3408,199 @@ Pour 5 GB ingérés/mois (cap maximum) :
 > - On **configure le transport** vers Azure Monitor une seule fois dans `Program.cs` via OpenTelemetry. À partir de là, **chaque `_logger.LogInformation()` devient automatiquement** un événement OTel qui voyage vers Application Insights, sans que le code applicatif ne le sache.
 > - Cette indépendance est **un atout DFO** : on peut tester en local avec `.AddConsoleExporter()`, déployer en prod avec `.AddAzureMonitorLogExporter()`, et le code applicatif **ne change jamais**.
 
-#### 13.4.0.bis Les trois signaux d'observabilité — frontières claires
+#### 13.4.0.bis Les trois signaux d'observabilité — définitions, frontières et exemples EMT
 
-Avant de plonger dans le pipeline, il faut **distinguer les trois signaux** OpenTelemetry. Beaucoup de juniors croient qu'OpenTelemetry = traces. C'est faux : OTel a 3 piliers, et chacun a un usage précis.
+> 💡 **Pour un junior :** beaucoup de développeurs croient qu'OpenTelemetry = traces. C'est faux. OTel a **3 piliers distincts**, chacun répond à une question différente en production. Confondre les trois mène à des dashboards inutiles et des incidents impossibles à diagnostiquer.
 
-| Signal | API .NET | Question opérationnelle qu'il répond | Exemple dans EMT |
-|---|---|---|---|
-| **Logs** | `ILogger<T>` | « Pourquoi celui-ci a échoué ? » | `_logger.LogWarning("Journal failed, MessageId={Id}", id)` |
-| **Traces** (spans) | `ActivitySource` / `Activity` | « Où en est ce message, combien de temps a pris chaque étape ? » | `using var act = source.StartActivity("messaging.publish")` |
-| **Metrics** | `Meter` / `Counter<T>` / `Histogram<T>` | « Combien, à quelle vitesse, à quel taux ? » | `counter.Add(1, new TagList { ... })` |
+---
 
-🟢 **Best practice #1 : choisir le bon signal selon la question.**
-- Pour **diagnostiquer un incident précis** → logs structurés avec `MessageId` corrélable.
-- Pour **comprendre la latence d'un parcours** → trace distribuée avec spans liés par `traceparent`.
-- Pour **alerter sur des taux et des tendances** → métriques avec faible cardinalité.
+##### Signal 1 — LOGS : « Pourquoi ce message précis a-t-il échoué ? »
 
-🟠 **Anti-pattern fréquent à éviter :** émettre une métrique pour chaque erreur métier individuelle. Les métriques agrègent — si on met `MessageId` en tag, la cardinalité explose et Log Analytics refuse l'ingestion (limite : ~1000 valeurs distinctes par tag). **Pour les détails individuels, on utilise les logs.** Les métriques sont pour les **comptages agrégés**.
+Un log est un **événement discret, daté, textuel** qui décrit quelque chose qui s'est passé à un instant précis. C'est le **carnet de bord** de l'application.
+
+**Caractéristiques :**
+- Lié à un **message individuel** (via `MessageId`, `CorrelationId` dans `BeginScope`)
+- Contient le **contexte métier complet** (DossierId, SlipId, étape, tentative)
+- Utile pour **diagnostiquer un cas précis** — "pourquoi LE message X a-t-il échoué ?"
+- Stocké dans Log Analytics : table `AppTraces` (ou `traces` en syntaxe AppInsights)
+
+**API .NET :** `ILogger<T>` injecté en DI
+
+**Exemples concrets dans EMT RoutingSlip Booking :**
+```csharp
+// BookCarActivity.cs — Log d'erreur avec contexte complet
+_logger.LogError(
+    "[{Step}] Service voiture en panne permanente (CRASH-) — tentative {Attempt}, SlipId={SlipId}",
+    ctx.StepName, ctx.Attempt, ctx.SlipId);
+// → AppInsights : Severity=Error, customDimensions.SlipId, customDimensions.Step
+
+// RetryPolicyHandler.cs — Log warning avec scope BeginScope (R13)
+// Le scope injecte automatiquement MessageId/CorrelationId dans TOUS les logs suivants
+using var scope = _logger.BeginScope(new Dictionary<string, object?>
+{
+    ["MessageId"]     = message.MessageId,
+    ["CorrelationId"] = message.CorrelationId,
+    ["DeliveryCount"] = attempt
+});
+_logger.LogWarning(
+    "Retry exponentiel : nombre maximal de tentatives atteint, envoi en file des lettres mortes. MessageId={MessageId} Tentative={DeliveryCount}",
+    message.MessageId, attempt);
+// → AppInsights : customDimensions.MessageId, customDimensions.DeliveryCount automatiquement présents
+```
+
+**Où chercher dans AppInsights :**
+```kusto
+// Trouver POURQUOI un message a échoué
+traces
+| where customDimensions.MessageId == "9ac1eed5a0ae4a79b4727da57713a234"
+| order by timestamp asc
+| project timestamp, severityLevel, message, customDimensions
+```
+
+---
+
+##### Signal 2 — TRACES (Spans) : « Où en est ce message, combien de temps a pris chaque étape ? »
+
+Une trace est un **arbre de spans** qui représente le **parcours complet d'une opération** à travers plusieurs services. Chaque span = une étape avec une durée mesurée.
+
+**Caractéristiques :**
+- Représente un **flux de bout en bout** (Activateur → ReserverVoiture → ReserverHotel → ReserverVol)
+- Tous les spans d'une même saga partagent le **même `operation_Id`** (W3C TraceId — cf. P4-T3)
+- Mesure la **latence** de chaque étape (durée en ms)
+- Stocké dans Log Analytics : table `AppDependencies` + `AppRequests` (ou `dependencies`/`requests`)
+
+**API .NET :** `ActivitySource` + `Activity` (System.Diagnostics)
+
+**Exemples concrets dans EMT RoutingSlip Booking :**
+```csharp
+// RoutingSlipExecutor.cs — Span qui enveloppe toute l'exécution d'une étape
+using var stepActivity = MessagingActivitySource.Source.StartActivity(
+    "routing_slip.step",
+    ActivityKind.Internal);
+stepActivity?.SetTag("slip.id",    envelope.Header.SlipId);
+stepActivity?.SetTag("slip.step",  currentStep.Name);
+stepActivity?.SetTag("slip.cursor", envelope.Cursor);
+// → AppInsights : dependency avec Name="routing_slip.step", duration mesuré
+
+// BookCarActivity.cs — Span métier enfant du routing_slip.step
+using var span = BookingTelemetry.Source.StartActivity("booking.car.reserve", ActivityKind.Client);
+span?.SetTag("booking.reservation_id", ctx.Arguments.ReservationId.ToString());
+span?.SetTag("booking.car.model",      ctx.Arguments.CarModel);
+span?.SetStatus(ActivityStatusCode.Ok);
+// → AppInsights : dependency enfant visible dans End-to-End Transaction view
+```
+
+**Ce qu'on voit dans AppInsights End-to-End Transaction view :**
+```
+operation_Id: c68a464782c127220eaa209fe8cf0928
+│
+├── function BookingActivateur      (6.1 s)  ← HTTP trigger
+│   └── messaging.send              (3.1 s)  ← envoi vers ReserverVoiture
+│
+├── function ReserverVoiture        (5.4 s)  ← SB trigger, même operation_Id grâce à P4-T3
+│   ├── messaging.consume           (5.3 s)
+│   │   └── routing_slip.step       (5.2 s)
+│   │       └── booking.car.reserve (50 ms) ← span métier BookCarActivity
+│
+├── function ReserverHotel          (565 ms) ← idem
+└── function ReserverVol            (376 ms) ← idem
+```
+
+**Où chercher dans AppInsights :**
+```kusto
+// Reconstituer le parcours complet d'une saga
+union requests, dependencies
+| where operation_Id == "c68a464782c127220eaa209fe8cf0928"
+| order by timestamp asc
+| project timestamp, itemType, name, duration, success
+```
+
+---
+
+##### Signal 3 — METRICS : « Combien de messages échouent, à quel taux, sur quelle période ? »
+
+Une métrique est une **mesure agrégée dans le temps**. Elle ne dit pas QUEL message a échoué, mais **COMBIEN** ont échoué sur les 5 dernières minutes.
+
+**Caractéristiques :**
+- Agrégation statistique — **jamais de MessageId en tag** (cardinalité limitée à ~1000 valeurs distinctes)
+- Déclencheur d'**alertes** : "taux d'erreur > 5% sur 10 min"
+- Utile pour les **dashboards opérationnels en temps réel** (Live Metrics, Workbooks)
+- Stocké dans Log Analytics : table `AppMetrics` (ou `customMetrics`)
+
+**API .NET :** `System.Diagnostics.Metrics.Meter` / `Counter<T>` / `Histogram<T>`
+
+**Exemples concrets dans EMT (`EMTInstrumentation.cs` + `IMetricsProvider`) :**
+```csharp
+// Compteur — nombre de messages envoyés (agrégé par queue)
+_metrics.IncrementMessagesSent(entityName, entityType);
+// → AppInsights : customMetrics.Name="emt.messages.sent", dimensions: queue="sbq-rcp-routingslipcarreservation-unit"
+
+// Histogramme — latence d'envoi (distribution statistique)
+_metrics.RecordSendDuration(sw.Elapsed.TotalMilliseconds, entityName);
+// → AppInsights : customMetrics.Name="emt.messages.send_duration_ms", p50/p95/p99
+
+// Compteur d'erreurs — nombre de compensations routing slip
+_metrics.IncrementRoutingSlipCompensation(slipName, faultType);
+// → AppInsights : customMetrics.Name="emt.routing_slip.compensation"
+// → Peut déclencher une alerte Azure Monitor : si count > 10/min → PagerDuty
+```
+
+**Dashboard KQL metrics :**
+```kusto
+// Taux d'erreur par queue — déclencheur d'alerte
+customMetrics
+| where name == "emt.routing_slip.compensation"
+| summarize total = sum(value) by bin(timestamp, 5m), tostring(customDimensions.slip_name)
+| render timechart
+```
+
+---
+
+##### Les trois signaux en action — scénario DFO réel
+
+> **Alerte 14h32 :** "Taux de compensation RoutingSlip Booking > 15% sur les 10 dernières minutes"
+
+**Étape 1 — Métriques confirment l'alerte et donnent la magnitude**
+```kusto
+customMetrics | where name == "emt.routing_slip.compensation"
+| summarize count() by bin(timestamp, 1m)
+// → 47 compensations en 10 min (normal : < 3/min). Incident confirmé.
+```
+
+**Étape 2 — Traces identifient QUELS messages et QUELLE étape**
+```kusto
+dependencies | where name == "routing_slip.step" and success == false
+| where timestamp > ago(10m)
+| project operation_Id, customDimensions.slip_step, duration
+// → Tous les échecs sont sur step="ReserverVol", durée > 4s. Service vol en panne.
+```
+
+**Étape 3 — Logs expliquent POURQUOI le service vol échoue**
+```kusto
+traces | where severityLevel >= 3  -- Warning et au-dessus
+| where customDimensions.SlipStep == "ReserverVol"
+| where timestamp > ago(10m)
+| project timestamp, message, customDimensions.MessageId
+// → "HTTP 504 Gateway Timeout — service réservation vol inaccessible"
+// → MessageId identifiable → support peut retrouver le dossier RAMQ exact
+```
+
+**Résolution complète en < 5 minutes** grâce aux 3 signaux complémentaires.
+
+---
+
+##### Tableau de décision — quel signal pour quelle question ?
+
+| Question | Signal | Pourquoi |
+|---|---|---|
+| Le système est-il sain en ce moment ? | **Metrics** | Agrégats temps réel, faible coût, alertable |
+| Quelle étape est lente ou en erreur ? | **Traces** | Vue parcours avec durées, corrélation cross-services |
+| Pourquoi CE message précis a-t-il échoué ? | **Logs** | Contexte individuel complet avec MessageId |
+| Ce message a-t-il été traité ? (audit CAI) | **Journal MTJ** | Rétention 7 ans, immuable, indépendant OTel |
+| Quelle est la tendance sur 30 jours ? | **Metrics** | Agrégation historique, rapport direction |
+| Comment reconstituer le parcours exact d'un dossier ? | **Traces + Logs** | `operation_Id` relie les deux |
+
+> **Règle d'or :** les **métriques alertent**, les **traces localisent**, les **logs expliquent**. Les trois sont nécessaires — aucun ne remplace les autres.
 
 #### 13.4.0.ter Le déclic à retenir
 
