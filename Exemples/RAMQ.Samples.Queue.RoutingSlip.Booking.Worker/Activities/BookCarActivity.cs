@@ -42,17 +42,7 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
             ActivityContext<BookCarArgs> ctx,
             CancellationToken ct)
         {
-            _logger.LogInformation(
-                "[{Step}] Tentative {Attempt} — ReservationId={Id}, Modèle={Model}, SlipId={SlipId}",
-                ctx.StepName, ctx.Attempt, ctx.Arguments.ReservationId, ctx.Arguments.CarModel, ctx.SlipId);
-
-            _logger.LogWarning(
-               "[{Step}] Tentative {Attempt} — ReservationId={Id}, Modèle={Model}, SlipId={SlipId}",
-               ctx.StepName, ctx.Attempt, ctx.Arguments.ReservationId, ctx.Arguments.CarModel, ctx.SlipId);
-
-            _logger.LogError(
-               "[{Step}] Tentative {Attempt} — ReservationId={Id}, Modèle={Model}, SlipId={SlipId}",
-               ctx.StepName, ctx.Attempt, ctx.Arguments.ReservationId, ctx.Arguments.CarModel, ctx.SlipId);
+           
             // Span métier — enfant du routing_slip.step émis par EMT.
             // Visible dans Jaeger : routing_slip.step > booking.car.reserve
             using var span = BookingTelemetry.Source.StartActivity("booking.car.reserve", ActivityKind.Client);
