@@ -104,8 +104,11 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
                 data.Contains("FunctionRpc") ||
                 data.Contains("/v2/track") ||
                 data.Contains("/v2.1/track") ||
+                data.Contains("/Settlement/") ||
                 type.Contains("Microsoft.AAD") ||
-                type.Contains("Microsoft.Tables"))
+                type.Contains("Microsoft.Tables") ||
+                type.StartsWith("Azure Service Bus", StringComparison.OrdinalIgnoreCase) ||
+                type.StartsWith("Azure table", StringComparison.OrdinalIgnoreCase))
                 return;
         }
         next.Process(item);
