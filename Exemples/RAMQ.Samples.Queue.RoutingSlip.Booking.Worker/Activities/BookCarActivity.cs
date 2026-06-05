@@ -64,9 +64,7 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 span?.SetTag("booking.retry.reason", "HTTP 503 Service Unavailable");
                 span?.AddEvent(new ActivityEvent("retry.scheduled",
                     tags: new ActivityTagsCollection { ["attempt"] = ctx.Attempt, ["max_attempts"] = 3 }));
-                _logger.LogWarning(
-                    "[{Step}] Service voiture indisponible (transitoire) — Tentative {Attempt}/3, SlipId={SlipId}",
-                    ctx.StepName, ctx.Attempt, ctx.SlipId);
+                
                 return ActivityResult.RetryExponential(
                     $"Service de réservation voiture indisponible — tentative {ctx.Attempt}",
                     new HttpRequestException("HTTP 503 Service Unavailable (SIMULATION)"));
@@ -85,9 +83,7 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 span?.SetTag("booking.retry.reason", "HTTP 504 Gateway Timeout");
                 span?.AddEvent(new ActivityEvent("dlq.budget_consumption",
                     tags: new ActivityTagsCollection { ["attempt"] = ctx.Attempt }));
-                _logger.LogError(
-                    "[{Step}] Service voiture en panne permanente (CRASH-) — tentative {Attempt}, SlipId={SlipId}",
-                    ctx.StepName, ctx.Attempt, ctx.SlipId);
+             
                 return ActivityResult.RetryExponential(
                     $"Service voiture inaccessible — panne permanente simulée (tentative {ctx.Attempt})",
                     new TimeoutException("HTTP 504 Gateway Timeout (SIMULATION CRASH-)"));
