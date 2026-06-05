@@ -97,12 +97,14 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
         if (item is DependencyTelemetry dep)
         {
             var data = dep.Data ?? string.Empty;
+            var name = dep.Name ?? string.Empty;
             if (data.Contains("applicationinsights.azure.com") ||
                 data.Contains("livediagnostics.monitor.azure.com") ||
                 data.Contains("login.microsoftonline.com") ||
                 data.Contains("FunctionRpc") ||
                 data.Contains("/v2/track") ||
-                data.Contains("/v2.1/track"))
+                data.Contains("/v2.1/track") ||
+                name.Contains("GetToken"))
                 return;
         }
         next.Process(item);
