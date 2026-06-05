@@ -5160,60 +5160,135 @@ Le SDK AppInsights inclut un module `DependencyTrackingTelemetryModule` qui **in
 
 ---
 
-#### Solution appliquée — 2 niveaux de filtrage
+#### Solution — 2 niveaux de filtrage
 
-**Niveau 1 — `ITelemetryProcessor` dans `Program.cs`**
+---
 
-Le `ITelemetryProcessor` s'insère dans le pipeline SDK AppInsights **avant l'export**. Il est la seule façon de filtrer les `DependencyTelemetry` générés par `DependencyTrackingTelemetryModule`.
+##### Niveau 1 — `AppInsightsNoiseFilter` : ITelemetryProcessor dans `Program.cs`
+
+**Principe pour un junior :** Le SDK AppInsights intercepte TOUS les appels sortants automatiquement — même ses propres appels, les appels Azure Identity pour les tokens, les appels Service Bus SDK, les appels Azure Table Storage. Un `ITelemetryProcessor` est un filtre qui s'exécute juste avant l'envoi vers AppInsights. On peut y supprimer (`return`) ou laisser passer (`next.Process(item)`) chaque élément de télémétrie.
+
+**Enregistrement** dans `Program.cs` (conditionnel — uniquement si AppInsights est configuré) :
 
 ```csharp
-// Program.cs — RoutingSlip Worker / Activateur
-
 if (!string.IsNullOrWhiteSpace(appInsightsCs))
 {
     services.AddApplicationInsightsTelemetryWorkerService();
     services.ConfigureFunctionsApplicationInsights();
     services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>(); // ← ajouter
 }
-
-// ... rest of DI setup ...
 ```
 
-Classe du filtre (à placer en bas du fichier `Program.cs`) :
+**Classe complète** (à placer en bas du fichier `Program.cs`) :
 
 ```csharp
-// Filtre les DependencyTelemetry auto-capturées par DependencyTrackingTelemetryModule.
-// Ces dépendances sont du bruit infra — aucune valeur opérationnelle pour RAMQ.
+using Microsoft.ApplicationInsights.Channel;
+using Microsoft.ApplicationInsights.DataContracts;
+using Microsoft.ApplicationInsights.Extensibility;
+using System.Diagnostics;
+
+/// <summary>
+/// Filtre les DependencyTelemetry auto-capturées par DependencyTrackingTelemetryModule.
+/// Le module intercepte TOUS les appels HttpClient et tous les spans InProc des SDK Azure.
+/// Sans ce filtre, AppInsights est pollué par de la télémétrie infrastructure sans valeur métier.
+///
+/// Pour RE-ACTIVER une règle (debug ponctuel) : commenter la ligne correspondante.
+/// Pour AJOUTER une règle : ajouter une condition dans le bloc if.
+/// </summary>
 internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITelemetryProcessor
 {
     public void Process(ITelemetry item)
     {
         if (item is DependencyTelemetry dep)
         {
-            var data = dep.Data ?? string.Empty;
-            if (data.Contains("applicationinsights.azure.com") ||   // OTel exporter + SDK ingestion
-                data.Contains("livediagnostics.monitor.azure.com") || // Live Metrics heartbeat
-                data.Contains("FunctionRpc") ||                       // canal gRPC host ↔ worker
-                data.Contains("/v2/track") ||                         // OTel Azure Monitor
-                data.Contains("/v2.1/track"))                         // AppInsights SDK v2
-                return; // supprimer — ne pas exporter
+            var data = dep.Data ?? string.Empty; // URL de l'appel HTTP (vide pour les InProc)
+            var type = dep.Type ?? string.Empty; // catégorie SDK : "Azure Service Bus", "InProc | Microsoft.AAD", etc.
+
+            if (
+                // ── Appels HTTP vers l'infrastructure AppInsights ──────────────────────────
+                // L'OTel exporter et le SDK AppInsights envoient leurs données via HttpClient.
+                // DependencyTrackingTelemetryModule les capture → boucle infinie de télémétrie.
+                // Ne JAMAIS désactiver ces deux règles : elles évitent une boucle de feedback.
+                data.Contains("applicationinsights.azure.com") ||      // endpoint OTel + SDK ingestion
+                data.Contains("livediagnostics.monitor.azure.com") ||  // Live Metrics heartbeat (ping/s)
+
+                // ── Canal gRPC host ↔ worker (Azure Functions dotnet-isolated) ──────────────
+                // En mode dotnet-isolated, le worker et le host communiquent via gRPC.
+                // Ce canal est de la plomberie interne — aucune valeur pour diagnostiquer une saga.
+                // Désactiver si vous debuggez un problème de communication host/worker.
+                data.Contains("FunctionRpc") ||
+
+                // ── Auto-télémétrie AppInsights SDK ───────────────────────────────────────
+                // Le SDK envoie ses propres données par HTTP. Il se capture lui-même.
+                // Règles de sécurité pour éviter la boucle auto-référentielle.
+                data.Contains("/v2/track") ||                           // OTel Azure Monitor exporter
+                data.Contains("/v2.1/track") ||                        // AppInsights SDK v2 direct
+
+                // ── Login Azure AD (renouvellement de tokens) ─────────────────────────────
+                // VisualStudioCredential renouvelle son token AAD via HTTP toutes les ~60 min.
+                // Apparaît comme une dépendance HTTP vers login.microsoftonline.com.
+                // Désactiver pour debugger des problèmes d'authentification Azure.
+                data.Contains("login.microsoftonline.com") ||
+
+                // ── Message settlement (acquittement Service Bus) ─────────────────────────
+                // En dotnet-isolated, CompleteMessageAsync() passe par un endpoint HTTP interne
+                // /Settlement/Complete vers le host Azure Functions. Pur infrastructure.
+                // Désactiver pour debugger des problèmes de settlement de messages.
+                data.Contains("/Settlement/") ||
+
+                // ── Spans InProc Azure Identity (token AAD en mémoire) ────────────────────
+                // VisualStudioCredential.GetToken crée un span OTel de type InProc.
+                // Différent du HTTP ci-dessus : c'est le span de l'opération de refresh,
+                // pas l'appel HTTP vers Azure AD.
+                // Type : "InProc | Microsoft.AAD"
+                type.Contains("Microsoft.AAD") ||
+
+                // ── Spans InProc Azure Table Storage (journal EMT) ────────────────────────
+                // TableClient.AddEntity() crée un span InProc quand le journal EMT écrit
+                // une entrée dans Azure Table Storage (R16 — MTJ/Journal).
+                // Type : "InProc | Microsoft.Tables"
+                // ⚠️ Désactiver pour voir les écritures journal en détail (debug R16).
+                type.Contains("Microsoft.Tables") ||
+
+                // ── Dépendances HTTP Azure Table Storage (journal EMT) ────────────────────
+                // La même écriture journal génère aussi un appel HTTP vers le storage account.
+                // On voit : "POST stxalpum/COMJournalAISUnit, Type: Azure table"
+                // Type : "Azure table"
+                // ⚠️ Désactiver pour voir les appels HTTP au storage journal (debug R16).
+                type.StartsWith("Azure table", StringComparison.OrdinalIgnoreCase) ||
+
+                // ── Dépendances Azure Service Bus SDK ─────────────────────────────────────
+                // ServiceBusSender.Send() crée une dépendance de type "Azure Service Bus"
+                // pour chaque message envoyé (avance du routing slip, etc.).
+                // Ce sont des appels bas-niveau SDK — le routing slip est déjà visible
+                // via les spans routing_slip.step créés par EMT à un niveau plus haut.
+                // ⚠️ Désactiver pour voir le détail des envois Service Bus (debug réseau).
+                type.StartsWith("Azure Service Bus", StringComparison.OrdinalIgnoreCase)
+            )
+                return; // ← supprimer cet élément — ne pas envoyer à AppInsights
         }
-        next.Process(item); // laisser passer tout le reste
+
+        next.Process(item); // ← laisser passer tout le reste (traces RAMQ métier)
     }
 }
 ```
 
-Les usings nécessaires (`Microsoft.ApplicationInsights.WorkerService` déjà référencé dans le `.csproj`) :
+> **Guide décision pour un junior — activer ou désactiver une règle ?**
+>
+> | Règle | Désactiver si… |
+> |---|---|
+> | `applicationinsights.azure.com` | **Jamais** — boucle garantie |
+> | `FunctionRpc` | Problème de communication host ↔ worker |
+> | `Microsoft.AAD` / `login.microsoftonline.com` | Problème d'authentification Azure Identity |
+> | `Microsoft.Tables` / `Azure table` | Problème avec le journal EMT (R16) |
+> | `Azure Service Bus` | Problème de routage des messages Service Bus |
+> | `/Settlement/` | Messages qui restent bloqués (non acquittés) |
 
-```csharp
-using Microsoft.ApplicationInsights.Channel;
-using Microsoft.ApplicationInsights.DataContracts;
-using Microsoft.ApplicationInsights.Extensibility;
-```
+---
 
-**Niveau 2 — `host.json` : logLevel pour les logs de démarrage**
+##### Niveau 2 — `host.json` : logLevel pour les logs de démarrage
 
-Le filtre `host.json` contrôle ce que le SDK AppInsights reçoit depuis le pipeline de logs. Les catégories `Microsoft.*` et `Host.*` génèrent du bruit au démarrage (`Initializing Warmup Extension`, host startup) non filtré par le code.
+**Principe pour un junior :** `host.json` contrôle ce que le pipeline de logs d'Azure Functions envoie à AppInsights. C'est différent du `AddFilter(...)` dans `Program.cs` — ce dernier ne s'applique qu'à la console. AppInsights a son propre pipeline, configuré uniquement par `host.json`.
 
 ```json
 {
@@ -5221,18 +5296,35 @@ Le filtre `host.json` contrôle ce que le SDK AppInsights reçoit depuis le pipe
   "logging": {
     "logLevel": {
       "RAMQ":                                    "Information",
+      // ↑ Tes logs métier RAMQ passent à partir du niveau Information ✅
+
+      "Function":                                "None",
+      // ↑ Supprime : "Executing 'Functions.ReserverVol'", "Trigger Details", "Executed..."
+      //   Catégorie utilisée par le Worker middleware Azure Functions pour start/end d'invocation.
+      //   ⚠️ Désactiver (mettre "Information") pour voir les logs de démarrage des fonctions.
+
       "Microsoft":                               "Warning",
+      // ↑ Supprime les logs Information des SDK Microsoft (Azure SDK, Functions, etc.)
+      //   Garde les Warning et Error — utiles pour détecter des problèmes SDK.
+
       "Host":                                    "Warning",
+      // ↑ Supprime les logs de démarrage du host ("Initializing Warmup Extension", etc.)
+
       "Azure.Identity":                          "None",
+      // ↑ Supprime complètement les logs Azure Identity (token refresh verbeux)
+
       "Microsoft.Identity":                      "None",
       "Grpc":                                    "None",
       "Microsoft.Azure.Functions.Worker.Grpc":   "None"
+      // ↑ Supprime les logs du canal gRPC host ↔ worker (verbosité extrême en debug)
     },
     "applicationInsights": {
       "samplingSettings": {
-        "isEnabled":                 true,
-        "excludedTypes":             "Exception;Request",
+        "isEnabled":                  true,
+        "excludedTypes":              "Exception;Request",
+        // ↑ Exceptions et Requests JAMAIS échantillonnées → toujours 100% visibles
         "maxTelemetryItemsPerSecond": 20
+        // ↑ Limite le débit pour rester sous 5 GB/mois (budget free tier)
       },
       "enableLiveMetricsFilters": true
     }
@@ -5240,22 +5332,22 @@ Le filtre `host.json` contrôle ce que le SDK AppInsights reçoit depuis le pipe
 }
 ```
 
-> **Règle :** `"Microsoft": "Warning"` dans `host.json` est **indispensable** même si `AddFilter("Microsoft", Warning)` est déjà dans `Program.cs`. Les deux filtres sont indépendants et contrôlent des pipelines différents.
+> **Règle d'or :** `"Microsoft": "Warning"` dans `host.json` est **indispensable** même si `AddFilter("Microsoft", Warning)` est déjà dans `Program.cs`. Les deux filtres contrôlent des pipelines complètement séparés — l'un pour la console, l'autre pour AppInsights.
 
 ---
 
-#### Résultat après les deux correctifs
+#### Résultat final validé
 
-Application Insights Search ne montre que les traces métier RAMQ :
+End-to-End Transaction view AppInsights — uniquement les 4 traces RAMQ métier :
 
-| Trace | Attendu |
-|---|---|
-| `BookingActivateur` | ✅ saga déclenchée |
-| `ReserverVoiture` | ✅ activité 1 |
-| `ReserverHotel` | ✅ activité 2 |
-| `ReserverVol` | ✅ activité 3 |
+```
+10:18:06 AM  Internal  function BookingActivateur   (6.1 s)   ← saga déclenchée
+10:19:29 AM  Internal  function ReserverVoiture     (5.6 s)   ← étape 1
+10:19:35 AM  Internal  function ReserverHotel       (565 ms)  ← étape 2
+10:19:35 AM  Internal  function ReserverVol         (376 ms)  ← étape 3 — saga complète ✅
+```
 
-Toutes corrélées par le même `operation_Id` (W3C TraceId propagé par R14 via `traceparent` dans les `ApplicationProperties` Service Bus).
+Toutes sous le même `operation_Id` (W3C TraceId propagé par P4-T3 via `traceparent` dans les `ApplicationProperties` Service Bus).
 
 ---
 
