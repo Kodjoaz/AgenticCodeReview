@@ -8,7 +8,8 @@
       "Grpc": "None",
       "Microsoft.Azure.Functions.Worker.Grpc": "None",
       "Microsoft": "Warning",
-      "Host": "Warning"
+      "Host": "Warning",
+      "Function": "None"
     },
     "applicationInsights": {
       "samplingSettings": {

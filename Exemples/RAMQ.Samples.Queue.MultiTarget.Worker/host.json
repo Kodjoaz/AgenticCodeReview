@@ -14,7 +14,8 @@
       "Microsoft.Azure.Functions.Worker.Grpc": "None",
       "RAMQ": "Information",
       "Microsoft": "Warning",
-      "Host": "Warning"
+      "Host": "Warning",
+      "Function": "None"
     }
   }
 }
