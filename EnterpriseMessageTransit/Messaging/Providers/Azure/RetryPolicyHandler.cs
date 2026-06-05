@@ -161,9 +161,15 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 ["DeliveryCount"] = attempt
             });
 
-            using var activity = MessagingActivitySource.Source.StartActivity(
-                "messaging.retry.immediate",
-                ActivityKind.Internal);
+            // P4-T3 — Restaurer le TraceId de l'activateur pour que les logs de retry
+            // (y compris le log DLQ) partagent le même operation_Id que la saga d'origine.
+            var traceparent = message.ApplicationProperties.TryGetValue("traceparent", out var tp)
+                ? tp?.ToString() : null;
+            Activity.Current?.SetTag("messaging.source.traceparent", traceparent);
+
+            using var activity = traceparent != null
+                ? MessagingActivitySource.Source.StartActivity("messaging.retry.immediate", ActivityKind.Internal, parentId: traceparent)
+                : MessagingActivitySource.Source.StartActivity("messaging.retry.immediate", ActivityKind.Internal);
             activity?.SetTag("messaging.system",         "servicebus");
             activity?.SetTag("messaging.message_id",     message.MessageId);
             activity?.SetTag("messaging.delivery_count", attempt);
@@ -301,9 +307,18 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 attempt = referralCount + 1;
             }
 
-            using var activity = MessagingActivitySource.Source.StartActivity(
-                "messaging.retry.exponential",
-                ActivityKind.Internal);
+            // P4-T3 — Restaurer le TraceId de l'activateur.
+            // HandleExponentialRetryAsync est appelé APRÈS que RoutingSlipExecutor a lancé
+            // ExponentialRetryException, ce qui a disposé le consumeActivity (TraceId A).
+            // Activity.Current est redevenu l'invocation Azure Functions (TraceId X).
+            // On relit le traceparent depuis le message pour rétablir la corrélation.
+            var traceparent = message.ApplicationProperties.TryGetValue("traceparent", out var tp)
+                ? tp?.ToString() : null;
+            Activity.Current?.SetTag("messaging.source.traceparent", traceparent);
+
+            using var activity = traceparent != null
+                ? MessagingActivitySource.Source.StartActivity("messaging.retry.exponential", ActivityKind.Internal, parentId: traceparent)
+                : MessagingActivitySource.Source.StartActivity("messaging.retry.exponential", ActivityKind.Internal);
             activity?.SetTag("messaging.system",         "servicebus");
             activity?.SetTag("messaging.message_id",     message.MessageId);
             activity?.SetTag("messaging.session_id",     message.SessionId);
