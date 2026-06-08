@@ -5887,6 +5887,372 @@ requests
 
 ---
 
+### 13.10.10 Requêtes KQL — métriques EMT : scénarios enterprise avancés
+
+> **Syntaxe :** Log Analytics → `customMetrics` (ou AppInsights → `customMetrics`)  
+> Ces requêtes exploitent les métriques exposées par `MetricsProvider` (EMT) et instrumentées via `System.Diagnostics.Metrics`. Elles répondent aux questions opérationnelles de niveau enterprise que les traces et logs seuls ne permettent pas.
+
+---
+
+#### Catalogue des métriques EMT disponibles
+
+| Métrique | Type | Dimensions | Usage |
+|---|---|---|---|
+| `messages_sent_total` | Counter | `entity_name`, `entity_type` | Volume envoyé par queue/topic |
+| `messages_received_total` | Counter | `entity_name`, `entity_type` | Volume reçu par consumer |
+| `messages_dlq_total` | Counter | `entity_name`, `reason` | Dead Letter par queue et raison |
+| `send_duration_ms` | Histogram | `entity_name` | Latence d'envoi Service Bus |
+| `receive_duration_ms` | Histogram | `entity_name` | Latence de traitement consumer |
+| `retry_delay_ms` | Histogram | `attempt` | Distribution des délais retry |
+| `immediate_retry_total` | Counter | `entity_name` | Volume retry immédiats |
+| `exponential_retry_total` | Counter | `entity_name` | Volume retry exponentiels |
+| `routing_slip_compensation_total` | Counter | `slip_name`, `reason` | Compensations saga (Fault) |
+| `circuit_state` | Gauge | `entity` | État circuit breaker (0=Closed, 1=Open, 2=HalfOpen) |
+| `circuit_transitions_total` | Counter | `entity`, `from`, `to` | Transitions circuit breaker |
+| `deserialization_failures_total` | Counter | `reason` | Échecs de désérialisation |
+| `duplicate_detected_total` | Counter | `entity_name` | Messages dupliqués interceptés |
+| `claimcheck_uploads_total` | Counter | `entity_name` | Uploads blob Claim-Check |
+| `claimcheck_downloads_total` | Counter | `entity_name` | Downloads blob Claim-Check |
+| `claim_check_upload_duration_ms` | Histogram | `entity_name` | Latence upload blob |
+| `claim_check_download_duration_ms` | Histogram | `entity_name` | Latence download blob |
+| `journal_write_duration_ms` | Histogram | — | Latence écriture MTJ |
+| `active_sessions` | Gauge | — | Sessions Service Bus actives |
+| `cached_senders` | Gauge | — | Senders Service Bus en cache |
+
+> **Convention de nommage dans `customMetrics` :** le nom de la métrique apparaît tel quel dans `name` (ex: `messages_dlq_total`). Les dimensions sont dans `customDimensions` (ex: `customDimensions.entity_name`).
+
+---
+
+#### 📊 M1 — Taux de Dead Letter par queue — déclencheur d'alerte critique
+
+```kusto
+// TAUX DLQ EN TEMPS RÉEL — Déclenche une alerte si > 5% sur une fenêtre de 10 min
+// Cas d'usage : détection précoce d'une panne de service en aval (ex: API voiture hors service)
+// Alerte Azure Monitor : configurer sur ce résultat avec seuil count > 0
+
+let fenetre = 10m;
+let seuil_dlq_pct = 5.0;
+
+let sent = customMetrics
+| where timestamp > ago(fenetre)
+| where name == "messages_sent_total"
+| summarize total_envoyes = sum(valueSum) by tostring(customDimensions.entity_name);
+
+let dlq = customMetrics
+| where timestamp > ago(fenetre)
+| where name == "messages_dlq_total"
+| summarize total_dlq = sum(valueSum) by tostring(customDimensions.entity_name);
+
+sent
+| join kind=leftouter dlq on $left.entity_name == $right.entity_name
+| extend total_dlq = coalesce(total_dlq, 0.0)
+| extend taux_dlq_pct = iff(total_envoyes > 0, round(100.0 * total_dlq / total_envoyes, 2), 0.0)
+| where taux_dlq_pct > seuil_dlq_pct
+| project entity_name, total_envoyes, total_dlq, taux_dlq_pct
+| order by taux_dlq_pct desc
+// → Résultat : liste des queues en dépassement de seuil DLQ
+// → Si vide → système sain sur cette métrique
+```
+
+---
+
+#### 📊 M2 — Tempête de retries — détection d'instabilité infrastructure
+
+```kusto
+// STORM DETECTOR — Détecte quand les retries dépassent 3x le volume normal
+// Cas d'usage astreinte : taux de retry anormal = signal précoce de panne transitoire
+// → Investiguer avec M1 (DLQ) et la requête D3 (§13.10.7) sur les logs Error
+
+let baseline_minutes = 60; // fenêtre de référence (normale)
+let alert_minutes    = 10; // fenêtre courte (alerte)
+
+let baseline = customMetrics
+| where timestamp between (ago(baseline_minutes * 1min) .. ago(alert_minutes * 1min))
+| where name in ("immediate_retry_total", "exponential_retry_total")
+| summarize baseline_rate = sum(valueSum) / (baseline_minutes - alert_minutes);
+
+let current = customMetrics
+| where timestamp > ago(alert_minutes * 1min)
+| where name in ("immediate_retry_total", "exponential_retry_total")
+| summarize current_total = sum(valueSum);
+
+current
+| extend baseline_rate = toscalar(baseline)
+| extend expected = baseline_rate * alert_minutes
+| extend ratio = iff(expected > 0, round(current_total / expected, 2), 0.0)
+| extend statut = case(
+    ratio > 5.0, "🔴 TEMPÊTE CRITIQUE",
+    ratio > 3.0, "🟠 ANOMALIE DÉTECTÉE",
+    ratio > 1.5, "🟡 LÉGÈRE HAUSSE",
+    "🟢 NORMAL")
+| project current_total, expected = round(expected, 1), ratio, statut
+// → ratio > 3 = déclencher alerte P2
+// → ratio > 5 = page astreinte immédiate
+```
+
+---
+
+#### 📊 M3 — Distribution de latence P50/P95/P99 par queue
+
+```kusto
+// ANALYSE DE LATENCE — Distribution percentile par queue sur 1h
+// Cas d'usage SLA : vérifier que P95 < 500ms (SLA RAMQ messaging)
+// Utile avant/après un déploiement pour détecter une régression de performance
+
+customMetrics
+| where timestamp > ago(1h)
+| where name == "receive_duration_ms"
+| extend entity = tostring(customDimensions.entity_name)
+| summarize
+    p50  = percentile(value, 50),
+    p95  = percentile(value, 95),
+    p99  = percentile(value, 99),
+    p999 = percentile(value, 99.9),
+    volume = count(),
+    max_ms = max(value)
+  by entity
+| extend sla_ok = iff(p95 < 500, "✅ SLA respecté", "❌ SLA dépassé")
+| order by p95 desc
+// → Colonnes : entity | p50 | p95 | p99 | p999 | volume | max_ms | sla_ok
+// → Réf SLA RAMQ : P95 < 500ms, P99 < 2000ms
+```
+
+---
+
+#### 📊 M4 — État des circuit breakers — tableau de bord temps réel
+
+```kusto
+// CIRCUIT BREAKER DASHBOARD — État instantané de tous les circuit breakers
+// Cas d'usage : l'opérateur vérifie l'état des connexions Service Bus avant de traiter des tickets
+// 0=Closed (normal), 1=Open (service en panne), 2=HalfOpen (test de récupération)
+
+let etat_label = dynamic({"0": "🟢 Closed", "1": "🔴 Open", "2": "🟡 HalfOpen"});
+
+customMetrics
+| where name == "circuit_state"
+| extend entity = tostring(customDimensions.entity)
+| summarize etat = arg_max(timestamp, value) by entity  // dernière valeur connue
+| extend etat_str = tostring(etat_label[tostring(toint(value))])
+| project entity, etat_str, derniere_mesure = timestamp
+| order by entity
+
+// Compléter avec l'historique des transitions :
+// customMetrics | where name == "circuit_transitions_total"
+// | extend from = tostring(customDimensions.from), to = tostring(customDimensions.to)
+// | summarize transitions = sum(valueSum) by entity, from, to
+// | order by transitions desc
+```
+
+---
+
+#### 📊 M5 — Analyse des échecs de désérialisation — détection de messages corrompus
+
+```kusto
+// DESERIALIZATION FAILURES — Identifier la cause et le volume par type d'erreur
+// Cas d'usage CAI : un message corrompu dans la queue bloque-t-il d'autres traitements ?
+// Corréler avec M1 (DLQ) : beaucoup de déséri failures = souvent des DLQ ensuite
+
+customMetrics
+| where timestamp > ago(24h)
+| where name == "deserialization_failures_total"
+| extend raison = tostring(customDimensions.reason)
+| summarize
+    total    = sum(valueSum),
+    heure_pic = arg_max(timestamp, valueSum)
+  by raison
+| extend heure_premier_pic = heure_pic
+| order by total desc
+| project raison, total, heure_premier_pic
+// → Si "PayloadTooLarge" → messages >  seuil → vérifier seuil ClaimCheck
+// → Si "InvalidJson"     → producteur envoyant du JSON malformé
+// → Si "NullPayload"     → message vide → bug producteur
+```
+
+---
+
+#### 📊 M6 — Throughput et saturation par queue — capacity planning
+
+```kusto
+// CAPACITY PLANNING — Volume envoyé vs reçu par queue, détection de backlog
+// Cas d'usage : identifier si une queue accumule des messages (consumer trop lent)
+// Utile pour anticiper le besoin de scale-out avant une montée en charge RAMQ
+
+let periode = 1h;
+
+let envoyes = customMetrics
+| where timestamp > ago(periode)
+| where name == "messages_sent_total"
+| summarize sent = sum(valueSum) by entity = tostring(customDimensions.entity_name);
+
+let recus = customMetrics
+| where timestamp > ago(periode)
+| where name == "messages_received_total"
+| summarize recv = sum(valueSum) by entity = tostring(customDimensions.entity_name);
+
+envoyes
+| join kind=fullouter recus on entity
+| extend entity = coalesce(entity, entity1)
+| extend sent = coalesce(sent, 0.0), recv = coalesce(recv, 0.0)
+| extend backlog_pct = iff(sent > 0, round(100.0 * (sent - recv) / sent, 1), 0.0)
+| extend statut = case(
+    backlog_pct > 30, "🔴 BACKLOG CRITIQUE — scale-out requis",
+    backlog_pct > 10, "🟠 BACKLOG MODÉRÉ — surveiller",
+    backlog_pct > 0,  "🟡 LÉGÈRE ACCUMULATION",
+    "🟢 ÉQUILIBRÉ")
+| project entity, sent, recv, backlog_pct, statut
+| order by backlog_pct desc
+```
+
+---
+
+#### 📊 M7 — Performance Claim-Check — audit blob upload/download
+
+```kusto
+// CLAIM-CHECK PERFORMANCE — Latence des opérations blob pour les gros messages
+// Cas d'usage : diagnostic si les messages ClaimCheck sont lents à traiter
+// Seuil recommandé : upload P95 < 1000ms, download P95 < 500ms
+
+customMetrics
+| where timestamp > ago(6h)
+| where name in ("claim_check_upload_duration_ms", "claim_check_download_duration_ms")
+| extend operation = iff(name == "claim_check_upload_duration_ms", "upload", "download")
+| extend entity = tostring(customDimensions.entity_name)
+| summarize
+    p50 = percentile(value, 50),
+    p95 = percentile(value, 95),
+    p99 = percentile(value, 99),
+    volume = count()
+  by operation, entity
+| extend sla = case(
+    operation == "upload"   and p95 < 1000, "✅",
+    operation == "download" and p95 < 500,  "✅",
+    "❌ DÉGRADÉ")
+| order by operation, entity
+```
+
+---
+
+#### 📊 M8 — Dashboard de santé global EMT — vue opérateur astreinte
+
+```kusto
+// HEALTH DASHBOARD — Synthèse en 1 tableau pour l'opérateur en astreinte
+// Répond à la question : "Est-ce que tout va bien en ce moment ?"
+// À afficher dans un Azure Monitor Workbook en mode auto-refresh 5 min
+
+let fen = 15m;
+
+// ── Métriques clés agrégées ───────────────────────────────────────────────────
+customMetrics
+| where timestamp > ago(fen)
+| where name in (
+    "messages_sent_total",
+    "messages_received_total",
+    "messages_dlq_total",
+    "immediate_retry_total",
+    "exponential_retry_total",
+    "routing_slip_compensation_total",
+    "deserialization_failures_total",
+    "duplicate_detected_total"
+  )
+| summarize valeur = sum(valueSum) by name
+| extend kpi = case(
+    name == "messages_sent_total",              "📤 Messages envoyés",
+    name == "messages_received_total",          "📥 Messages reçus",
+    name == "messages_dlq_total",               "☠️  Dead Letters",
+    name == "immediate_retry_total",            "🔄 Retry immédiats",
+    name == "exponential_retry_total",          "⏱️  Retry exponentiels",
+    name == "routing_slip_compensation_total",  "↩️  Compensations saga",
+    name == "deserialization_failures_total",   "💥 Erreurs désérialisation",
+    name == "duplicate_detected_total",         "🔁 Doublons détectés",
+    name)
+| extend statut = case(
+    name == "messages_dlq_total"              and valeur > 0, "⚠️ ALERTE",
+    name == "routing_slip_compensation_total" and valeur > 5, "⚠️ ALERTE",
+    name == "deserialization_failures_total"  and valeur > 0, "⚠️ ALERTE",
+    "✅ OK")
+| project kpi, valeur = toint(valeur), statut
+| order by kpi
+// → Partager ce Workbook tile avec l'équipe astreinte RAMQ
+// → Toute ligne "ALERTE" = creuser avec M1-M7 selon le KPI concerné
+```
+
+---
+
+#### 📊 M9 — Corrélation métriques + traces — RCA complet (Root Cause Analysis)
+
+```kusto
+// ROOT CAUSE ANALYSIS — Croiser métriques DLQ avec les traces Error pour trouver la cause
+// Cas d'usage : alerte DLQ reçue → identifier en < 5 min quel message et pourquoi
+
+// Étape 1 : trouver les queues en DLQ sur les 30 dernières minutes
+let queues_en_dlq = customMetrics
+| where timestamp > ago(30m)
+| where name == "messages_dlq_total"
+| summarize dlq_count = sum(valueSum) by entity = tostring(customDimensions.entity_name)
+| where dlq_count > 0
+| project entity;
+
+// Étape 2 : trouver les logs Error sur ces mêmes queues
+traces
+| where timestamp > ago(30m)
+| where severityLevel >= 3   // Error et Critical
+| where message contains "lettres mortes" or message contains "Fault" or message contains "DLQ"
+| extend entity = tostring(customDimensions.entity_name ?? customDimensions.Step)
+| where entity in (queues_en_dlq) or isempty(entity)
+| project timestamp, message, operation_Id,
+          MessageId = tostring(customDimensions.MessageId),
+          Tentative = tostring(customDimensions.DeliveryCount)
+| order by timestamp desc
+| take 20
+// → Chaque ligne = un message DLQ avec son MessageId, operation_Id et raison
+// → Cliquer sur operation_Id → End-to-End Transaction view → parcours complet de la saga
+```
+
+---
+
+#### 📊 M10 — SLA compliance RAMQ — rapport mensuel automatisé
+
+```kusto
+// RAPPORT SLA MENSUEL — Conformité aux engagements de service RAMQ
+// À intégrer dans un Scheduled Query Rule (Azure Monitor) → rapport mail automatique
+// Seuils SLA RAMQ v1 : DLQ < 0.1%, retry < 5%, latence P95 < 500ms
+
+let mois = ago(30d);
+
+// ── Taux de succès global ─────────────────────────────────────────────────────
+let vol_sent = toscalar(customMetrics
+    | where timestamp > mois and name == "messages_sent_total"
+    | summarize sum(valueSum));
+
+let vol_dlq = toscalar(customMetrics
+    | where timestamp > mois and name == "messages_dlq_total"
+    | summarize sum(valueSum));
+
+let taux_dlq = iff(vol_sent > 0, round(100.0 * vol_dlq / vol_sent, 3), 0.0);
+
+// ── Latence P95 ───────────────────────────────────────────────────────────────
+let p95_latence = toscalar(customMetrics
+    | where timestamp > mois and name == "receive_duration_ms"
+    | summarize percentile(value, 95));
+
+// ── Compensations saga ────────────────────────────────────────────────────────
+let compensations = toscalar(customMetrics
+    | where timestamp > mois and name == "routing_slip_compensation_total"
+    | summarize sum(valueSum));
+
+// ── Synthèse ──────────────────────────────────────────────────────────────────
+print
+    ["Volume total envoyé"]    = toint(vol_sent),
+    ["Volume DLQ"]             = toint(vol_dlq),
+    ["Taux DLQ (%)"]           = taux_dlq,
+    ["SLA DLQ < 0.1%"]         = iff(taux_dlq < 0.1, "✅ CONFORME", "❌ HORS SLA"),
+    ["Latence P95 (ms)"]       = round(p95_latence, 0),
+    ["SLA Latence < 500ms"]    = iff(p95_latence < 500, "✅ CONFORME", "❌ HORS SLA"),
+    ["Compensations saga"]     = toint(compensations)
+```
+
+---
+
 ### 13.11 Pour démarrer — checklist Design For Operation pour un nouveau domaine RAMQ
 
 > 💡 **Pour un Lead technique qui démarre l'observabilité sur une nouvelle app RAMQ** — voici les 12 cases à cocher avant d'aller en prod.
