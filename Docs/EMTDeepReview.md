@@ -5326,30 +5326,103 @@ volumes
 
 ### 13.10.8 Filtres anti-bruit AppInsights et corrélation bout-en-bout
 
-#### Pourquoi des traces parasites apparaissent ?
+#### Le principe fondamental — deux pipelines, deux filtres
 
-Les samples EMT utilisent **deux pipelines de télémétrie simultanés** :
+> 💡 **Pour un junior :** la confusion la plus courante sur les filtres AppInsights vient du fait qu'on voit "du bruit" et on cherche "un seul endroit pour tout bloquer". Il n'existe pas. Il faut comprendre que AppInsights reçoit la télémétrie par **deux chemins séparés**, et chaque chemin a son propre filtre.
 
-| Pipeline | Enregistrement | Ce qu'il capture |
+```
+CHEMIN 1 — Logs (ce que le code écrit via ILogger)
+─────────────────────────────────────────────────────────────────────
+_logger.LogInformation("Saga step...")
+  → Microsoft.Extensions.Logging pipeline
+    → FILTRE ① : host.json logLevel
+    │   → bloque les catégories Azure Functions (Function, Host, Microsoft...)
+    │   → laisse passer RAMQ: Information
+    ↓
+    ApplicationInsightsLoggerProvider → AppInsights
+    → table AppTraces (Log Analytics)
+
+CHEMIN 2 — Dépendances (ce que les SDK capturent automatiquement)
+─────────────────────────────────────────────────────────────────────
+HttpClient / Azure SDK / OTel exporter / Azure Identity
+  → DependencyTrackingTelemetryModule (capture TOUT automatiquement)
+    → Chain ITelemetryProcessor
+      → FILTRE ② : AppInsightsNoiseFilter
+      │   → bloque les dépendances infra (Azure Service Bus SDK,
+      │     /v2/track, Microsoft.AAD, FunctionRpc...)
+      │   → laisse passer les spans RAMQ métier
+      ↓
+      TelemetryChannel → AppInsights
+      → table AppDependencies (Log Analytics)
+```
+
+**Règle à retenir :**
+
+| Si le bruit vient de... | Filtre à utiliser | Pourquoi |
 |---|---|---|
-| **OTel Azure Monitor exporter** | `UseAzureMonitorExporter()` | Activities (`ActivitySource`) — traces métier RAMQ |
-| **SDK AppInsights** | `AddApplicationInsightsTelemetryWorkerService()` + `ConfigureFunctionsApplicationInsights()` | Logs `ILogger`, corrélation Functions |
+| Logs `ILogger` (categories Azure Functions, Host, Microsoft) | `host.json` `logLevel` | Ce sont des **TraceTelemetry** — le pipeline log est l'unique point de contrôle |
+| Dépendances HTTP ou InProc capturées automatiquement par le SDK | `AppInsightsNoiseFilter` (`ITelemetryProcessor`) | Ce sont des **DependencyTelemetry** — `host.json` ne les voit pas du tout |
 
-Le SDK AppInsights inclut un module `DependencyTrackingTelemetryModule` qui **intercepte automatiquement tous les `HttpClient` sortants** sans exception. Il génère ainsi du bruit dans Application Insights Search :
+> **Comment identifier lequel dans AppInsights Search :** la colonne **Type** indique `Trace` (log → filtrer dans `host.json`) ou `Dependency` (capturé auto → filtrer dans `AppInsightsNoiseFilter`).
 
-| Trace parasite | Source réelle | Pourquoi elle passe |
-|---|---|---|
-| `POST /v2/track` | OTel Azure Monitor exporter envoyant ses données | L'exporter utilise `HttpClient` → SDK le capture |
-| `POST /v2.1/track` | AppInsights SDK envoyant sa propre télémétrie | Boucle auto-référentielle |
-| `POST /AzureFunctionsRpcMessages.FunctionRpc/EventStream` | Canal gRPC host ↔ worker isolé | Infrastructure interne Functions |
-| `https://eastus.livediagnostics.monitor.azure.com/QuickPulseService.svc` | Live Metrics heartbeat | Ping toutes les secondes |
-| `VisualStudioCredential.GetToken` | Azure Identity renouvelle les tokens | Token refresh toutes les ~60 min |
+---
 
-> **Piège : `FilterHttpRequestMessage` ne résout pas ce problème.**
-> Ce filtre OTel contrôle uniquement la création de *spans OTel*. Il ne touche pas le pipeline SDK AppInsights. Pire : s'il bloque `*.in.applicationinsights.azure.com`, l'OTel exporter ne peut plus envoyer de données (les spans OTel deviennent orphelins). **Ne pas l'utiliser pour filtrer le bruit.**
+#### Pourquoi `host.json` seul ne suffit pas
 
-> **Autre piège : `AddFilter("Microsoft", Warning)` dans `Program.cs` ne filtre pas AppInsights.**
-> Ce filtre s'applique uniquement aux sinks in-process (console). AppInsights a son propre pipeline contrôlé par `host.json`. Les logs de démarrage (`Initializing Warmup Extension`, `Host.Startup`) contournent le filtre in-memory et atteignent AppInsights.
+`host.json` logLevel ne contrôle que ce que le pipeline de logs envoie. Les `DependencyTelemetry` (dépendances HTTP/InProc) ne passent PAS par le pipeline de logs — elles sont capturées directement par `DependencyTrackingTelemetryModule` qui hookte `System.Net.Http.HttpClient` et les SDK Azure à la source.
+
+```
+Exemple : VisualStudioCredential.GetToken
+  → Azure.Identity appelle login.microsoftonline.com via HttpClient
+  → DependencyTrackingTelemetryModule l'intercepte DIRECTEMENT
+  → Crée une DependencyTelemetry {Name="VisualStudioCredential.GetToken", Type="InProc|Microsoft.AAD"}
+  → host.json logLevel ne le voit JAMAIS (ce n'est pas un log ILogger)
+  → Seul AppInsightsNoiseFilter peut le bloquer
+```
+
+#### Pourquoi `AppInsightsNoiseFilter` seul ne suffit pas
+
+`AppInsightsNoiseFilter` ne traite que les `DependencyTelemetry`. Les logs de démarrage Azure Functions (`Executing 'Functions.X'`, `Initializing Warmup Extension`) sont des `TraceTelemetry` générés par le pipeline `ILogger`. `AppInsightsNoiseFilter.Process(item)` ne reçoit que des `DependencyTelemetry` — les `TraceTelemetry` passent dans une autre branche du pipeline et lui sont invisibles.
+
+```
+Exemple : "Executing 'Functions.ReserverVol'"
+  → Azure Functions Worker middleware appelle _logger.LogInformation(...)
+  → Catégorie : "Function.ReserverVol"
+  → Pipeline ILogger → ApplicationInsightsLoggerProvider
+  → AppInsightsNoiseFilter ne le voit JAMAIS (c'est un TraceTelemetry, pas une DependencyTelemetry)
+  → Seul host.json "Function": "None" peut le bloquer
+```
+
+#### Autre piège : `AddFilter("Microsoft", Warning)` dans `Program.cs` n'est pas suffisant
+
+```csharp
+// Program.cs — ce filtre s'applique UNIQUEMENT aux sinks configurés dans ConfigureLogging
+logging.AddFilter("Microsoft", LogLevel.Warning);  // ← bloque la console ✅
+                                                    // ← NE bloque PAS AppInsights ❌
+```
+
+AppInsights enregistre son propre `ILoggerProvider` (`ApplicationInsightsLoggerProvider`) en dehors du `ConfigureLogging` standard. Il lit ses niveaux de filtrage depuis `host.json`, pas depuis les `AddFilter()` in-process. C'est pourquoi les logs de démarrage apparaissent dans AppInsights même avec `AddFilter("Microsoft", Warning)` dans le code.
+
+**La règle :** pour filtrer ce qui va dans AppInsights → **toujours utiliser `host.json`**, jamais `AddFilter()` seul.
+
+---
+
+#### Tableau complet — quelle trace vient d'où, quel filtre la bloque
+
+| Trace visible dans AppInsights | Type AppInsights | Source | Filtre qui la bloque |
+|---|---|---|---|
+| `Executing 'Functions.ReserverVol'` | `TraceTelemetry` | Azure Functions Worker middleware (ILogger catégorie `Function.X`) | `host.json` : `"Function": "None"` |
+| `Trigger Details: MessageId: ...` | `TraceTelemetry` | Service Bus trigger extension (ILogger) | `host.json` : `"Function": "None"` |
+| `Initializing Warmup Extension` | `TraceTelemetry` | Azure Functions host startup (ILogger catégorie `Host.*`) | `host.json` : `"Host": "Warning"` |
+| SDK Azure logs verbeux | `TraceTelemetry` | `ILogger` catégories `Microsoft.*` | `host.json` : `"Microsoft": "Warning"` |
+| `POST /v2/track` | `DependencyTelemetry` (HTTP) | OTel Azure Monitor exporter → HttpClient → DependencyTrackingTelemetryModule | `AppInsightsNoiseFilter` : `data.Contains("/v2/track")` |
+| `VisualStudioCredential.GetToken` | `DependencyTelemetry` (InProc) | Azure.Identity → DependencyTrackingTelemetryModule | `AppInsightsNoiseFilter` : `type.Contains("Microsoft.AAD")` |
+| `ServiceBusSender.Send` | `DependencyTelemetry` (Azure SDK) | Azure.Messaging.ServiceBus SDK → DependencyTrackingTelemetryModule | `AppInsightsNoiseFilter` : `type.StartsWith("Azure Service Bus")` |
+| `POST stxalpum/COMJournalAISUnit` | `DependencyTelemetry` (HTTP) | Azure.Data.Tables → HttpClient → DependencyTrackingTelemetryModule | `AppInsightsNoiseFilter` : `type.StartsWith("Azure table")` |
+| `POST /Settlement/Complete` | `DependencyTelemetry` (HTTP) | Functions message settlement → HttpClient | `AppInsightsNoiseFilter` : `data.Contains("/Settlement/")` |
+| `TableClient.AddEntity` | `DependencyTelemetry` (InProc) | Azure.Data.Tables SDK → DependencyTrackingTelemetryModule | `AppInsightsNoiseFilter` : `type.Contains("Microsoft.Tables")` |
+
+> **Piège classique :** `FilterHttpRequestMessage` (OTel) ne résout PAS le problème des dépendances. Ce filtre contrôle uniquement la création de *spans OTel* — il ne touche pas le pipeline SDK AppInsights. S'il bloque `*.in.applicationinsights.azure.com`, l'OTel exporter ne peut plus envoyer de données. **Ne jamais l'utiliser pour filtrer le bruit AppInsights.**
 
 ---
 
