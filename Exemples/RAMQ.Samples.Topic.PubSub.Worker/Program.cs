@@ -21,6 +21,7 @@ var builder = new HostBuilder()
         logging.AddFilter("Azure",     LogLevel.Warning);
         logging.AddFilter("Microsoft", LogLevel.Warning);
         logging.AddFilter("System",    LogLevel.Warning);
+        logging.AddFilter("RAMQ",    LogLevel.Error);
     })
     .ConfigureAppConfiguration((_, config) =>
     {

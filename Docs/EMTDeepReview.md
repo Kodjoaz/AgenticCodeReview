@@ -5326,30 +5326,41 @@ volumes
 
 ### 13.10.8 Filtres anti-bruit AppInsights et corrélation bout-en-bout
 
-#### Le principe fondamental — deux pipelines, deux filtres
+#### Le principe fondamental — trois pipelines, trois filtres
 
-> 💡 **Pour un junior :** la confusion la plus courante sur les filtres AppInsights vient du fait qu'on voit "du bruit" et on cherche "un seul endroit pour tout bloquer". Il n'existe pas. Il faut comprendre que AppInsights reçoit la télémétrie par **deux chemins séparés**, et chaque chemin a son propre filtre.
+> 💡 **Pour un junior :** la confusion la plus courante sur les filtres AppInsights vient du fait qu'on voit "du bruit" et on cherche "un seul endroit pour tout bloquer". Il n'existe pas. AppInsights reçoit la télémétrie par **trois chemins séparés**, et chaque chemin a son propre filtre.
 
 ```
-CHEMIN 1 — Logs (ce que le code écrit via ILogger)
+CHEMIN 1 — Logs du code worker (ILogger dans ton code RAMQ)
 ─────────────────────────────────────────────────────────────────────
-_logger.LogInformation("Saga step...")
-  → Microsoft.Extensions.Logging pipeline
-    → FILTRE ① : host.json logLevel
-    │   → bloque les catégories Azure Functions (Function, Host, Microsoft...)
-    │   → laisse passer RAMQ: Information
+_logger.LogError("Service en panne permanente...")
+  → Microsoft.Extensions.Logging pipeline (processus worker)
+    → FILTRE ① : logging.AddFilter("RAMQ", LogLevel.Error) [Program.cs]
+    │   → bloque Information et Warning de ton code avant AppInsights
+    │   → laisse passer Error et Critical
     ↓
     ApplicationInsightsLoggerProvider → AppInsights
     → table AppTraces (Log Analytics)
 
-CHEMIN 2 — Dépendances (ce que les SDK capturent automatiquement)
+CHEMIN 2 — Logs du host Azure Functions (runtime, PAS ton code)
+─────────────────────────────────────────────────────────────────────
+Azure Functions Worker middleware → _logger.LogInformation("Executing...")
+  → ILogger pipeline du processus HOST (séparé du worker)
+    → FILTRE ② : host.json logLevel
+    │   → "Function": "None" → bloque Executing/Executed/Trigger Details
+    │   → "Host": "Warning" → bloque Initializing Warmup Extension
+    │   → "Microsoft": "Warning" → bloque les SDK Microsoft verbeux
+    ↓
+    AppInsights (TraceTelemetry)
+
+CHEMIN 3 — Dépendances (ce que les SDK capturent automatiquement)
 ─────────────────────────────────────────────────────────────────────
 HttpClient / Azure SDK / OTel exporter / Azure Identity
   → DependencyTrackingTelemetryModule (capture TOUT automatiquement)
     → Chain ITelemetryProcessor
-      → FILTRE ② : AppInsightsNoiseFilter
+      → FILTRE ③ : AppInsightsNoiseFilter
       │   → bloque les dépendances infra (Azure Service Bus SDK,
-      │     /v2/track, Microsoft.AAD, FunctionRpc...)
+      │     /v2/track, Microsoft.AAD, FunctionRpc, InProc...)
       │   → laisse passer les spans RAMQ métier
       ↓
       TelemetryChannel → AppInsights
@@ -5360,16 +5371,17 @@ HttpClient / Azure SDK / OTel exporter / Azure Identity
 
 | Si le bruit vient de... | Filtre à utiliser | Pourquoi |
 |---|---|---|
-| Logs `ILogger` (categories Azure Functions, Host, Microsoft) | `host.json` `logLevel` | Ce sont des **TraceTelemetry** — le pipeline log est l'unique point de contrôle |
-| Dépendances HTTP ou InProc capturées automatiquement par le SDK | `AppInsightsNoiseFilter` (`ITelemetryProcessor`) | Ce sont des **DependencyTelemetry** — `host.json` ne les voit pas du tout |
+| Logs `ILogger` de ton code RAMQ (Warning/Information non désirés) | `logging.AddFilter("RAMQ", LogLevel.Error)` dans `Program.cs` | Filtre au niveau de l'`ILogger` avant toute transmission |
+| Logs de démarrage Azure Functions (Executing, Warmup, Host...) | `host.json` `logLevel` | Ces logs viennent du **processus host**, hors de portée du worker |
+| Dépendances HTTP ou InProc capturées automatiquement par le SDK | `AppInsightsNoiseFilter` (`ITelemetryProcessor`) | Ce sont des **DependencyTelemetry** — ni `Program.cs` ni `host.json` ne les voient |
 
-> **Comment identifier lequel dans AppInsights Search :** la colonne **Type** indique `Trace` (log → filtrer dans `host.json`) ou `Dependency` (capturé auto → filtrer dans `AppInsightsNoiseFilter`).
+> **Comment identifier lequel dans AppInsights Search :** la colonne **Type** indique `Trace` (log → filtrer dans `Program.cs` ou `host.json`) ou `Dependency` (capturé auto → filtrer dans `AppInsightsNoiseFilter`).
 
 ---
 
 #### Pourquoi `host.json` seul ne suffit pas
 
-`host.json` logLevel ne contrôle que ce que le pipeline de logs envoie. Les `DependencyTelemetry` (dépendances HTTP/InProc) ne passent PAS par le pipeline de logs — elles sont capturées directement par `DependencyTrackingTelemetryModule` qui hookte `System.Net.Http.HttpClient` et les SDK Azure à la source.
+`host.json` logLevel ne contrôle que les logs du **processus host** Azure Functions. Les `DependencyTelemetry` (dépendances HTTP/InProc) ne passent PAS par le pipeline de logs — elles sont capturées directement par `DependencyTrackingTelemetryModule`. Et les logs du processus **worker** (ton code RAMQ) sont filtrés par `logging.AddFilter()` dans `Program.cs`.
 
 ```
 Exemple : VisualStudioCredential.GetToken
@@ -5382,28 +5394,34 @@ Exemple : VisualStudioCredential.GetToken
 
 #### Pourquoi `AppInsightsNoiseFilter` seul ne suffit pas
 
-`AppInsightsNoiseFilter` ne traite que les `DependencyTelemetry`. Les logs de démarrage Azure Functions (`Executing 'Functions.X'`, `Initializing Warmup Extension`) sont des `TraceTelemetry` générés par le pipeline `ILogger`. `AppInsightsNoiseFilter.Process(item)` ne reçoit que des `DependencyTelemetry` — les `TraceTelemetry` passent dans une autre branche du pipeline et lui sont invisibles.
+`AppInsightsNoiseFilter` ne traite que les `DependencyTelemetry`. Les logs de démarrage Azure Functions (`Executing 'Functions.X'`, `Initializing Warmup Extension`) sont des `TraceTelemetry` générés par le pipeline `ILogger` du **host**. `AppInsightsNoiseFilter.Process(item)` ne reçoit que des `DependencyTelemetry` — les `TraceTelemetry` passent dans une autre branche du pipeline et lui sont invisibles.
 
 ```
 Exemple : "Executing 'Functions.ReserverVol'"
   → Azure Functions Worker middleware appelle _logger.LogInformation(...)
   → Catégorie : "Function.ReserverVol"
-  → Pipeline ILogger → ApplicationInsightsLoggerProvider
-  → AppInsightsNoiseFilter ne le voit JAMAIS (c'est un TraceTelemetry, pas une DependencyTelemetry)
+  → Pipeline ILogger (host) → ApplicationInsightsLoggerProvider
+  → AppInsightsNoiseFilter ne le voit JAMAIS (c'est un TraceTelemetry)
   → Seul host.json "Function": "None" peut le bloquer
 ```
 
-#### Autre piège : `AddFilter("Microsoft", Warning)` dans `Program.cs` n'est pas suffisant
+#### `AddFilter("RAMQ", LogLevel.Error)` dans `Program.cs` — le filtre le plus fiable pour le code RAMQ
+
+En dotnet-isolated avec `ConfigureFunctionsApplicationInsights()`, le `ApplicationInsightsLoggerProvider` **respecte** les `AddFilter()` déclarés dans `ConfigureLogging`. Ce filtre agit au niveau de l'`ILogger` lui-même — le log Warning/Information n'est jamais créé, donc il ne peut pas atteindre AppInsights.
 
 ```csharp
-// Program.cs — ce filtre s'applique UNIQUEMENT aux sinks configurés dans ConfigureLogging
-logging.AddFilter("Microsoft", LogLevel.Warning);  // ← bloque la console ✅
-                                                    // ← NE bloque PAS AppInsights ❌
+.ConfigureLogging(logging =>
+{
+    logging.AddFilter("RAMQ",      LogLevel.Error);   // ← seuls Error/Critical RAMQ → AppInsights ✅
+    logging.AddFilter("Microsoft", LogLevel.Warning); // ← console ET AppInsights worker ✅
+    logging.AddFilter("System",    LogLevel.Warning);
+    logging.AddFilter("Azure",     LogLevel.Warning);
+})
 ```
 
-AppInsights enregistre son propre `ILoggerProvider` (`ApplicationInsightsLoggerProvider`) en dehors du `ConfigureLogging` standard. Il lit ses niveaux de filtrage depuis `host.json`, pas depuis les `AddFilter()` in-process. C'est pourquoi les logs de démarrage apparaissent dans AppInsights même avec `AddFilter("Microsoft", Warning)` dans le code.
+> **Pourquoi `"RAMQ"` dans `host.json` est désormais redondant :** le filtre code-side ci-dessus garantit qu'aucun log RAMQ Warning/Information ne quitte le worker. L'entrée `"RAMQ"` dans `host.json` peut être omise. En revanche, les autres entrées (`Function`, `Host`, `Microsoft`) restent **indispensables** car elles filtrent les logs du processus **host** — hors de portée de `Program.cs`.
 
-**La règle :** pour filtrer ce qui va dans AppInsights → **toujours utiliser `host.json`**, jamais `AddFilter()` seul.
+> **Limite :** `AddFilter("Microsoft", Warning)` dans `Program.cs` filtre les logs Microsoft du **worker** uniquement. Les logs Microsoft générés par le **processus host** (Executing, Warmup, etc.) ne sont pas affectés — c'est pour cela que `host.json` reste nécessaire pour ces catégories.
 
 ---
 
@@ -5421,12 +5439,34 @@ AppInsights enregistre son propre `ILoggerProvider` (`ApplicationInsightsLoggerP
 | `POST stxalpum/COMJournalAISUnit` | `DependencyTelemetry` (HTTP) | Azure.Data.Tables → HttpClient → DependencyTrackingTelemetryModule | `AppInsightsNoiseFilter` : `type.StartsWith("Azure table")` |
 | `POST /Settlement/Complete` | `DependencyTelemetry` (HTTP) | Functions message settlement → HttpClient | `AppInsightsNoiseFilter` : `data.Contains("/Settlement/")` |
 | `TableClient.AddEntity` | `DependencyTelemetry` (InProc) | Azure.Data.Tables SDK → DependencyTrackingTelemetryModule | `AppInsightsNoiseFilter` : `type.Contains("Microsoft.Tables")` |
+| `function BookingActivateur (8.8 s)` | `DependencyTelemetry` (InProc) | Runtime Azure Functions — track automatiquement la durée de chaque invocation | `AppInsightsNoiseFilter` : `type == "InProc"` |
+| `LogWarning` / `LogInformation` du code RAMQ | `TraceTelemetry` | `ILogger<T>` dans ton code worker (catégorie commence par `RAMQ`) | `logging.AddFilter("RAMQ", LogLevel.Error)` dans `Program.cs` |
 
 > **Piège classique :** `FilterHttpRequestMessage` (OTel) ne résout PAS le problème des dépendances. Ce filtre contrôle uniquement la création de *spans OTel* — il ne touche pas le pipeline SDK AppInsights. S'il bloque `*.in.applicationinsights.azure.com`, l'OTel exporter ne peut plus envoyer de données. **Ne jamais l'utiliser pour filtrer le bruit AppInsights.**
 
 ---
 
-#### Solution — 2 niveaux de filtrage
+#### Solution — 3 niveaux de filtrage
+
+---
+
+##### Niveau 0 — `logging.AddFilter()` dans `Program.cs` : filtre ILogger pour le code RAMQ
+
+**Principe pour un junior :** Ce filtre agit au niveau de l'`ILogger` lui-même, **avant** que quoi que ce soit ne soit envoyé à AppInsights. Si un `LogWarning(...)` est bloqué ici, il n'existe tout simplement plus — AppInsights ne le verra jamais.
+
+```csharp
+.ConfigureLogging(logging =>
+{
+    logging.SetMinimumLevel(LogLevel.Information);
+    logging.AddSimpleConsole(opts => { opts.IncludeScopes = false; opts.TimestampFormat = "HH:mm:ss.fff "; });
+    logging.AddFilter("Azure",     LogLevel.Warning);
+    logging.AddFilter("Microsoft", LogLevel.Warning);
+    logging.AddFilter("System",    LogLevel.Warning);
+    logging.AddFilter("RAMQ",      LogLevel.Error);   // ← seuls Error/Critical RAMQ → AppInsights
+})
+```
+
+> **Pourquoi c'est plus fiable que `host.json` pour le code RAMQ :** `ConfigureFunctionsApplicationInsights()` synchronise ce filtre avec le pipeline AppInsights worker. En dotnet-isolated, le worker a son propre pipeline AppInsights — ce filtre le contrôle directement. `host.json` cible le processus host, pas le worker.
 
 ---
 
@@ -5529,7 +5569,15 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
                 // Ce sont des appels bas-niveau SDK — le routing slip est déjà visible
                 // via les spans routing_slip.step créés par EMT à un niveau plus haut.
                 // ⚠️ Désactiver pour voir le détail des envois Service Bus (debug réseau).
-                type.StartsWith("Azure Service Bus", StringComparison.OrdinalIgnoreCase)
+                type.StartsWith("Azure Service Bus", StringComparison.OrdinalIgnoreCase) ||
+
+                // ── Invocations de fonctions Azure (Type: InProc) ─────────────────────────
+                // Le runtime Azure Functions crée automatiquement une DependencyTelemetry
+                // de type "InProc" pour chaque invocation de fonction (ex: BookingActivateur).
+                // Elle indique la durée totale d'exécution de la fonction, mais ça fait doublon
+                // avec les spans EMT routing_slip.step qui donnent le même niveau de détail.
+                // ⚠️ Désactiver pour monitorer la durée globale des invocations Functions.
+                type == "InProc"
             )
                 return; // ← supprimer cet élément — ne pas envoyer à AppInsights
         }
@@ -5549,20 +5597,23 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
 > | `Microsoft.Tables` / `Azure table` | Problème avec le journal EMT (R16) |
 > | `Azure Service Bus` | Problème de routage des messages Service Bus |
 > | `/Settlement/` | Messages qui restent bloqués (non acquittés) |
+> | `InProc` | Tu veux voir la durée totale des invocations Functions dans AppInsights |
 
 ---
 
-##### Niveau 2 — `host.json` : logLevel pour les logs de démarrage
+##### Niveau 2 — `host.json` : logLevel pour les logs du processus host
 
-**Principe pour un junior :** `host.json` contrôle ce que le pipeline de logs d'Azure Functions envoie à AppInsights. C'est différent du `AddFilter(...)` dans `Program.cs` — ce dernier ne s'applique qu'à la console. AppInsights a son propre pipeline, configuré uniquement par `host.json`.
+**Principe pour un junior :** En dotnet-isolated, Azure Functions s'exécute en **deux processus séparés** : le **host** (runtime Functions) et le **worker** (ton code .NET). `host.json` contrôle uniquement les logs du processus **host** vers AppInsights. Ton code RAMQ tourne dans le worker et est filtré par `logging.AddFilter()` dans `Program.cs`. Les deux configurations ne se substituent pas — elles filtrent des processus différents.
 
 ```json
 {
   "version": "2.0",
   "logging": {
     "logLevel": {
-      "RAMQ":                                    "Information",
-      // ↑ Tes logs métier RAMQ passent à partir du niveau Information ✅
+      // "RAMQ" N'EST PLUS NÉCESSAIRE ICI.
+      // logging.AddFilter("RAMQ", LogLevel.Error) dans Program.cs est plus fiable
+      // car il filtre au niveau de l'ILogger worker avant toute transmission.
+      // Si vous l'ajoutez quand même, assurez-vous qu'il est cohérent avec Program.cs.
 
       "Function":                                "None",
       // ↑ Supprime : "Executing 'Functions.ReserverVol'", "Trigger Details", "Executed..."
@@ -5570,8 +5621,8 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
       //   ⚠️ Désactiver (mettre "Information") pour voir les logs de démarrage des fonctions.
 
       "Microsoft":                               "Warning",
-      // ↑ Supprime les logs Information des SDK Microsoft (Azure SDK, Functions, etc.)
-      //   Garde les Warning et Error — utiles pour détecter des problèmes SDK.
+      // ↑ Supprime les logs Information des SDK Microsoft côté HOST
+      //   (différent du AddFilter("Microsoft", Warning) dans Program.cs qui filtre le worker)
 
       "Host":                                    "Warning",
       // ↑ Supprime les logs de démarrage du host ("Initializing Warmup Extension", etc.)
@@ -5598,7 +5649,7 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
 }
 ```
 
-> **Règle d'or :** `"Microsoft": "Warning"` dans `host.json` est **indispensable** même si `AddFilter("Microsoft", Warning)` est déjà dans `Program.cs`. Les deux filtres contrôlent des pipelines complètement séparés — l'un pour la console, l'autre pour AppInsights.
+> **Règle d'or :** `"Function": "None"` et `"Microsoft": "Warning"` dans `host.json` sont **indispensables** — ils filtrent les logs du **processus host** qui sont hors de portée de `Program.cs`. En revanche, `"RAMQ"` dans `host.json` est redondant si `logging.AddFilter("RAMQ", LogLevel.Error)` est déjà dans `Program.cs`.
 
 ---
 

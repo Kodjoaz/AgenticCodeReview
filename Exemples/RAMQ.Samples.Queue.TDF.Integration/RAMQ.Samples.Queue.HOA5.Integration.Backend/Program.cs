@@ -6,10 +6,18 @@ using Microsoft.ApplicationInsights.Extensibility;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using RAMQ.Samples.Queue.HOA5.Integration.Backend.Telemetry;
 
 var host = new HostBuilder()
     .ConfigureFunctionsWorkerDefaults()
+    .ConfigureLogging(logging =>
+    {
+        logging.AddFilter("Azure",     LogLevel.Warning);
+        logging.AddFilter("Microsoft", LogLevel.Warning);
+        logging.AddFilter("System",    LogLevel.Warning);
+        logging.AddFilter("RAMQ",      LogLevel.Error);
+    })
     .ConfigureServices((ctx, services) =>
     {
         services.AddSingleton<ITelemetryInitializer, BackendTelemetryInitializer>();
