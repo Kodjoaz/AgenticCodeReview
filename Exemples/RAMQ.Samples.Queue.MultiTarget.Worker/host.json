@@ -12,7 +12,7 @@
     "logLevel": {
       "Grpc": "None",
       "Microsoft.Azure.Functions.Worker.Grpc": "None",
-      "RAMQ": "Information",
+      "RAMQ": "Error",
       "Microsoft": "Warning",
       "Host": "Warning",
       "Function": "None"

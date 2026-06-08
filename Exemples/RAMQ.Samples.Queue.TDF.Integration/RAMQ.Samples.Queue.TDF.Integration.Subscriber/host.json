@@ -10,7 +10,7 @@
   "logging": {
     "logLevel": {
       "default": "Warning",
-      "RAMQ": "Information",
+      "RAMQ": "Error",
       "Microsoft.DurableTask": "Warning",
       "Microsoft.Azure.Functions.Worker": "Warning",
       "Grpc": "None",

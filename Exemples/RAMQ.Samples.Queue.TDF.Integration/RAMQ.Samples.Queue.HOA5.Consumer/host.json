@@ -3,7 +3,7 @@
   "logging": {
     "logLevel": {
       "default": "Warning",
-      "RAMQ": "Information",
+      "RAMQ": "Error",
       "Microsoft.Azure.Functions.Worker": "Warning",
       "Grpc": "None",
       "Microsoft.Azure.Functions.Worker.Grpc": "None",

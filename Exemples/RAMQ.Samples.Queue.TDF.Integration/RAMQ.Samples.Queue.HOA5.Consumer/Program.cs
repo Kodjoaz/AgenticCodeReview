@@ -98,7 +98,8 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
                 type.Contains("Microsoft.AAD") ||
                 type.Contains("Microsoft.Tables") ||
                 type.StartsWith("Azure Service Bus", StringComparison.OrdinalIgnoreCase) ||
-                type.StartsWith("Azure table", StringComparison.OrdinalIgnoreCase))
+                type.StartsWith("Azure table", StringComparison.OrdinalIgnoreCase) ||
+                type == "InProc")
                 return;
         }
         next.Process(item);
