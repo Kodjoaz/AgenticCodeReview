@@ -207,7 +207,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
                 }
                 else
                 {
-                    _logger.LogWarning(
+                    _logger.LogError(
                         "Retry immédiat : nombre maximal de tentatives atteint, envoi en file des lettres mortes. MessageId={MessageId} Tentative={DeliveryCount}",
                         message.MessageId, attempt);
 
@@ -329,7 +329,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             // DLQ si max atteint
             if (attempt > maxDeliveryCount)
             {
-                _logger.LogWarning(
+                _logger.LogError(
                     "Retry exponentiel : nombre maximal de tentatives atteint, envoi en file des lettres mortes. MessageId={MessageId} Tentative={DeliveryCount} SessionId={SessionId}",
                     message.MessageId, attempt, message.SessionId);
 
