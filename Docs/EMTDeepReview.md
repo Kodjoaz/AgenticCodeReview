@@ -5335,11 +5335,16 @@ CHEMIN 1 — Logs du code worker (ILogger dans ton code RAMQ)
 ─────────────────────────────────────────────────────────────────────
 _logger.LogError("Service en panne permanente...")
   → Microsoft.Extensions.Logging pipeline (processus worker)
-    → FILTRE ① : logging.AddFilter("RAMQ", LogLevel.Error) [Program.cs]
-    │   → bloque Information et Warning de ton code avant AppInsights
-    │   → laisse passer Error et Critical
+    → FILTRE ①-A : logging.AddFilter("RAMQ", LogLevel.Error) [Program.cs]
+    │   → bloque Information et Warning avant AppInsights
+    │   → ⚠️ peut être court-circuité par ConfigureFunctionsApplicationInsights()
     ↓
     ApplicationInsightsLoggerProvider → AppInsights
+    → Chain ITelemetryProcessor
+      → FILTRE ①-B : AppInsightsNoiseFilter — TraceTelemetry < Error
+      │   → filet de sécurité : supprime tout TraceTelemetry Warning/Information
+      │   → incontournable car opère directement dans le pipeline AppInsights
+      ↓
     → table AppTraces (Log Analytics)
 
 CHEMIN 2 — Logs du host Azure Functions (runtime, PAS ton code)
@@ -5440,7 +5445,7 @@ En dotnet-isolated avec `ConfigureFunctionsApplicationInsights()`, le `Applicati
 | `POST /Settlement/Complete` | `DependencyTelemetry` (HTTP) | Functions message settlement → HttpClient | `AppInsightsNoiseFilter` : `data.Contains("/Settlement/")` |
 | `TableClient.AddEntity` | `DependencyTelemetry` (InProc) | Azure.Data.Tables SDK → DependencyTrackingTelemetryModule | `AppInsightsNoiseFilter` : `type.Contains("Microsoft.Tables")` |
 | `function BookingActivateur (8.8 s)` | `DependencyTelemetry` (InProc) | Runtime Azure Functions — track automatiquement la durée de chaque invocation | `AppInsightsNoiseFilter` : `type == "InProc"` |
-| `LogWarning` / `LogInformation` du code RAMQ | `TraceTelemetry` | `ILogger<T>` dans ton code worker (catégorie commence par `RAMQ`) | `logging.AddFilter("RAMQ", LogLevel.Error)` dans `Program.cs` |
+| `LogWarning` / `LogInformation` du code RAMQ (ex: retry tentative 3/10) | `TraceTelemetry` | `ILogger<T>` dans ton code worker (catégorie commence par `RAMQ`) | `AppInsightsNoiseFilter` : `trace.SeverityLevel < SeverityLevel.Error` (fiable) **ou** `logging.AddFilter("RAMQ", LogLevel.Error)` dans `Program.cs` (peut être court-circuité) |
 
 > **Piège classique :** `FilterHttpRequestMessage` (OTel) ne résout PAS le problème des dépendances. Ce filtre contrôle uniquement la création de *spans OTel* — il ne touche pas le pipeline SDK AppInsights. S'il bloque `*.in.applicationinsights.azure.com`, l'OTel exporter ne peut plus envoyer de données. **Ne jamais l'utiliser pour filtrer le bruit AppInsights.**
 
@@ -5494,9 +5499,10 @@ using Microsoft.ApplicationInsights.Extensibility;
 using System.Diagnostics;
 
 /// <summary>
-/// Filtre les DependencyTelemetry auto-capturées par DependencyTrackingTelemetryModule.
-/// Le module intercepte TOUS les appels HttpClient et tous les spans InProc des SDK Azure.
-/// Sans ce filtre, AppInsights est pollué par de la télémétrie infrastructure sans valeur métier.
+/// Filtre les TraceTelemetry sous le niveau Error et les DependencyTelemetry infrastructure
+/// auto-capturées par DependencyTrackingTelemetryModule.
+/// Sans ce filtre, AppInsights est pollué par des logs Warning/Information de retry et
+/// de la télémétrie infrastructure sans valeur métier.
 ///
 /// Pour RE-ACTIVER une règle (debug ponctuel) : commenter la ligne correspondante.
 /// Pour AJOUTER une règle : ajouter une condition dans le bloc if.
@@ -5505,6 +5511,15 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
 {
     public void Process(ITelemetry item)
     {
+        // ── Logs ILogger sous le niveau Error ────────────────────────────────────
+        // ConfigureFunctionsApplicationInsights() peut court-circuiter les AddFilter()
+        // définis dans ConfigureLogging, laissant passer Warning/Information vers AppInsights.
+        // Ce filtre agit directement dans le pipeline ITelemetryProcessor — incontournable.
+        // SeverityLevel : Verbose=0, Information=1, Warning=2, Error=3, Critical=4
+        // ⚠️ Désactiver (commenter) pour voir les logs Warning de retry en debug.
+        if (item is TraceTelemetry trace && trace.SeverityLevel < SeverityLevel.Error)
+            return;
+
         if (item is DependencyTelemetry dep)
         {
             var data = dep.Data ?? string.Empty; // URL de l'appel HTTP (vide pour les InProc)
@@ -5591,6 +5606,7 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
 >
 > | Règle | Désactiver si… |
 > |---|---|
+> | `TraceTelemetry < Error` | Tu veux voir les Warning de retry (ex: tentative 3/10) pour diagnostiquer un problème de retry |
 > | `applicationinsights.azure.com` | **Jamais** — boucle garantie |
 > | `FunctionRpc` | Problème de communication host ↔ worker |
 > | `Microsoft.AAD` / `login.microsoftonline.com` | Problème d'authentification Azure Identity |
