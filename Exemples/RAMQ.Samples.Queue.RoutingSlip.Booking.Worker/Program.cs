@@ -110,6 +110,8 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
 {
     public void Process(ITelemetry item)
     {
+        if (item is TraceTelemetry trace && trace.SeverityLevel < SeverityLevel.Error)
+            return;
         if (item is DependencyTelemetry dep)
         {
             var data = dep.Data ?? string.Empty;
