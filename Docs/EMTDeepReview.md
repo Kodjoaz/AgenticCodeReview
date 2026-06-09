@@ -44,6 +44,7 @@
 12. [Feuille de route — où va EMT](#12-feuille-de-route)
 13. [Design For Operation — architecture observabilité enterprise](#13-design-for-operation--architecture-observabilité-enterprise)
     - [13.4 ILogger vs OpenTelemetry — la nuance critique](#134-ilogger-vs-opentelemetry--la-nuance-critique)
+    - [13.4.0.quater Comment les trois instruments partagent le même TraceId](#1340quater--comment-_logger-logError-_metrics-record-et-activitysourcestartactivity-partagent-le-même-traceid)
     - [13.4.4 10 best practices ILogger + OTel opposables en revue](#1344-best-practices-ilogger--opentelemetry--checklist-quotidienne-ramq)
     - [13.4.6 Niveaux de log dans le code métier RAMQ — guide opposable](#1346-niveaux-de-log-dans-le-code-métier-ramq--guide-opposable)
     - [13.5 Stratégie de filtrage à chaque étage](#135-stratégie-de-filtrage-à-chaque-étage--design-for-operation)
@@ -3148,14 +3149,17 @@ new DefaultAzureCredential()
 
 ---
 
-#### Bibliothèque 6 — OpenTelemetry (`OpenTelemetry` + exporteurs)
+#### Bibliothèque 6 — OpenTelemetry (abréviation officielle : **OTel**)
+
+> 💡 **OTel = OpenTelemetry.** Ce sont exactement la même chose. « OTel » est l'abréviation officielle utilisée par la communauté et la documentation Microsoft. Dans ce document, les deux formes sont utilisées de façon interchangeable.
 
 | | |
 |---|---|
 | **Package NuGet (base)** | `OpenTelemetry`, `OpenTelemetry.Extensions.Hosting` |
 | **Package NuGet (exporteur Azure)** | `Azure.Monitor.OpenTelemetry.Exporter` |
-| **Ce que c'est** | Standard industrie open-source (CNCF) pour l'observabilité distribuée. Définit une API unifiée pour traces, métriques et logs — indépendante du vendor. |
-| **Relation avec AppInsights SDK** | **Ce sont deux pipelines distincts qui coexistent.** L'AppInsights SDK (Bibliothèque 3) gère les logs/traces dans EMT. OpenTelemetry est utilisé en **complément uniquement pour les métriques** — le `System.Diagnostics.Metrics` d'EMT a besoin d'un `MeterProvider` OTel pour exporter vers Azure Monitor. |
+| **Ce que c'est** | Standard industrie open-source (CNCF) pour l'observabilité distribuée. En tant que standard, OTel/OpenTelemetry supporte les **trois signaux** : traces, métriques ET logs. |
+| **Utilisation dans EMT** | ⚠️ **Dans EMT, OTel est utilisé uniquement pour les métriques (Pipeline B).** Les logs et traces utilisent le SDK AppInsights (Pipeline A — Bibliothèque 3). Ce n'est pas une limitation d'OTel — c'est un choix d'architecture : le SDK AppInsights est déjà en place et gère très bien logs/traces. OTel complète en ajoutant l'export des métriques `System.Diagnostics.Metrics` vers `customMetrics`. |
+| **Relation avec AppInsights SDK** | **Ce sont deux pipelines totalement indépendants.** AppInsights SDK = Pipeline A (logs/traces, actif). OTel MeterProvider = Pipeline B (métriques, à activer pour Profil Performance). Voir §13.2 pour le schéma. |
 
 ```csharp
 // Program.cs — OTel uniquement pour les métriques EMT (complément au SDK AppInsights)
@@ -3890,6 +3894,195 @@ traces | where severityLevel >= 3  -- Warning et au-dessus
 ```
 
 > ✅ **Vision claire RAMQ DFO :** **`Program.cs` est le seul fichier à configurer**. Le code applicatif utilise uniquement les APIs BCL .NET standard (`ILogger`, `ActivitySource`, `Meter`) — sans dépendance directe au SDK AppInsights ni à OTel. Migrer vers un autre backend ne touche que `Program.cs`.
+
+---
+
+#### 13.4.0.quater — Comment `_logger.LogError`, `_metrics.Record` et `ActivitySource.StartActivity` partagent le même `TraceId`
+
+> 💡 **Question fréquente junior :** "J'ai trois lignes de code dans ma fonction — un log, une métrique, un span. Comment est-ce que AppInsights les relie toutes à la même requête ?" La réponse est **`System.Diagnostics.Activity`**, le pivot d'ambiance que les trois instruments partagent sans qu'on ait besoin de le passer explicitement.
+
+---
+
+##### Le pivot central : `Activity.Current`
+
+`System.Diagnostics.Activity` est une classe BCL .NET (pas AppInsights, pas OTel — le runtime .NET lui-même). Elle coule automatiquement à travers `async/await` via `AsyncLocal<T>`. C'est la **source de vérité unique** pour le contexte de trace distribué.
+
+```
+Activity.Current (AsyncLocal<T> — coule à travers async/await automatiquement)
+├── TraceId      → "4bf92f3577b34da6a3ce929d0e0e4736"  (32 hex = W3C TraceId)
+├── SpanId       → "00f067aa0ba902b7"                   (16 hex = span courant)
+├── ParentSpanId → "b9c7c989f97918e1"                   (SpanId du parent)
+├── TraceFlags   → Recorded / NotRecorded
+└── Tags         → { "messaging.source.traceparent": "00-4bf9...-00f0...-01" }
+```
+
+Les trois instruments ne se synchronisent pas entre eux — ils lisent tous la **même instance ambiante** `Activity.Current` à l'instant de leur appel.
+
+---
+
+##### Instrument 1 — `ActivitySource.StartActivity(...)` : génère et propage le contexte
+
+```csharp
+using var activity = _activitySource.StartActivity(
+    "routing_slip.step",
+    ActivityKind.Internal);   // ← hérite automatiquement de Activity.Current
+activity?.SetTag("slip.step", stepName);
+// → activity.TraceId = Activity.Current.TraceId  (hérité)
+// → activity devient le nouveau Activity.Current pour la durée du using block
+```
+
+- Si `Activity.Current != null` → la nouvelle Activity **hérite du même TraceId** et devient un enfant (nouveau SpanId, même TraceId).
+- Si `Activity.Current == null` → génère un **nouveau TraceId** (racine de trace).
+- C'est cet instrument qui **EST** la source du TraceId — les deux autres lisent ce qu'il pose.
+
+---
+
+##### Instrument 2 — `_logger.LogError(...)` : lit `Activity.Current` automatiquement
+
+```csharp
+_logger.LogError(ex, "Échec routing slip step {StepName}", stepName);
+// Aucun code de corrélation explicite requis.
+```
+
+Chaîne interne :
+```
+_logger.LogError(...)
+    → ILogger pipeline
+    → AppInsights SDK bridge (ConfigureFunctionsApplicationInsights)
+    → TelemetryClient.TrackTrace(TraceTelemetry)
+    → OperationCorrelationTelemetryInitializer.Initialize(telemetry)
+           telemetry.Context.Operation.Id       = Activity.Current?.TraceId.ToString()
+           telemetry.Context.Operation.ParentId = Activity.Current?.SpanId.ToString()
+    → AppInsightsNoiseFilter.Process(item)
+    → Azure Monitor — table traces
+```
+
+`OperationCorrelationTelemetryInitializer` est enregistré **par défaut** par le SDK AppInsights. Aucun travail manuel. Dans `traces` Log Analytics :
+```
+operation_Id        = "4bf92f3577b34da6a3ce929d0e0e4736"   ← même TraceId
+operation_ParentId  = "00f067aa0ba902b7"
+message             = "Échec routing slip step ReserverVoiture"
+```
+
+---
+
+##### Instrument 3 — `_metrics.Record(...)` : différent — les métriques sont agrégées
+
+```csharp
+_routingSlipStepCounter.Add(1,
+    new TagList { ["slip.step"] = stepName, ["slip.result"] = "failure" });
+```
+
+| | Logs / Traces | Métriques |
+|---|---|---|
+| Modèle | Un enregistrement **par événement** | Agrégation sur une fenêtre de temps |
+| TraceId | **Automatique** via `Activity.Current` | **Non** — une métrique n'a pas de notion de « requête » |
+| Azure Monitor | `traces` / `requests` / `dependencies` | `customMetrics` (valeur + dimensions) |
+| Corrélation | Native via `operation_Id` | **Par dimension explicite** seulement |
+
+Pour corréler une métrique à une trace, il faut ajouter le TraceId **manuellement comme tag** :
+```csharp
+_routingSlipStepCounter.Add(1,
+    new TagList {
+        ["slip.step"]    = stepName,
+        ["slip.result"]  = "failure",
+        ["operation_id"] = Activity.Current?.TraceId.ToString() ?? ""   // ← explicite
+    });
+```
+
+Jointure KQL possible ensuite :
+```kusto
+customMetrics
+| where name == "routing_slip_steps_total"
+| extend op_id = tostring(customDimensions["operation_id"])
+| join kind=inner (traces | where operation_Id != "")
+  on $left.op_id == $right.operation_Id
+```
+
+---
+
+##### Le problème Service Bus dotnet-isolated — et la solution EMT
+
+En dotnet-isolated Azure Functions, le trigger Service Bus **crée une nouvelle `Activity` racine** (TraceId aléatoire). Il n'extrait pas automatiquement le W3C `traceparent` des `ApplicationProperties` du message. Sans correction, les logs du consumer ont un TraceId différent de celui du producer — la saga est brisée dans AppInsights.
+
+EMT résout cela avec **deux couches coopérantes** :
+
+```
+Message Service Bus reçu
+    ApplicationProperties["traceparent"] = "00-4bf92f35...-b9c7c989...-01"
+                                                     ↑ TraceId du PRODUCER
+
+Azure Functions crée Activity.Current.TraceId = "a1b2c3..."   ← NOUVEAU (différent !)
+
+COUCHE 1 — BaseConsumer / RoutingSlipExecutor (avant tout traitement) :
+    Activity.Current?.SetTag("messaging.source.traceparent", traceparent)
+    // Stocke le traceparent original sur l'Activity courante
+
+COUCHE 2a — ServiceBusCorrelationInitializer (ITelemetryInitializer, AppInsights) :
+    telemetry.Context.Operation.Id = traceId extrait du tag
+    // TOUS les logs/traces AppInsights reçoivent le TraceId du PRODUCER ✅
+
+COUCHE 2b — RoutingSlipExecutor.StartActivity avec contexte explicite (OTel) :
+    ActivityContext.TryParse(traceparent, null, out var parentCtx);
+    using var consumeActivity = _source.StartActivity(
+        "messaging.consume", ActivityKind.Consumer, parentCtx);
+    // routing_slip.step hérite du TraceId du PRODUCER ✅
+```
+
+---
+
+##### Vue d'ensemble — flux complet producer → consumer
+
+```
+PRODUCER
+────────────────────────────────────────────────────────────────────
+  ActivitySource.StartActivity("messaging.publish")
+      Activity.Current.TraceId = "4bf92f35..."   ← GÉNÈRE la racine
+
+  _logger.LogInformation("Message envoyé à {Queue}", queueName)
+      → AppInsights lit Activity.Current.TraceId = "4bf92f35..."   ✅
+
+  _sentCounter.Add(1, [("slip.id", slipId)])
+      → customMetrics — TraceId absent SAUF si tag "operation_id" ajouté manuellement
+
+  ServiceBusSender.SendAsync(message)
+      → traceparent = "00-4bf92f35...-00f067aa...-01" posé sur ApplicationProperties
+
+SERVICE BUS — message en transit avec traceparent
+────────────────────────────────────────────────────────────────────
+
+CONSUMER dotnet-isolated
+────────────────────────────────────────────────────────────────────
+  Azure Functions trigger → Activity.Current.TraceId = "a1b2c3..."   ← AUTRE TraceId !
+
+  RoutingSlipExecutor.RunAsync (COUCHE 1) :
+      Activity.Current.SetTag("messaging.source.traceparent", "00-4bf92f35...")
+
+  ServiceBusCorrelationInitializer (COUCHE 2a) :
+      telemetry.Context.Operation.Id = "4bf92f35..."   ← RESTAURE le TraceId producer
+
+  ActivitySource.StartActivity("messaging.consume", parentCtx from traceparent) :
+      Activity.Current.TraceId = "4bf92f35..."   ← HÉRITE du TraceId producer
+
+  _logger.LogError("Échec step {Step}", step)
+      → AppInsights lit Activity.Current → operation_Id = "4bf92f35..."   ✅ MÊME TraceId
+
+  _stepCounter.Add(1, [("operation_id", Activity.Current?.TraceId.ToString())])
+      → customMetrics avec dimension operation_id = "4bf92f35..."   ✅ (si tag ajouté)
+```
+
+---
+
+##### Récapitulatif
+
+| Instrument | Source du TraceId | Automatique ? | Ce qu'il faut savoir |
+|---|---|---|---|
+| `ActivitySource.StartActivity` | Génère ou hérite de `Activity.Current` | ✅ | C'est la source de vérité — les autres lisent ce qu'il pose |
+| `_logger.LogError` | Lit `Activity.Current` via `OperationCorrelationTelemetryInitializer` | ✅ | Aucun code manuel — le SDK AppInsights fait tout |
+| `_metrics.Record` | Les métriques sont agrégées — pas de TraceId natif | ❌ manuel | Ajouter `["operation_id"] = Activity.Current?.TraceId.ToString()` comme tag |
+| **Service Bus consumer** | `ServiceBusCorrelationInitializer` restaure le TraceId du producer | ✅ (EMT) | Sans ça, TraceId cassé en dotnet-isolated — saga brisée dans AppInsights |
+
+---
 
 #### 13.4.1 Les trois couches conceptuelles
 
@@ -7190,7 +7383,7 @@ Une fois DFO v1.0 prêt (fin S10), le déploiement aux différents domaines RAMQ
 | **MessageId** | Identifiant unique du message côté producer. Sert à la duplicate detection broker. |
 | **CAI (Commission d'accès à l'information du Québec)** | Organisme gouvernemental québécois qui régit l'accès aux renseignements personnels et la protection de la vie privée (Loi sur l'accès, L.R.Q. c. A-2.1). La RAMQ, en tant qu'organisme public gérant des données de santé, est soumise à ses audits et obligations de rétention. Impose la rétention 7 ans, la traçabilité bout-en-bout, et le MTJ immuable dans EMT. |
 | **Agent CAI** | Employé RAMQ mandaté pour répondre aux demandes d'accès à l'information et prouver la conformité aux audits de la CAI. Doit pouvoir reconstituer l'historique complet d'un dossier citoyen (qui a traité quoi, quand, avec quelle erreur) en moins de 30 minutes. C'est son besoin opérationnel qui justifie le DFO, le `operation_Id` bout-en-bout, et les Workbooks KQL forensic (§13.10). |
-| **OpenTelemetry / OTel** | Standard de télémétrie unifié open-source (CNCF) pour traces, métriques et logs. Dans EMT : utilisé pour les métriques uniquement (Pipeline B — Profil Performance). Les logs et traces utilisent le SDK AppInsights (Pipeline A). Voir §13.1.bis et §13.2. |
+| **OpenTelemetry / OTel** | **OTel est l'abréviation officielle d'OpenTelemetry — les deux termes sont identiques.** Standard de télémétrie unifié open-source (CNCF) supportant les trois signaux : traces, métriques ET logs. Dans EMT : OTel/OpenTelemetry est utilisé uniquement pour les métriques (Pipeline B — Profil Performance). Les logs et traces utilisent le SDK AppInsights (Pipeline A). Ce n'est pas une limitation d'OTel — c'est un choix d'architecture EMT. Voir §13.1.bis (Bibliothèque 6) et §13.2. |
 | **Pattern A5** | Convention RAMQ : journalisation **découplée du chemin critique** (mécanisme). C'est le moyen technique du MTJ — pas sa finalité (qui est le BAM). |
 | **BAM (Business Activity Monitoring)** | Pratique enterprise de monitoring **métier** des activités, par opposition à l'APM (technique). EMT implémente le BAM via le Message Transit Journal — stocké sur Azure Table 7 ans, exposé en Power BI et Workbooks Azure Monitor. Cf. [§6.7](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique). |
 | **APM (Application Performance Monitoring)** | Pratique de monitoring **technique** des applications (logs, traces, métriques). EMT s'appuie sur Azure Monitor (Application Insights + Log Analytics). Complémentaire au BAM. |
