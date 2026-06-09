@@ -66,6 +66,8 @@ La **RAMQ** (Régie de l'assurance maladie du Québec) opère un écosystème d'
 - doit collaborer avec les autres domaines pour exécuter des **processus inter-domaines** (ex. traitement d'une demande d'assurance qui traverse Individu → Dispensateur → Régie) ;
 - doit respecter des **contraintes réglementaires** lourdes : auditabilité (CAI), rétention légale des données médicales, traçabilité bout-en-bout.
 
+> 📋 **CAI — Commission d'accès à l'information du Québec :** organisme gouvernemental québécois qui régit l'accès aux renseignements personnels détenus par les organismes publics et la protection de la vie privée (Loi sur l'accès, L.R.Q. c. A-2.1). La RAMQ, en tant qu'organisme public gérant des données de santé, est soumise à ses audits. Un **agent CAI** est un employé RAMQ mandaté pour répondre aux demandes d'accès, reconstituer l'historique d'un dossier citoyen, et produire les preuves de conformité exigées. C'est l'exigence CAI qui impose la **rétention 7 ans**, la **traçabilité bout-en-bout** par `operation_Id`, et le **Message Transit Journal** immuable.
+
 Beaucoup de domaines exposent encore des **services WCF SOAP legacy** non migrables à court terme — EMT doit donc pouvoir alimenter des adapters qui traduisent message → appel WCF tout en gardant la trace d'audit.
 
 ### 1.2 Le problème technique à résoudre
@@ -2977,7 +2979,9 @@ Ces actions peuvent être livrées **dans n'importe quel sprint de v1.x** sans s
 
 ### 13.1 Qu'est-ce que « Design For Operation » dans le contexte EMT ?
 
-> 💡 **Définition simple :** *Design For Operation*, c'est concevoir le logiciel de telle sorte que **l'équipe d'exploitation puisse comprendre, mesurer et corriger un incident en production** sans deviner. Ce n'est pas un sujet d'observabilité technique, c'est une exigence métier : un dossier RAMQ bloqué doit pouvoir être expliqué à un agent CAI dans les 30 minutes.
+> 💡 **Définition simple :** *Design For Operation*, c'est concevoir le logiciel de telle sorte que **l'équipe d'exploitation puisse comprendre, mesurer et corriger un incident en production** sans deviner. Ce n'est pas un sujet d'observabilité technique — c'est une **exigence légale et métier** : un dossier RAMQ bloqué doit pouvoir être expliqué à un agent CAI dans les 30 minutes.
+>
+> **Rappel CAI :** la Commission d'accès à l'information du Québec peut auditer la RAMQ à tout moment sur la gestion des données personnelles de santé. Un **agent CAI** (employé RAMQ mandaté conformité) doit pouvoir répondre à des questions comme : *"Le dossier du citoyen X a-t-il été traité ? Par quel système ? À quelle heure ? Y a-t-il eu une erreur ?"* — avec preuves à l'appui, remontant jusqu'à 7 ans en arrière. Sans DFO, cette reconstitution prend des jours. Avec DFO (TraceId bout-en-bout + MTJ), elle prend 5 minutes dans un Workbook KQL.
 
 Concrètement, Design For Operation dans EMT signifie répondre à **5 questions opérationnelles** avec **5 piliers techniques** :
 
@@ -7184,7 +7188,9 @@ Une fois DFO v1.0 prêt (fin S10), le déploiement aux différents domaines RAMQ
 | **Idempotence** | Une opération qui produit le même résultat 1 ou N fois. Essentielle pour les retries. |
 | **Itinerary** | Liste d'étapes (v1 dans `AppSettings`, v2.0 dans le `SlipEnvelope`). |
 | **MessageId** | Identifiant unique du message côté producer. Sert à la duplicate detection broker. |
-| **OpenTelemetry / OTel** | Standard de télémétrie unifié (traces, métriques, logs). |
+| **CAI (Commission d'accès à l'information du Québec)** | Organisme gouvernemental québécois qui régit l'accès aux renseignements personnels et la protection de la vie privée (Loi sur l'accès, L.R.Q. c. A-2.1). La RAMQ, en tant qu'organisme public gérant des données de santé, est soumise à ses audits et obligations de rétention. Impose la rétention 7 ans, la traçabilité bout-en-bout, et le MTJ immuable dans EMT. |
+| **Agent CAI** | Employé RAMQ mandaté pour répondre aux demandes d'accès à l'information et prouver la conformité aux audits de la CAI. Doit pouvoir reconstituer l'historique complet d'un dossier citoyen (qui a traité quoi, quand, avec quelle erreur) en moins de 30 minutes. C'est son besoin opérationnel qui justifie le DFO, le `operation_Id` bout-en-bout, et les Workbooks KQL forensic (§13.10). |
+| **OpenTelemetry / OTel** | Standard de télémétrie unifié open-source (CNCF) pour traces, métriques et logs. Dans EMT : utilisé pour les métriques uniquement (Pipeline B — Profil Performance). Les logs et traces utilisent le SDK AppInsights (Pipeline A). Voir §13.1.bis et §13.2. |
 | **Pattern A5** | Convention RAMQ : journalisation **découplée du chemin critique** (mécanisme). C'est le moyen technique du MTJ — pas sa finalité (qui est le BAM). |
 | **BAM (Business Activity Monitoring)** | Pratique enterprise de monitoring **métier** des activités, par opposition à l'APM (technique). EMT implémente le BAM via le Message Transit Journal — stocké sur Azure Table 7 ans, exposé en Power BI et Workbooks Azure Monitor. Cf. [§6.7](#67-message-transit-journal-mtj--business-activity-monitoring-stratégique). |
 | **APM (Application Performance Monitoring)** | Pratique de monitoring **technique** des applications (logs, traces, métriques). EMT s'appuie sur Azure Monitor (Application Insights + Log Analytics). Complémentaire au BAM. |
