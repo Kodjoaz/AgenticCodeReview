@@ -4,7 +4,7 @@
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "dotnet-isolated",
     "ServiceBusConnection__fullyQualifiedNamespace": "sb-sais-ServiceBus-intro-cae.servicebus.windows.net",
-    "APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=62171529-e978-4d2c-aafe-8b189f009293;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus.livediagnostics.monitor.azure.com/;ApplicationId=964ec5a8-e23c-4b8d-835d-b43841393d5e"
+    "APPLICATIONINSIGHTS_CONNECTION_STRING": "Authorization=AAD;InstrumentationKey=62171529-e978-4d2c-aafe-8b189f009293;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;LiveEndpoint=https://eastus.livediagnostics.monitor.azure.com/;ApplicationId=964ec5a8-e23c-4b8d-835d-b43841393d5e"
   },
   "AppSettings": {
     "ApplicationName": "ClaimCheckActivator",
