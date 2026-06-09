@@ -2991,77 +2991,315 @@ Concrètement, Design For Operation dans EMT signifie répondre à **5 questions
 
 Ces 5 piliers ne sont **pas équivalents**. Confondre logs et traces, ou journal et métriques, mène à des incidents impossibles à diagnostiquer. La sous-section §13.4 détaille leurs frontières.
 
+---
+
+### 13.1.bis Les bibliothèques DFO — guide pour développeur junior
+
+> 💡 **Pourquoi cette section existe :** la solution DFO d'EMT utilise plusieurs bibliothèques dont les noms se ressemblent et dont les rôles se chevauchent superficiellement. Un junior qui arrive sur le projet voit `OpenTelemetry`, `ApplicationInsights`, `ActivitySource`, `Meter`, `ILogger` et se demande : "c'est quoi la différence ? lequel utilise-t-on pour quoi ?". Cette section répond une fois pour toutes.
+
+#### Vue d'ensemble — qui fait quoi
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     TON CODE (EMT + samples RAMQ)                           │
+│                                                                             │
+│  ILogger<T>          ActivitySource          Meter                         │
+│  (écrire des logs)   (écrire des traces)     (écrire des métriques)        │
+│       │                    │                      │                         │
+└───────┼────────────────────┼──────────────────────┼─────────────────────────┘
+        │                    │                      │
+        ▼                    ▼                      ▼
+┌───────────────┐  ┌──────────────────┐  ┌──────────────────────────────┐
+│  AppInsights  │  │  AppInsights SDK │  │  OpenTelemetry MeterProvider  │
+│  SDK (Logs)   │  │  (Traces/Deps)   │  │  + Azure Monitor Exporter    │
+│  pipeline     │  │  pipeline        │  │  pipeline                    │
+└───────┬───────┘  └────────┬─────────┘  └──────────────┬───────────────┘
+        │                   │                            │
+        └──────────┬────────┘                            │
+                   ▼                                     ▼
+          Azure Monitor AppInsights              Azure Monitor
+          (AppTraces, AppDependencies,           (customMetrics)
+           AppExceptions)
+```
+
+---
+
+#### Bibliothèque 1 — `System.Diagnostics.Activity` (intégré .NET)
+
+| | |
+|---|---|
+| **Package NuGet** | Aucun — intégré dans .NET 5+ (`System.Diagnostics`) |
+| **Ce que c'est** | L'implémentation Microsoft du standard W3C TraceContext. Une `Activity` = un span de trace (une opération avec un début, une fin, un parent). |
+| **Types clés** | `ActivitySource`, `Activity`, `ActivityKind` |
+| **Rôle dans EMT** | `MessagingActivitySource` crée les spans `messaging.send`, `messaging.consume`, `routing_slip.step`. Le `traceparent` (TraceId + SpanId) propagé dans les `ApplicationProperties` Service Bus vient de `Activity.Current?.Id`. |
+
+```csharp
+// Déclaré dans MessagingActivitySource.cs
+private static readonly ActivitySource Source = new("RAMQ.COM.EnterpriseMessageTransit");
+
+// Utilisé dans RoutingSlipExecutor
+using var consumeActivity = Source.StartActivity("messaging.consume",
+    ActivityKind.Consumer, parentId: traceparent);
+```
+
+> **Analogie junior :** une `Activity` est comme un chronomètre avec un numéro de suivi. Quand tu envoies un message Service Bus, tu marques le numéro sur le message. Le worker suivant crée son propre chronomètre en partant de ce numéro — c'est ainsi que AppInsights relie toutes les étapes d'une saga en un seul arbre.
+
+---
+
+#### Bibliothèque 2 — `System.Diagnostics.Metrics` (intégré .NET)
+
+| | |
+|---|---|
+| **Package NuGet** | Aucun — intégré dans .NET 6+ (`System.Diagnostics`) |
+| **Ce que c'est** | L'API Microsoft pour les métriques numériques. Compteurs, histogrammes, jauges — toutes les grandeurs qui s'accumulent dans le temps. |
+| **Types clés** | `Meter`, `Counter<T>`, `Histogram<T>`, `ObservableGauge<T>` |
+| **Rôle dans EMT** | `MetricsProvider` déclare un `Meter("RAMQ.COM.EnterpriseMessageTransit")` et expose 20 métriques : `messages_sent_total`, `receive_duration_ms`, `circuit_state`, etc. |
+
+```csharp
+// MetricsProvider.cs — déclaration du Meter
+private static readonly Meter s_meter = new("RAMQ.COM.EnterpriseMessageTransit", "1.0.0");
+
+// Exemple d'utilisation — incrémenter le compteur DLQ
+private readonly Counter<long> _messagesDLQCounter =
+    s_meter.CreateCounter<long>("messages_dlq_total");
+
+public void IncrementMessagesDLQ(string entityName, string reason)
+    => _messagesDLQCounter.Add(1,
+        new KeyValuePair<string, object?>("entity_name", entityName),
+        new KeyValuePair<string, object?>("reason", reason));
+```
+
+> **Important :** `System.Diagnostics.Metrics` **ne transporte pas les métriques vers Azure Monitor tout seul**. Il faut un exporteur (voir Bibliothèque 6). C'est une séparation volontaire : l'API d'écriture (`Meter`) est découplée du transport.
+
+---
+
+#### Bibliothèque 3 — AppInsights SDK (`Microsoft.ApplicationInsights`)
+
+| | |
+|---|---|
+| **Package NuGet** | `Microsoft.ApplicationInsights` + `Microsoft.ApplicationInsights.WorkerService` |
+| **Ce que c'est** | Le SDK propriétaire Microsoft pour envoyer de la télémétrie à Azure Monitor. Capture automatiquement les appels HTTP, les dépendances Azure SDK, et achemine les `ILogger` vers AppInsights. |
+| **Types clés** | `TelemetryClient`, `ITelemetryProcessor`, `ITelemetryInitializer`, `DependencyTrackingTelemetryModule` |
+| **Rôle dans EMT** | Achemine les logs `ILogger` (→ `AppTraces`) et auto-capture les dépendances (→ `AppDependencies`). L'`AppInsightsNoiseFilter` et le `ServiceBusCorrelationInitializer` s'intègrent dans son pipeline. |
+
+```csharp
+// Program.cs — enregistrement dans le pipeline DI
+services.AddApplicationInsightsTelemetryWorkerService();
+services.ConfigureFunctionsApplicationInsights();          // adaptation Azure Functions isolated
+services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
+services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
+```
+
+**Deux concepts clés du SDK AppInsights :**
+
+| Concept | Interface | Quand s'exécute | Usage dans EMT |
+|---|---|---|---|
+| `ITelemetryProcessor` | `Process(ITelemetry item)` | Juste avant l'envoi vers Azure — peut supprimer un élément | `AppInsightsNoiseFilter` — supprime le bruit infrastructure |
+| `ITelemetryInitializer` | `Initialize(ITelemetry telemetry)` | Pour chaque élément de télémétrie — enrichit sans supprimer | `ServiceBusCorrelationInitializer` — corrige l'`operation_Id` |
+
+> **Analogie junior :** pense au SDK AppInsights comme à un bureau de poste. `ITelemetryInitializer` = le tampon postal qu'on ajoute sur chaque lettre (enrichissement). `ITelemetryProcessor` = le contrôle douanier qui peut refuser certaines lettres (filtrage).
+
+---
+
+#### Bibliothèque 4 — `DependencyTrackingTelemetryModule` (inclus dans AppInsights SDK)
+
+| | |
+|---|---|
+| **Package NuGet** | Inclus dans `Microsoft.ApplicationInsights` — aucun ajout requis |
+| **Ce que c'est** | Module du SDK AppInsights qui s'accroche automatiquement à `HttpClient` et aux SDK Azure pour capturer TOUS les appels sortants comme des `DependencyTelemetry`. |
+| **Rôle dans EMT** | C'est lui qui capture automatiquement : les appels vers `/v2/track`, `VisualStudioCredential.GetToken`, `ServiceBusSender.Send`, `TableClient.AddEntity`, les invocations Functions (InProc). Sans `AppInsightsNoiseFilter`, tout ce bruit arrive dans AppInsights. |
+
+```
+Exemple de ce qu'il capture automatiquement (AVANT filtrage) :
+  VisualStudioCredential.GetToken  → DependencyTelemetry {Type="InProc|Microsoft.AAD"}
+  POST /v2/track                   → DependencyTelemetry {Type="Http", Data="https://...azure.com/v2/track"}
+  ServiceBusSender.Send            → DependencyTelemetry {Type="Azure Service Bus"}
+  BookingActivateur (invocation)   → DependencyTelemetry {Type="InProc"}
+```
+
+> **C'est pourquoi `AppInsightsNoiseFilter` existe.** Ce module est utile en principe — il capture des dépendances réelles — mais en pratique il capture aussi beaucoup d'infra qu'on ne veut pas voir.
+
+---
+
+#### Bibliothèque 5 — `Azure.Identity`
+
+| | |
+|---|---|
+| **Package NuGet** | `Azure.Identity` |
+| **Ce que c'est** | La bibliothèque Microsoft d'authentification pour les services Azure. Fournit des credentials AAD réutilisables dans tous les SDK Azure. |
+| **Types clés** | `DefaultAzureCredential`, `VisualStudioCredential`, `ManagedIdentityCredential` |
+| **Rôle dans EMT** | Utilisé dans `Program.cs` pour authentifier Service Bus, Blob Storage, Table Storage. Peut également authentifier AppInsights (`config.SetAzureTokenCredential(new DefaultAzureCredential())`) à la place de l'InstrumentationKey. |
+
+```csharp
+// Ordre d'essai de DefaultAzureCredential :
+//  1. EnvironmentCredential (variables AZURE_CLIENT_ID, AZURE_CLIENT_SECRET)
+//  2. WorkloadIdentityCredential (AKS)
+//  3. ManagedIdentityCredential (Azure VM, Function App en prod)
+//  4. VisualStudioCredential (développeur local connecté à VS/VS Code)
+//  5. AzureCliCredential (az login en terminal)
+new DefaultAzureCredential()
+```
+
+> **Pour un junior :** en local tu es connecté à Visual Studio ou VS Code avec ton compte RAMQ → `VisualStudioCredential` fonctionne automatiquement. En prod Azure, la Function App a une Managed Identity → `ManagedIdentityCredential` fonctionne automatiquement. Le `DefaultAzureCredential` essaie les deux dans l'ordre — tu n'as rien à changer entre local et prod.
+
+---
+
+#### Bibliothèque 6 — OpenTelemetry (`OpenTelemetry` + exporteurs)
+
+| | |
+|---|---|
+| **Package NuGet (base)** | `OpenTelemetry`, `OpenTelemetry.Extensions.Hosting` |
+| **Package NuGet (exporteur Azure)** | `Azure.Monitor.OpenTelemetry.Exporter` |
+| **Ce que c'est** | Standard industrie open-source (CNCF) pour l'observabilité distribuée. Définit une API unifiée pour traces, métriques et logs — indépendante du vendor. |
+| **Relation avec AppInsights SDK** | **Ce sont deux pipelines distincts qui coexistent.** L'AppInsights SDK (Bibliothèque 3) gère les logs/traces dans EMT. OpenTelemetry est utilisé en **complément uniquement pour les métriques** — le `System.Diagnostics.Metrics` d'EMT a besoin d'un `MeterProvider` OTel pour exporter vers Azure Monitor. |
+
+```csharp
+// Program.cs — OTel uniquement pour les métriques EMT (complément au SDK AppInsights)
+services.AddOpenTelemetry()
+    .WithMetrics(metrics =>
+    {
+        metrics.AddMeter("RAMQ.COM.EnterpriseMessageTransit"); // Meter de MetricsProvider
+        metrics.AddAzureMonitorMetricExporter(o =>
+            o.ConnectionString = appInsightsCs);               // → table customMetrics
+    });
+// ⚠️ Ce bloc ne remplace PAS AddApplicationInsightsTelemetryWorkerService()
+//    Les deux coexistent : SDK AppInsights gère logs/traces, OTel gère les métriques.
+```
+
+---
+
+#### Récapitulatif — tableau de décision pour un junior
+
+| Tu veux... | Tu utilises... | Bibliothèque |
+|---|---|---|
+| Écrire un log dans le code | `_logger.LogError(...)` | `ILogger<T>` (Microsoft.Extensions.Logging) |
+| Mesurer une durée ou compter des événements | `_metrics.RecordReceiveDuration(...)` | `MetricsProvider` → `System.Diagnostics.Metrics` |
+| Propager le TraceId entre services | `Activity.Current?.Id` + `traceparent` dans SB props | `System.Diagnostics.Activity` |
+| Filtrer le bruit dans AppInsights | `AppInsightsNoiseFilter` | `ITelemetryProcessor` (AppInsights SDK) |
+| Corriger l'`operation_Id` dans AppInsights | `ServiceBusCorrelationInitializer` | `ITelemetryInitializer` (AppInsights SDK) |
+| S'authentifier sur Azure (local + prod) | `new DefaultAzureCredential()` | `Azure.Identity` |
+| Envoyer les métriques EMT vers Azure Monitor | `AddOpenTelemetry().WithMetrics(...)` | OpenTelemetry + Azure Monitor Exporter |
+
+#### Confusion fréquente — AppInsights SDK vs OpenTelemetry
+
+> Ces deux technologies ne font **pas la même chose** dans EMT, même si elles touchent toutes deux à l'observabilité.
+
+| | AppInsights SDK | OpenTelemetry |
+|---|---|---|
+| **Type** | SDK propriétaire Microsoft | Standard industrie open-source (CNCF) |
+| **Dans EMT** | Logs + Traces + Auto-capture dépendances | Métriques uniquement (complément) |
+| **Table Azure Monitor** | `AppTraces`, `AppDependencies`, `AppExceptions` | `customMetrics` |
+| **Quand ajouter** | Déjà en place — ne pas toucher | À ajouter pour activer le Profil Performance (§13.10.8) |
+| **Peuvent coexister ?** | **Oui** — pipelines totalement indépendants | **Oui** |
+
+---
+
 ### 13.2 Architecture cible — schéma enterprise
 
+> 💡 **Pour un junior :** le schéma ci-dessous montre **deux pipelines de télémétrie distincts** qui coexistent dans chaque service EMT. Ils ne se remplacent pas — ils sont complémentaires. Comprendre cette séparation est le pré-requis pour tout le reste de §13.
+
 ```
-                  ┌──────────────────────────────────────────┐
-                  │     Code applicatif RAMQ                  │
-                  │   (Producer, Consumer, Activity)          │
-                  └────────┬──────────┬──────────┬───────────┘
-                           │          │          │
-              ┌────────────▼┐ ┌───────▼───┐ ┌────▼──────────┐
-              │   ILogger    │ │ Activity  │ │ MetricsProv.  │
-              │ (logs)       │ │ Source    │ │ (System.      │
-              │              │ │ (traces)  │ │  Diagnostics. │
-              │              │ │           │ │  Metrics)     │
-              └────────┬─────┘ └─────┬─────┘ └────────┬──────┘
-                       │             │                │
-                       │   ┌─────────┴────────────────┘
-                       │   │
-                       ▼   ▼                              ┌──────────────────┐
-              ┌──────────────────────┐                    │  IJournalProvider│
-              │  OpenTelemetry SDK   │                    │  (BAM enterprise)│
-              │  (Tracer/Meter/Log   │                    │  Azure Table     │
-              │   Providers)         │                    │  ← rétention 7 ans│
-              │                      │                    │  ← Business KPI  │
-              │                      │                    │  ← découplé OTel │
-              └──────────┬───────────┘                    └────────┬─────────┘
-                         │ Pipeline interne :                       │
-                         │  ① Sampler (filtrage statistique)        │
-                         │  ② Processor (enrichissement,            │
-                         │    redaction PII, filtrage par tag)      │
-                         │  ③ Batch Exporter                        │
-                         ▼                                          │
-              ┌──────────────────────────┐                          │
-              │ Azure.Monitor.            │                          │
-              │ OpenTelemetry.Exporter   │ ← exporter Microsoft     │
-              └──────────┬───────────────┘                          │
-                         │ HTTPS / gRPC                              │
-                         ▼                                          ▼
-              ┌──────────────────────────┐         ┌──────────────────────┐
-              │ Application Insights      │         │ Azure Table Storage  │
-              │ (APM technique,           │         │  MessageTransitJournal│
-              │  workspace-based)         │         │  (BAM — rétention 7a)│
-              └──────────┬───────────────┘         └──────────┬──────────┘
-                         │                                     │
-                         │                                     ▼
-                         │                          ┌──────────────────────┐
-                         │                          │ Azure Data Factory   │
-                         │                          │ (export planifié BAM)│
-                         │                          └──────────┬──────────┘
-                         │                                     │
-                         ▼                                     ▼
-              ┌──────────────────────────┐         ┌──────────────────────┐
-              │ Log Analytics Workspace  │         │  Power BI Premium    │
-              │ (stockage + KQL)         │         │  (dashboards métier  │
-              │  - dependencies          │  ◄────► │   direction RAMQ)    │
-              │  - customMetrics         │ TraceId │  ← KPI volume/SLA    │
-              │  - traces (logs)         │ jointure│  ← conformité CAI    │
-              │  - exceptions            │ (R16)   │  ← BAM exécutif       │
-              └──────────┬───────────────┘         └──────────────────────┘
-                         │
-                         ▼
-              ┌──────────────────────────────────────┐
-              │  Azure Monitor — usages opérationnels │
-              │  • Application Map (graphe sagas)     │
-              │  • Live Metrics (latence < 1 s)        │
-              │  • Smart Detection (anomalies)         │
-              │  • Workbooks APM + BAM (dashboards RAMQ)│
-              │  • Action Groups (alertes PagerDuty)   │
-              └──────────────────────────────────────┘
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║              CODE APPLICATIF RAMQ (Producer / Consumer / Activity)             ║
+║                                                                                ║
+║   _logger.LogError(...)    ActivitySource.StartActivity(...)   _metrics.Record(...)  ║
+║         │ ILogger<T>              │ System.Diagnostics           │ MetricsProvider   ║
+║         │ (§13.1.bis Bib.3)       │  .Activity (§13.1.bis Bib.1) │ (§13.1.bis Bib.2) ║
+╚═════════╪═════════════════════════╪══════════════════════════════╪══════════════════╝
+          │                         │                              │
+          │                         │                              │
+  ════════╪═══ PIPELINE A ══════════╪══════════════════════        │
+  ║       ▼                         ▼                    ║        │
+  ║  ┌────────────────────────────────────────────┐      ║        │
+  ║  │      AppInsights SDK                       │      ║        │
+  ║  │  AddApplicationInsightsTelemetryWorkerService()   ║        │
+  ║  │  ConfigureFunctionsApplicationInsights()   │      ║        │
+  ║  │                                            │      ║        │
+  ║  │  ┌──────────────────────────────────────┐ │      ║        │
+  ║  │  │ DependencyTrackingTelemetryModule     │ │      ║        │
+  ║  │  │ (auto-capture TOUT : HttpClient,      │ │      ║        │
+  ║  │  │  Azure SDK, InProc, AAD tokens...)    │ │      ║        │
+  ║  │  └──────────────────────────────────────┘ │      ║        │
+  ║  │                                            │      ║        │
+  ║  │  ┌──────────────────────────────────────┐ │      ║        │
+  ║  │  │ FILTRES (3 niveaux, voir §13.10.8)   │ │      ║        │
+  ║  │  │  ① logging.AddFilter("RAMQ",Error)   │ │      ║        │
+  ║  │  │     → bloque Warning/Info du worker  │ │      ║        │
+  ║  │  │  ② host.json logLevel                │ │      ║        │
+  ║  │  │     → bloque logs du host Functions  │ │      ║        │
+  ║  │  │  ③ AppInsightsNoiseFilter             │ │      ║        │
+  ║  │  │     → bloque TraceTelemetry < Error  │ │      ║        │
+  ║  │  │     → bloque DependencyTelemetry bruit│ │      ║        │
+  ║  │  └──────────────────────────────────────┘ │      ║        │
+  ║  │                                            │      ║        │
+  ║  │  ┌──────────────────────────────────────┐ │      ║        │
+  ║  │  │ ServiceBusCorrelationInitializer      │ │      ║        │
+  ║  │  │ (ITelemetryInitializer)               │ │      ║        │
+  ║  │  │ → corrige operation_Id avec TraceId  │ │      ║        │
+  ║  │  │   du producteur (W3C traceparent)     │ │      ║        │
+  ║  │  └──────────────────────────────────────┘ │      ║        │
+  ║  └───────────────────┬────────────────────────┘      ║        │
+  ║                      │ HTTPS (InstrumentationKey     ║        │
+  ║                      │  ou Authorization=AAD)        ║        │
+  ║  Logs → AppTraces    ▼                               ║        │
+  ║  Traces → AppDependencies                            ║        │
+  ║  Exceptions → AppExceptions                          ║        │
+  ════════════════════════════════════════════════════════        │
+                         │                                        │
+                         │                  ════════════════════╪═══ PIPELINE B ══
+                         │                  ║                   ▼                ║
+                         │                  ║  ┌─────────────────────────────┐   ║
+                         │                  ║  │  OpenTelemetry MeterProvider │   ║
+                         │                  ║  │  AddOpenTelemetry()          │   ║
+                         │                  ║  │    .WithMetrics(metrics =>   │   ║
+                         │                  ║  │      metrics.AddMeter(       │   ║
+                         │                  ║  │       "RAMQ.COM.Enterprise   │   ║
+                         │                  ║  │        MessageTransit")      │   ║
+                         │                  ║  └──────────────┬──────────────┘   ║
+                         │                  ║                 │                  ║
+                         │                  ║  ┌──────────────▼──────────────┐   ║
+                         │                  ║  │ Azure.Monitor.               │   ║
+                         │                  ║  │ OpenTelemetry.Exporter       │   ║
+                         │                  ║  │ (NuGet: Azure.Monitor.       │   ║
+                         │                  ║  │  OpenTelemetry.Exporter)     │   ║
+                         │                  ║  └──────────────┬──────────────┘   ║
+                         │                  ║  Métriques →    │ customMetrics    ║
+                         │                  ══════════════════╪══════════════════
+                         │                                    │
+                         ▼                                    ▼
+              ┌──────────────────────────────────────────────────┐
+              │              Application Insights                 │
+              │         (façade UI — workspace-based)             │
+              │  Application Map · Live Metrics · Smart Detection │
+              └──────────────────────────┬───────────────────────┘
+                                         │
+                                         ▼
+              ┌──────────────────────────────────────────────────┐
+              │           Log Analytics Workspace                 │
+              │  AppTraces · AppDependencies · AppExceptions       │
+              │  customMetrics                                     │
+              └──────────────────────────┬───────────────────────┘
+                                         │
+                         ┌───────────────┼───────────────┐
+                         ▼               ▼               ▼
+              ┌──────────────┐ ┌──────────────┐ ┌──────────────────┐
+              │  Workbooks   │ │   Alertes    │ │  Azure Table     │
+              │  KQL (APM)   │ │ Action Groups│ │  Storage (BAM /  │
+              │  §13.10      │ │ PagerDuty    │ │  MessageTransit  │
+              └──────────────┘ └──────────────┘ │  Journal R16)    │
+                                                 └──────────────────┘
 ```
 
-🟢 **Décision RAMQ : Azure Monitor (Application Insights workspace-based + Log Analytics Workspace) est le backend APM cible.** Pour le BAM, **Azure Table Storage** (MessageTransitJournal) + **Power BI Premium** sont les backends ciblés. **APM et BAM sont deux pilliers complémentaires**, joints par `TraceId` (lot R16) — pas concurrents. Pas de Grafana, Jaeger ou Prometheus en production — seulement comme outils dev locaux.
+**Légende :**
+
+| | Description |
+|---|---|
+| **PIPELINE A** | AppInsights SDK — gère **Logs + Traces + Auto-capture dépendances**. En place dans tous les samples EMT. Authentification : `InstrumentationKey` (actuel) ou `Authorization=AAD` + `DefaultAzureCredential` (recommandé prod). |
+| **PIPELINE B** | OpenTelemetry MeterProvider — gère uniquement les **Métriques** (`System.Diagnostics.Metrics`). À activer pour le Profil Performance (§13.10.8). Non encore actif dans les samples. |
+| **Filtres** | Trois niveaux (①②③) détaillés dans §13.10.8. Suppriment le bruit avant envoi vers Azure Monitor. |
+| **BAM** | `IJournalProvider` → Azure Table Storage → Power BI. Pipeline indépendant d'OTel, jointif avec APM via `TraceId` (R16). |
+
+🟢 **Décision RAMQ :** Azure Monitor (Application Insights workspace-based + Log Analytics Workspace) est le backend APM cible. Pipeline A (AppInsights SDK) est en place. Pipeline B (OTel Metrics) est à activer pour le monitoring de performance. Pas de Grafana, Jaeger ou Prometheus en production.
 
 ### 13.3 Les composants Azure Monitor à utiliser et pourquoi
 
@@ -3069,7 +3307,7 @@ Ces 5 piliers ne sont **pas équivalents**. Confondre logs et traces, ou journal
 
 | Service Azure Monitor | Rôle | Utilisé par EMT ? | Justification |
 |---|---|---|---|
-| **Application Insights (workspace-based)** | Façade SDK + UI (Application Map, Live Metrics, Smart Detection) | ✅ **Oui — pierre angulaire** | Reçoit les exports OTel via `Azure.Monitor.OpenTelemetry.Exporter`. Ne stocke rien (façade). |
+| **Application Insights (workspace-based)** | Façade SDK + UI (Application Map, Live Metrics, Smart Detection) | ✅ **Oui — pierre angulaire** | Reçoit les données via **Pipeline A** (SDK AppInsights : logs/traces) et via **Pipeline B** (OTel MeterProvider : métriques `customMetrics`). Ne stocke rien lui-même — façade vers Log Analytics. Voir §13.1.bis et §13.2. |
 | **Log Analytics Workspace** | Stockage + moteur KQL | ✅ **Oui — automatiquement lié à App Insights** | C'est lui qui facture (Go ingérés). C'est lui qu'on requête en KQL. |
 | **Azure Monitor Metrics (Platform metrics)** | Métriques de la plateforme Azure (CPU, mémoire VM, queue length SB) | ✅ **Oui — auto-activé** | Compléter les métriques applicatives EMT avec les métriques infra (queue length, dead letter count Service Bus). |
 | **Azure Monitor Alerts** | Règles d'alerte sur métriques ou requêtes KQL | ✅ **Oui** | Brancher sur les seuils EMT documentés (cf. [`metrics.md`](../EnterpriseMessageTransit/docs/observability/metrics.md)). |
@@ -3108,16 +3346,28 @@ Sans cette configuration, un message bloqué par throttling Service Bus apparaî
 
 ```
 Applications EMT (workers Azure Functions)
-    ↓ SDK AppInsights + UseAzureMonitorExporter
+    │
+    ├── PIPELINE A — SDK AppInsights (ACTUEL)
+    │   AddApplicationInsightsTelemetryWorkerService()
+    │   ConfigureFunctionsApplicationInsights()
+    │   AppInsightsNoiseFilter (ITelemetryProcessor)
+    │   ServiceBusCorrelationInitializer (ITelemetryInitializer)
+    │       ↓ HTTPS (InstrumentationKey ou Authorization=AAD)
+    │
+    └── PIPELINE B — OTel MeterProvider (PROFIL PERFORMANCE)
+        AddOpenTelemetry().WithMetrics()
+        Azure.Monitor.OpenTelemetry.Exporter
+            ↓ HTTPS
+
 Application Insights
     │  (façade UI : Application Map, Live Metrics, Transaction Search)
     ↓ stocke dans
 Log Analytics Workspace (Canada East)
-    ├── table "requests"       → invocations Azure Functions
-    ├── table "dependencies"   → spans OTel (saga steps, SB calls)
-    ├── table "traces"         → logs applicatifs (Warning+)
-    ├── table "exceptions"     → erreurs avec stack trace
-    └── table "customMetrics"  → métriques EMT (messages_sent, circuit_state…)
+    ├── table "requests"       → invocations Azure Functions       [Pipeline A]
+    ├── table "dependencies"   → traces SDK (saga steps, SB calls) [Pipeline A]
+    ├── table "traces"         → logs Error/Critical uniquement    [Pipeline A — Profil Availability]
+    ├── table "exceptions"     → erreurs avec stack trace          [Pipeline A]
+    └── table "customMetrics"  → métriques EMT (receive_duration_ms, circuit_state…) [Pipeline B]
 ```
 
 > ⚠️ **Distinction fondamentale :**
@@ -3131,7 +3381,7 @@ Log Analytics Workspace (Canada East)
 | Levier | Où configurer | Effet |
 |---|---|---|
 | **Daily Cap** | Azure Portal → Log Analytics → Usage → Daily Cap | Plafond dur : 167 MB/jour = 5 GB/mois max |
-| **Niveau de log AppInsights** | `host.json` : `"ApplicationInsights": "Warning"` | Seuls Warning/Error ingérés — Information reste en console locale |
+| **Profil de supervision** | `Program.cs` : `AddFilter("RAMQ", LogLevel.Error)` + `AppInsightsNoiseFilter` | Availability (Error only) : volume minimal. Reliability (Warning) : +dégradations. Voir §13.10.8. |
 | **Sampling adaptatif** | `host.json` : `maxTelemetryItemsPerSecond: 5` | Réduit le volume à fort débit, Exceptions et Requests toujours conservées |
 
 #### Rétention recommandée pour RAMQ (CAI 7 ans)
@@ -3300,10 +3550,12 @@ Worst case par saga (3 étapes, tous les retries épuisés) :
 
 ---
 
-#### Scénario A — Information, worst case
+> **Note sur les scénarios ci-dessous :** les labels `"ApplicationInsights": "Information/Warning"` sont une notation simplifiée pour le calcul de coût. La configuration réelle utilise des filtres par catégorie dans `Program.cs` + `AppInsightsNoiseFilter` (voir §13.10.8). Le **Scénario D (Error only)** correspond au **Profil Availability** actuellement actif dans les samples EMT.
+
+#### Scénario A — Information, worst case (Profil Debug — dev uniquement)
 
 ```
-host.json : "ApplicationInsights": "Information"
+Équivalent config : logging.AddFilter("RAMQ", LogLevel.Information) + AppInsightsNoiseFilter désactivé
 Base worst case : ~400 KB/saga (retries + logs détaillés)
 ```
 
@@ -3320,10 +3572,10 @@ Base worst case : ~400 KB/saga (retries + logs détaillés)
 
 ---
 
-#### Scénario B — Warning, worst case
+#### Scénario B — Warning, worst case (Profil Reliability — activation temporaire incidents)
 
 ```
-host.json : "ApplicationInsights": "Warning"
+Équivalent config : logging.AddFilter("RAMQ", LogLevel.Warning) + TraceTelemetry < Warning filtrée
 Base worst case : ~292 KB/saga
 ```
 
@@ -3338,12 +3590,12 @@ Base worst case : ~292 KB/saga
 
 ---
 
-#### Scénario C — Warning + Sampling, worst case
+#### Scénario C — Warning + Sampling, worst case (Profil Reliability + sampling)
 
 ```
-host.json : "ApplicationInsights": "Warning"
-            maxTelemetryItemsPerSecond: 5
-            excludedTypes: "Exception;Request"
+Équivalent config : logging.AddFilter("RAMQ", LogLevel.Warning)
+                    host.json samplingSettings.maxTelemetryItemsPerSecond: 5
+                    host.json samplingSettings.excludedTypes: "Exception;Request"
 ```
 
 Les `requests` (invocations) **ne sont jamais samplées** — en worst case avec 10 retries × 3 étapes = 30 invocations non samplées par saga.
@@ -3364,7 +3616,7 @@ Volume effectif worst case :
 
 ---
 
-#### Scénario D — Daily Cap 167 MB/jour (configuration actuelle)
+#### Scénario D — Error only + Daily Cap 167 MB/jour (✅ configuration actuelle — Profil Availability)
 
 ```
 Azure Portal : Daily Cap = 167 MB/jour = 5 GB/mois
@@ -3378,7 +3630,7 @@ Azure Portal : Daily Cap = 167 MB/jour = 5 GB/mois
 
 > ✅ **Le Daily Cap est le seul mécanisme qui protège contre le worst case.**
 > Sans Daily Cap, un incident Service Bus de 24h peut générer des centaines de GB de retries en télémétrie → facture imprévisible.
-> **La configuration actuelle (`host.json` + Daily Cap Azure Portal) garantit ≤ 5 GB/mois dans tous les scénarios.**
+> **La configuration actuelle (Profil Availability : Error only + AppInsightsNoiseFilter + Daily Cap Azure Portal) garantit ≤ 5 GB/mois dans tous les scénarios.**
 
 ---
 
@@ -3402,11 +3654,12 @@ Pour 5 GB ingérés/mois (cap maximum) :
 
 #### 13.4.0 Vision claire — la phrase de référence à mémoriser
 
-> 🧭 **`ILogger` est l'API qu'on écrit. OpenTelemetry est le pipeline qui transporte.** Ce sont **deux outils complémentaires**, pas concurrents.
+> 🧭 **`ILogger` est l'API qu'on écrit. Le SDK AppInsights est le pipeline qui transporte les logs et traces. OpenTelemetry est le pipeline complémentaire qui transporte les métriques.** Ce sont des outils qui se complètent — pas concurrents, pas interchangeables.
 >
 > - On **écrit toujours** du code applicatif avec `ILogger<T>` injecté en DI. C'est l'abstraction Microsoft standard, totalement indépendante du backend.
-> - On **configure le transport** vers Azure Monitor une seule fois dans `Program.cs` via OpenTelemetry. À partir de là, **chaque `_logger.LogInformation()` devient automatiquement** un événement OTel qui voyage vers Application Insights, sans que le code applicatif ne le sache.
-> - Cette indépendance est **un atout DFO** : on peut tester en local avec `.AddConsoleExporter()`, déployer en prod avec `.AddAzureMonitorLogExporter()`, et le code applicatif **ne change jamais**.
+> - On **configure le transport des logs/traces** vers Azure Monitor via le **SDK AppInsights** dans `Program.cs` (`AddApplicationInsightsTelemetryWorkerService()`). C'est le **Pipeline A** — actif dans tous les samples EMT.
+> - On **configure le transport des métriques** via **OpenTelemetry MeterProvider** (`AddOpenTelemetry().WithMetrics(...)`). C'est le **Pipeline B** — à activer pour le Profil Performance (§13.10.8).
+> - Cette séparation est **un atout DFO** : les deux pipelines sont indépendants. Le Pipeline A peut évoluer sans toucher au Pipeline B, et vice-versa. Le code applicatif (`ILogger`, `ActivitySource`, `Meter`) **ne change jamais**.
 
 #### 13.4.0.bis Les trois signaux d'observabilité — définitions, frontières et exemples EMT
 
@@ -3609,23 +3862,30 @@ traces | where severityLevel >= 3  -- Warning et au-dessus
 │ Code applicatif (n'importe quelle classe RAMQ)                  │
 │   - Injecte ILogger<T>, ActivitySource, IMetricsProvider        │
 │   - Émet logs, spans, metrics SANS savoir où ça va              │
-└────────────────────────────────┬────────────────────────────────┘
-                                 │ APIs BCL .NET (zéro dépendance OTel)
-                                 ▼
-┌─────────────────────────────────────────────────────────────────┐
-│ Program.cs — point de wiring UNIQUE                              │
-│   builder.Services.AddOpenTelemetry()                            │
-│     .WithLogging(...)   ← bridge ILogger → OTel                  │
-│     .WithTracing(...)   ← branche ActivitySource → OTel          │
-│     .WithMetrics(...)   ← branche Meter → OTel                   │
-│     .AddAzureMonitorExporter()  ← destination = Azure Monitor    │
-└────────────────────────────────┬────────────────────────────────┘
-                                 │ HTTPS export batch
-                                 ▼
-                       Application Insights / Log Analytics
+└──────────────┬──────────────────────┬──────────────────────────┘
+               │ Logs + Traces        │ Métriques
+               │ (BCL .NET)           │ (System.Diagnostics.Metrics)
+               ▼                      ▼
+┌──────────────────────────┐  ┌──────────────────────────────────┐
+│ Program.cs — PIPELINE A  │  │ Program.cs — PIPELINE B          │
+│ (ACTUEL — en place)      │  │ (PROFIL PERFORMANCE — à activer) │
+│                          │  │                                  │
+│ AddApplicationInsights   │  │ AddOpenTelemetry()               │
+│  TelemetryWorkerService()│  │   .WithMetrics(m =>              │
+│ ConfigureFunctions       │  │     m.AddMeter("RAMQ.COM...")    │
+│  ApplicationInsights()   │  │     .AddAzureMonitorMetric       │
+│ AppInsightsNoiseFilter   │  │      Exporter())                 │
+│ ServiceBusCorrelation    │  │                                  │
+│  Initializer             │  │  → table customMetrics           │
+└──────────────┬───────────┘  └──────────────┬───────────────────┘
+               │ HTTPS                        │ HTTPS
+               ▼                              ▼
+      Application Insights          Application Insights
+      AppTraces / AppDependencies    customMetrics
+      AppExceptions
 ```
 
-> ✅ **Vision claire RAMQ DFO :** **un seul fichier `Program.cs` configure tout**. Le reste du code applicatif utilise les APIs BCL .NET standard. Migrer demain vers un autre backend (Splunk, Datadog, Grafana Cloud) ne demande **qu'un changement de l'exporter**, pas une réécriture du code métier.
+> ✅ **Vision claire RAMQ DFO :** **`Program.cs` est le seul fichier à configurer**. Le code applicatif utilise uniquement les APIs BCL .NET standard (`ILogger`, `ActivitySource`, `Meter`) — sans dépendance directe au SDK AppInsights ni à OTel. Migrer vers un autre backend ne touche que `Program.cs`.
 
 #### 13.4.1 Les trois couches conceptuelles
 
@@ -3633,61 +3893,66 @@ traces | where severityLevel >= 3  -- Warning et au-dessus
 ┌────────────────────────────────────────────────────────────────┐
 │  COUCHE 1 — Code applicatif                                     │
 │  Ce qu'on écrit :                                                │
-│    _logger.LogInformation("Saga {Stage} for {DossierId}",       │
-│                            stage, dossierId);                    │
+│    _logger.LogError("Service en panne — {Reason}", reason);     │
 └────────────────────────────────┬───────────────────────────────┘
                                  │
                                  ▼
 ┌────────────────────────────────────────────────────────────────┐
 │  COUCHE 2 — ILogger pipeline (Microsoft.Extensions.Logging)     │
 │  Le message devient un LogRecord structuré :                    │
-│    { categoryName: "...Producer",                               │
-│      eventId: 0,                                                 │
-│      logLevel: Information,                                      │
-│      messageTemplate: "Saga {Stage} for {DossierId}",          │
-│      attributes: { Stage="Validate", DossierId="D-001" },       │
-│      scopes: [ { MessageId="...", SessionId="..." } ] }         │
+│    { categoryName: "RAMQ...BookCarActivity",                    │
+│      logLevel: Error,                                            │
+│      messageTemplate: "Service en panne — {Reason}",           │
+│      scopes: [ { MessageId="...", SlipId="..." } ] }            │
 │                                                                  │
-│  Filtres ILogger appliqués ICI (logLevel par catégorie) :      │
-│    appsettings.json → "Logging:LogLevel:RAMQ" = "Warning"      │
-│    → tout < Warning est jeté AVANT d'aller plus loin           │
+│  FILTRE ①  logging.AddFilter("RAMQ", LogLevel.Error)           │
+│    → ILogger drop : Warning/Information jetés AVANT AppInsights │
+│                                                                  │
+│  FILTRE ②  host.json logLevel                                   │
+│    → "Function":"None", "Host":"Warning", "Microsoft":"Warning" │
+│    → filtre les logs du processus host (pas du worker)          │
 └────────────────────────────────┬───────────────────────────────┘
-                                 │ ← bridge OpenTelemetry
-                                 ▼
+                                 │ ← bridge SDK AppInsights
+                                 ▼   (Pipeline A)
 ┌────────────────────────────────────────────────────────────────┐
-│  COUCHE 3 — OpenTelemetry Logs pipeline (via bridge)            │
-│  Le LogRecord traverse le pipeline OTel :                       │
-│    ① LogProcessor (enrichment : ServiceName, ResourceAttrs)    │
-│    ② LogProcessor (redaction PII si configuré)                 │
-│    ③ Exporter → Azure.Monitor.OpenTelemetry.Exporter           │
+│  COUCHE 3 — AppInsights SDK pipeline                            │
+│  (AddApplicationInsightsTelemetryWorkerService)                 │
 │                                                                  │
-│  Filtres OTel appliqués ICI :                                  │
-│    .AddOpenTelemetry(o => o.AddProcessor(monFiltreur))         │
-│    → un processor peut DROPPER un LogRecord après ILogger     │
+│  FILTRE ③  AppInsightsNoiseFilter (ITelemetryProcessor)        │
+│    → TraceTelemetry : supprime tout < SeverityLevel.Error       │
+│      (filet de sécurité si FILTRE ① est contourné)             │
+│    → DependencyTelemetry : supprime le bruit infra              │
+│      (/v2/track, Microsoft.AAD, Azure Service Bus, InProc…)    │
+│                                                                  │
+│  ServiceBusCorrelationInitializer (ITelemetryInitializer)       │
+│    → corrige operation_Id avec TraceId du producteur (W3C)      │
 └────────────────────────────────┬───────────────────────────────┘
                                  │
-                                 ▼ HTTPS
+                                 ▼ HTTPS (InstrumentationKey ou AAD)
                        Application Insights
                                  │
                                  ▼
-                       table `traces` dans Log Analytics
-                       (avec customDimensions = scopes + attrs)
+                       table `AppTraces` dans Log Analytics
+                       (uniquement Error/Critical — Profil Availability)
 ```
 
-#### 13.4.2 Les 4 filtres distincts à connaître
+#### 13.4.2 Les filtres à connaître — EMT v1.0 (Pipeline A — AppInsights SDK)
 
-Il y a **4 endroits** où un log peut être supprimé entre le code et Azure Monitor. Confondre ces 4 endroits est l'erreur classique :
+Il y a **3 endroits** où un log ou une dépendance peut être supprimé entre le code et Azure Monitor. Confondre ces endroits est l'erreur classique :
 
-| # | Filtre | Où | Mécanisme | Exemple |
+| # | Filtre | Où | Mécanisme | Ce qu'il bloque dans EMT |
 |---|---|---|---|---|
-| **F1** | **ILogger LogLevel par catégorie** | `appsettings.json` ou `host.json` | `"Logging:LogLevel:<Category>": "Warning"` | Filtrer tout `Debug` de la lib EMT mais garder `Information` du code métier |
-| **F2** | **ILogger filter functions** | `Program.cs` | `.AddFilter("RAMQ.COM.EnterpriseMessageTransit", LogLevel.Warning)` | Idem F1, par code |
-| **F3** | **OTel Sampler (pour traces, pas pour logs)** | `Program.cs` OTel config | `.SetSampler(new TraceIdRatioBasedSampler(0.10))` | Garder 10 % des traces normales, 100 % des erreurs |
-| **F4** | **OTel Processor (custom)** | `Program.cs` OTel config | `.AddProcessor(new RedactionProcessor())` | Supprimer un attribut `data:secret=*` avant export |
+| **F1** | **ILogger filter par catégorie** | `Program.cs` `ConfigureLogging` | `logging.AddFilter("RAMQ", LogLevel.Error)` | Warning/Information du code worker RAMQ avant AppInsights |
+| **F2** | **host.json logLevel** | `host.json` | `"Function": "None"`, `"Host": "Warning"` | Logs du processus host Azure Functions (Executing, Warmup…) |
+| **F3** | **AppInsightsNoiseFilter** | `Program.cs` — `ITelemetryProcessor` | `trace.SeverityLevel < Error` + règles DependencyTelemetry | Filet de sécurité : Warning/Info restants + bruit infra (InProc, AAD, SB SDK…) |
 
-🟠 **Erreur classique #1 :** activer F3 (Sampler) sur les **traces** en pensant filtrer les **logs**. Le Sampler OTel ne s'applique **qu'aux traces** (spans). Pour les logs, c'est F1, F2, ou F4.
+> **Pourquoi F3 est le plus fiable :** F1 peut être court-circuité par `ConfigureFunctionsApplicationInsights()`. F2 ne s'applique qu'au processus host. F3 opère directement dans le pipeline AppInsights SDK — incontournable. Les trois niveaux sont documentés en détail dans §13.10.8.
 
-🟠 **Erreur classique #2 :** baisser le LogLevel global à `Warning` (F1) en pensant économiser, et perdre tous les logs `Information` du code métier qui contiennent des `DossierId` utiles aux audits CAI.
+🟠 **Erreur classique #1 :** croire que F2 (`host.json`) filtre les logs de ton code RAMQ. Il filtre le **processus host** (runtime Functions). Ton code tourne dans le **processus worker** — c'est F1 et F3 qui s'en occupent.
+
+🟠 **Erreur classique #2 :** baisser F1 à `Warning` en pensant voir les données de performance. `Warning` dans EMT = retries = signal de **fiabilité/dégradation**, pas de latence. Pour la performance, il faut les métriques EMT via Pipeline B (§13.10.8 Profil Performance).
+
+> **Note Pipeline B (OTel MeterProvider) :** le Pipeline B n'a pas de filtre de log — il exporte uniquement des métriques numériques (`System.Diagnostics.Metrics`) sans notion de niveau de log. Le seul contrôle est quels `Meter` sont enregistrés dans `AddMeter(...)`.
 
 #### 13.4.3 Configuration recommandée pour les premières prods RAMQ
 
