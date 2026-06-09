@@ -3305,7 +3305,7 @@ services.AddOpenTelemetry()
 | **PIPELINE A** | AppInsights SDK — gère **Logs + Traces + Auto-capture dépendances**. En place dans tous les samples EMT. Authentification : `InstrumentationKey` (actuel) ou `Authorization=AAD` + `DefaultAzureCredential` (recommandé prod). |
 | **PIPELINE B** | OpenTelemetry MeterProvider — gère uniquement les **Métriques** (`System.Diagnostics.Metrics`). À activer pour le Profil Performance (§13.10.8). Non encore actif dans les samples. |
 | **Filtres** | Trois niveaux (①②③) détaillés dans §13.10.8. Suppriment le bruit avant envoi vers Azure Monitor. |
-| **BAM** | `IJournalProvider` → Azure Table Storage → Power BI. Pipeline indépendant d'OTel, jointif avec APM via `TraceId` (R16). |
+| **BAM** | `IJournalProvider` → Azure Table Storage → Power BI. **Indépendant d'OTel et d'AppInsights** — c'est un `TableClient.AddEntityAsync(...)` direct, aucun SDK de télémétrie impliqué. **Jointif avec APM** : le lot R16 stocke `Activity.Current?.TraceId` dans le champ `TraceId` de l'entité Table — ce même TraceId se trouve dans `operation_Id` des tables AppInsights. Jointure KQL possible entre MTJ (audit 7 ans) et traces AppInsights (APM 90j). Voir §13.4.0.quater. |
 
 🟢 **Décision RAMQ :** Azure Monitor (Application Insights workspace-based + Log Analytics Workspace) est le backend APM cible. Pipeline A (AppInsights SDK) est en place. Pipeline B (OTel Metrics) est à activer pour le monitoring de performance. Pas de Grafana, Jaeger ou Prometheus en production.
 
@@ -4081,6 +4081,144 @@ CONSUMER dotnet-isolated
 | `_logger.LogError` | Lit `Activity.Current` via `OperationCorrelationTelemetryInitializer` | ✅ | Aucun code manuel — le SDK AppInsights fait tout |
 | `_metrics.Record` | Les métriques sont agrégées — pas de TraceId natif | ❌ manuel | Ajouter `["operation_id"] = Activity.Current?.TraceId.ToString()` comme tag |
 | **Service Bus consumer** | `ServiceBusCorrelationInitializer` restaure le TraceId du producer | ✅ (EMT) | Sans ça, TraceId cassé en dotnet-isolated — saga brisée dans AppInsights |
+| **BAM / MTJ** | `Activity.Current?.TraceId` copié dans le champ `TraceId` de l'entité Table (R16) | ✅ (R16) | Pipeline totalement indépendant d'OTel/AppInsights — jointure KQL possible via ce TraceId |
+
+---
+
+##### Cas avancé — chaînes multi-hop : Producer → SB → Consumer → Producer → SB → Consumer
+
+> ⚠️ **Ce mécanisme est agnostique du pattern.** Il s'applique à toute chaîne de services communicant via Service Bus — avec ou sans RoutingSlip, que ce soit un Saga, un pipeline de traitement cross-domaines, ou des microservices indépendants enchaînés. Le RoutingSlip est un cas particulier qui exploite la même mécanique.
+
+**Deux contrats à respecter à chaque saut :**
+
+| Rôle | Contrat | Fourni par EMT |
+|---|---|---|
+| **Producer** | Injecter `traceparent` dans `ApplicationProperties` du message | `AzureMessagingProvider.SendAsync` — automatique |
+| **Consumer** | Extraire `traceparent`, restaurer `Activity.Current`, corriger `operation_Id` AppInsights | `BaseConsumer.DeserializeMessageAsync` + `ServiceBusCorrelationInitializer` |
+
+Ces deux composants sont utilisés dans **tout consumer EMT** — pas seulement RoutingSlip.
+
+---
+
+###### Exemple générique : trois services cross-domaines sans RoutingSlip
+
+```
+SERVICE A — Domaine Assurance (HTTP Trigger ou Timer)
+──────────────────────────────────────────────────────────────────────
+  Runtime crée Activity: TraceId = "ABC"   ← racine, ne change PLUS
+  StartActivity("messaging.publish")
+      TraceId = "ABC"  SpanId = "S1"
+  AzureMessagingProvider.SendAsync(messageA)
+      → message["traceparent"] = "00-ABC-S1-01"   → Queue AssuranceVersPharm
+
+SERVICE BUS — Queue AssuranceVersPharm
+──────────────────────────────────────────────────────────────────────
+
+SERVICE B — Domaine Pharmacie (SB Trigger)
+──────────────────────────────────────────────────────────────────────
+  Runtime crée Activity: TraceId = "XYZ"  ← NOUVEAU (brisé sans EMT !)
+
+  BaseConsumer.DeserializeMessageAsync :
+      Activity.Current.SetTag("messaging.source.traceparent", "00-ABC-S1-01")
+
+  ServiceBusCorrelationInitializer :
+      telemetry.Context.Operation.Id = "ABC"       ← AppInsights corrigé ✅
+
+  StartActivity("messaging.consume", parentId: "00-ABC-S1-01")
+      TraceId = "ABC"  SpanId = "S2"  (parent = S1)
+
+  [ traitement domaine Pharmacie... ]
+  [ _logger.LogError → operation_Id = "ABC" ✅ ]
+  [ _journalProvider.WriteAsync → champ TraceId = "ABC" ✅ ]
+
+  AzureMessagingProvider.SendAsync(messageB)
+      Activity.Current.TraceId = "ABC"  (en place grâce à StartActivity ci-dessus)
+      → message["traceparent"] = "00-ABC-S3-01"   → Queue PharmVersDisp
+                                          ↑
+                               SpanId du span courant (processing Pharmacie)
+
+SERVICE BUS — Queue PharmVersDisp
+──────────────────────────────────────────────────────────────────────
+
+SERVICE C — Domaine Dispensateur (SB Trigger)
+──────────────────────────────────────────────────────────────────────
+  Runtime crée Activity: TraceId = "PQR"  ← NOUVEAU (brisé sans EMT !)
+
+  BaseConsumer.DeserializeMessageAsync :
+      Activity.Current.SetTag("messaging.source.traceparent", "00-ABC-S3-01")
+
+  ServiceBusCorrelationInitializer :
+      telemetry.Context.Operation.Id = "ABC"       ← AppInsights corrigé ✅
+
+  StartActivity("messaging.consume", parentId: "00-ABC-S3-01")
+      TraceId = "ABC"  SpanId = "S4"  (parent = S3)
+
+  [ traitement domaine Dispensateur... ]
+  [ _logger.LogError → operation_Id = "ABC" ✅ ]
+  [ _journalProvider.WriteAsync → champ TraceId = "ABC" ✅ ]
+
+  ... même mécanique → autant de sauts que nécessaire
+```
+
+**Règle invariante à chaque saut :**
+- TraceId = **toujours** celui de la racine (Service A) — ne change jamais
+- SpanId parent dans le `traceparent` sortant = SpanId du **span courant** au moment du `SendAsync`
+- `ServiceBusCorrelationInitializer` = toujours enregistré dans chaque service consumer
+
+---
+
+###### Arbre de trace résultant dans AppInsights (3 processus, 1 vue unifiée)
+
+```
+TraceId "ABC"
+├── messaging.publish  [S1]  Service A — Assurance         2ms
+│   └── messaging.consume [S2]  Service B — Pharmacie  (parent=S1)
+│       └── processing.pharmacie [S3]  Pharmacie          450ms
+│           └── messaging.consume [S4]  Service C — Dispensateur  (parent=S3)
+│               └── processing.dispensateur [S5]  Dispensateur   820ms
+│
+├── Tous les _logger.LogError() de B et C → operation_Id = "ABC" ✅
+└── Tous les _journalProvider.WriteAsync() de B et C → TraceId = "ABC" ✅
+```
+
+> **Ce qui se passe SANS EMT :** chaque service démarre avec un TraceId aléatoire (`"XYZ"`, `"PQR"`). Trois événements distincts et non reliés dans AppInsights. Impossible de reconstituer le parcours d'un dossier citoyen à travers les domaines.
+
+---
+
+###### RoutingSlip = cas particulier de cette mécanique générale
+
+Le RoutingSlip ajoute simplement :
+- Un span nommé `routing_slip.step` entre `messaging.consume` et `messaging.publish`
+- `RoutingSlipExecutor` qui appelle `BaseConsumer`/`StartActivity` dans le bon ordre, automatiquement pour chaque step
+- La liste des étapes portée dans le message (`SlipEnvelope.Itinerary`)
+
+Mais **la propagation du TraceId est identique** — `BaseConsumer` + `ServiceBusCorrelationInitializer` font exactement le même travail que dans un service autonome.
+
+---
+
+##### Relation BAM/MTJ avec la chaîne multi-hop
+
+Le MTJ (lot R16) écrit une entité Table à **chaque service qui traite le message** avec `TraceId = "ABC"` dans le champ. Résultat : toute la chaîne (3 domaines, 3 services indépendants) est joignable dans Log Analytics via un seul TraceId :
+
+```kusto
+// Reconstituer le parcours complet d'un dossier à travers 3 domaines
+let traceId = "ABC";
+
+// Parcours métier (MTJ — audit 7 ans, écrit par chaque domaine)
+MTJJournal
+| where TraceId == traceId
+| project Timestamp, DomaineName = cloud_RoleName, MessageId, DossierId, Status, DureeMs
+| order by Timestamp asc
+
+// Jointure avec les erreurs techniques (AppInsights — APM 90j)
+| join kind=leftouter (
+    traces
+    | where operation_Id == traceId and severityLevel >= 3
+    | project timestamp, message, cloud_RoleName
+) on $left.Timestamp == $right.timestamp
+```
+
+> **Résumé :** BAM (MTJ) et APM (AppInsights) sont deux systèmes d'écriture totalement indépendants. Le TraceId est la **seule clé de jonction** — propagé à chaque saut par `AzureMessagingProvider` (emission) et `BaseConsumer` (réception), et stocké par R16 dans chaque entité Table.
 
 ---
 
