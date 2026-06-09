@@ -1,3 +1,4 @@
+using Azure.Identity;
 using Microsoft.ApplicationInsights.Channel;
 using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.ApplicationInsights.Extensibility;
@@ -39,6 +40,8 @@ var host = new HostBuilder()
     })
     .ConfigureServices((ctx, services) =>
     {
+        var credential = new VisualStudioCredential();
+
         // ── Observabilité DFO : identité du service dans AI ───────────────────
         // Enregistré EN PREMIER — doit précéder AddApplicationInsightsTelemetryWorkerService.
         services.AddSingleton<ITelemetryInitializer, StateFulTelemetryInitializer>();
@@ -50,6 +53,8 @@ var host = new HostBuilder()
         // ConfigureFunctionsApplicationInsights : adapte le bridge ILogger → AI
         // pour le modèle Isolated Worker (nécessaire pour les customDimensions de scope).
         services.ConfigureFunctionsApplicationInsights();
+        services.Configure<TelemetryConfiguration>(config =>
+            config.SetAzureTokenCredential(credential));
         // AppInsights injecte opts.MinLevel = Warning ET des règles Warning.
         // ── Options DFO : seuils configurables externalisés ───────────────────
         // Lie la section "StateFul" de local.settings.json → StateFulOptions.

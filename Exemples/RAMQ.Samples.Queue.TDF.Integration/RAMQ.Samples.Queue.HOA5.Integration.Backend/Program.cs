@@ -1,3 +1,4 @@
+using Azure.Identity;
 using Microsoft.ApplicationInsights.Channel;
 using Microsoft.ApplicationInsights.DataContracts;
 using Microsoft.ApplicationInsights.Extensibility;
@@ -26,12 +27,16 @@ var host = new HostBuilder()
             ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
             ?? string.Empty;
 
+        var credential = new VisualStudioCredential();
+
         if (!string.IsNullOrWhiteSpace(appInsightsCs))
         {
             services.AddApplicationInsightsTelemetryWorkerService();
             services.ConfigureFunctionsApplicationInsights();
             services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
             services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
+            services.Configure<TelemetryConfiguration>(config =>
+                config.SetAzureTokenCredential(credential));
         }
         // AppInsights injecte opts.MinLevel = Warning ET des règles Warning.
     })

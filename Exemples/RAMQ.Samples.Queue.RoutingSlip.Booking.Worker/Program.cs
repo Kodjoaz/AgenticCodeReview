@@ -50,6 +50,8 @@ var builder = new HostBuilder()
             services.ConfigureFunctionsApplicationInsights();
             services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
             services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
+            services.Configure<TelemetryConfiguration>(config =>
+                config.SetAzureTokenCredential(credential));
         }
 
         var telemetryBuilder = services.AddOpenTelemetry()
