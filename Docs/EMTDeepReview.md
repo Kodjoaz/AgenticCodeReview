@@ -3716,8 +3716,11 @@ Il y a **4 endroits** où un log peut être supprimé entre le code et Azure Mon
       "Microsoft.Azure.Functions.Worker.Grpc":   "None",
 
       // ── Logs métier RAMQ ────────────────────────────────────────────────────
-      "RAMQ.COM.EnterpriseMessageTransit":        "Information",
-      "RAMQ":                                     "Information"
+      // ⚠️ NE PAS ajouter "RAMQ" ici — ce filtre est géré dans Program.cs :
+      //   logging.AddFilter("RAMQ", LogLevel.Error)
+      // Et dans AppInsightsNoiseFilter :
+      //   if (item is TraceTelemetry trace && trace.SeverityLevel < SeverityLevel.Error) return;
+      // Voir §13.10.8 pour l'explication complète des trois niveaux de filtrage.
     },
     "applicationInsights": {
       "samplingSettings": {
@@ -4328,7 +4331,13 @@ public sealed class CalculPrimeService
 
 #### 13.4.6.10 Configuration recommandée par environnement
 
-**`appsettings.Development.json` — pour les devs locaux :**
+> **Rappel — deux destinations, deux configurations :**
+> - `appsettings.json` / `Logging:LogLevel` → contrôle la **console locale** uniquement (pour Worker/BackgroundService non-Azure Functions).
+> - `host.json` logLevel + `logging.AddFilter()` dans `Program.cs` + `AppInsightsNoiseFilter` → contrôle ce qui part vers **AppInsights**. Voir §13.10.8.
+>
+> Les entrées `"RAMQ"` dans `appsettings.json` ci-dessous sont donc pour la visibilité console en développement, pas pour AppInsights.
+
+**`appsettings.Development.json` — console locale, devs locaux :**
 ```json
 {
   "Logging": {
@@ -4342,7 +4351,7 @@ public sealed class CalculPrimeService
 }
 ```
 
-**`appsettings.Staging.json` — pour la pré-prod :**
+**`appsettings.Staging.json` — console locale, pré-prod :**
 ```json
 {
   "Logging": {
@@ -4362,18 +4371,31 @@ public sealed class CalculPrimeService
   "version": "2.0",
   "logging": {
     "logLevel": {
-      "RAMQ":                                    "Information",
-      "RAMQ.COM.EnterpriseMessageTransit":        "Information",
+      // "RAMQ" est intentionnellement absent :
+      //   • logging.AddFilter("RAMQ", LogLevel.Error) dans Program.cs contrôle le worker
+      //   • AppInsightsNoiseFilter bloque les TraceTelemetry < Error au niveau du pipeline
+      // Voir §13.10.8 — Profils de supervision pour l'explication complète.
+
       "Function":                                "None",
-      "Microsoft":                               "Warning",
       "Host":                                    "Warning",
+      "Microsoft":                               "Warning",
       "Azure.Identity":                          "None",
-      "Grpc":                                    "None"
+      "Microsoft.Identity":                      "None",
+      "Grpc":                                    "None",
+      "Microsoft.Azure.Functions.Worker.Grpc":   "None"
+    },
+    "applicationInsights": {
+      "samplingSettings": {
+        "isEnabled":                  true,
+        "excludedTypes":              "Exception;Request",
+        "maxTelemetryItemsPerSecond": 20
+      },
+      "enableLiveMetricsFilters": true
     }
   }
 }
 ```
-> Voir §13.10.8 pour la version complète avec les règles AppInsightsNoiseFilter et les annotations junior.
+> Voir §13.10.8 pour la version complète avec AppInsightsNoiseFilter, les profils Availability/Reliability/Performance et les annotations junior.
 
 > 💡 **Astuce DFO :** pour activer `LogDebug` ponctuellement en prod (diagnostic d'incident), modifier la config dans Azure App Configuration → reload sans redéploiement → désactiver après le diagnostic.
 
@@ -4396,16 +4418,20 @@ public sealed class CalculPrimeService
 
 #### 13.4.6.12 Volume attendu par niveau — calibrage prod
 
-À comparer en preprod / prod pour valider que les niveaux sont bien calibrés :
+> **Important — deux contextes distincts :**
+> - **Console locale** : tous les niveaux `>= Information` sont visibles (contrôlés par `SetMinimumLevel` dans `Program.cs`).
+> - **AppInsights** : uniquement `Error` et `Critical` atteignent Azure Monitor (contrôlés par `logging.AddFilter("RAMQ", LogLevel.Error)` et `AppInsightsNoiseFilter`). Le tableau ci-dessous décrit la distribution naturelle en **console locale** — en AppInsights, seules les deux dernières lignes sont visibles.
 
-| Niveau | Volume cible (% du total) | Volume anormal |
-|---|---|---|
-| `LogTrace` | 0 % (filtré) | > 0 % |
-| `LogDebug` | 0 % (filtré) | > 1 % → vérifier la config |
-| `LogInformation` | 85-95 % | < 70 % ou > 99 % |
-| `LogWarning` | 3-10 % | > 15 % → bug systémique |
-| `LogError` | 0,1-2 % | > 5 % → incident en cours |
-| `LogCritical` | < 0,01 % | > 0,1 % → bug calibrage |
+Distribution naturelle dans la **console locale** (à valider en preprod) :
+
+| Niveau | Volume cible console (% du total RAMQ) | Volume anormal | Visible dans AppInsights |
+|---|---|---|---|
+| `LogTrace` | 0 % (filtré) | > 0 % | Non |
+| `LogDebug` | 0 % (filtré) | > 1 % → vérifier la config | Non |
+| `LogInformation` | 85-95 % | < 70 % ou > 99 % | Non — Profil Debug uniquement |
+| `LogWarning` | 3-10 % | > 15 % → dégradation systémique | Non — Profil Reliability uniquement |
+| `LogError` | 0,1-2 % | > 5 % → incident en cours | **Oui — Profil Availability (prod)** |
+| `LogCritical` | < 0,01 % | > 0,1 % → bug calibrage | **Oui — tous profils** |
 
 > 🟠 **Si vous voyez > 5 % de `LogError` ou > 15 % de `LogWarning` en prod nominale**, ce n'est pas un problème de production — c'est un problème de **calibrage des niveaux** dans le code. À corriger avant de déployer.
 
@@ -5604,16 +5630,18 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
 
 > **Guide décision pour un junior — activer ou désactiver une règle ?**
 >
-> | Règle | Désactiver si… |
-> |---|---|
-> | `TraceTelemetry < Error` | Tu veux voir les Warning de retry (ex: tentative 3/10) pour diagnostiquer un problème de retry |
-> | `applicationinsights.azure.com` | **Jamais** — boucle garantie |
-> | `FunctionRpc` | Problème de communication host ↔ worker |
-> | `Microsoft.AAD` / `login.microsoftonline.com` | Problème d'authentification Azure Identity |
-> | `Microsoft.Tables` / `Azure table` | Problème avec le journal EMT (R16) |
-> | `Azure Service Bus` | Problème de routage des messages Service Bus |
-> | `/Settlement/` | Messages qui restent bloqués (non acquittés) |
-> | `InProc` | Tu veux voir la durée totale des invocations Functions dans AppInsights |
+> | Règle | Désactiver si… | Profil concerné |
+> |---|---|---|
+> | `TraceTelemetry < Error` | Tu veux voir les Warning de retry (ex: tentative 3/10) — **fiabilité**, pas performance | Reliability |
+> | `applicationinsights.azure.com` | **Jamais** — boucle garantie | — |
+> | `FunctionRpc` | Problème de communication host ↔ worker | Debug |
+> | `Microsoft.AAD` / `login.microsoftonline.com` | Problème d'authentification Azure Identity | Debug |
+> | `Microsoft.Tables` / `Azure table` | Problème avec le journal EMT (R16) | Debug |
+> | `Azure Service Bus` | Problème de routage des messages Service Bus | Debug |
+> | `/Settlement/` | Messages qui restent bloqués (non acquittés) | Debug |
+> | `InProc` | Tu veux voir la durée totale des invocations Functions dans AppInsights | Debug |
+>
+> **Pour la performance réelle :** activer le Profil 3 (OTel Metrics) — voir §13.10.8 Profils de supervision.
 
 ---
 
@@ -5666,6 +5694,221 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
 ```
 
 > **Règle d'or :** `"Function": "None"` et `"Microsoft": "Warning"` dans `host.json` sont **indispensables** — ils filtrent les logs du **processus host** qui sont hors de portée de `Program.cs`. En revanche, `"RAMQ"` dans `host.json` est redondant si `logging.AddFilter("RAMQ", LogLevel.Error)` est déjà dans `Program.cs`.
+
+---
+
+#### Authentification AppInsights — clé partagée vs identité gérée
+
+##### Comment fonctionne la connection string actuelle
+
+La connection string actuelle utilise une **clé partagée** (`InstrumentationKey`). C'est la clé elle-même qui constitue l'authentification — aucun token AAD, aucune identité.
+
+```
+InstrumentationKey=62171529-...;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/
+```
+
+Ce que le SDK fait concrètement à chaque envoi :
+
+```
+HTTP POST https://eastus-8.in.applicationinsights.azure.com/v2/track
+Body: { "iKey": "62171529-...", données de télémétrie... }
+```
+
+Azure Monitor reçoit la requête, vérifie que l'`iKey` correspond à une ressource AppInsights dans le tenant, et accepte les données. Quiconque possède cette clé peut envoyer de la télémétrie à ton workspace.
+
+| Mode | Comment ça marche | Risque |
+|---|---|---|
+| `InstrumentationKey` (actuel) | La clé est dans la config — c'est elle l'auth | Si `local.settings.json` fuite (git, logs), n'importe qui peut envoyer des données à ton workspace |
+| `Authorization=AAD` + identité | Token AAD via Managed Identity ou VisualStudioCredential | Aucun secret dans les fichiers — la clé n'existe pas dans la config |
+
+##### Passer à Managed Identity (recommandé pour prod RAMQ)
+
+**Étape 1 — `local.settings.json` : ajouter `Authorization=AAD`**
+
+```json
+"APPLICATIONINSIGHTS_CONNECTION_STRING": "InstrumentationKey=62171529-...;IngestionEndpoint=https://eastus-8.in.applicationinsights.azure.com/;Authorization=AAD"
+```
+
+> L'`InstrumentationKey` reste nécessaire — il identifie **quelle ressource** AppInsights recevoir les données. `Authorization=AAD` remplace l'usage de la clé comme credential d'authentification.
+
+**Étape 2 — `Program.cs` : configurer le credential AAD**
+
+```csharp
+if (!string.IsNullOrWhiteSpace(appInsightsCs))
+{
+    services.AddApplicationInsightsTelemetryWorkerService();
+    services.ConfigureFunctionsApplicationInsights();
+    services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
+    services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
+
+    // ← NOUVEAU : authentification par identité au lieu de clé partagée
+    services.Configure<TelemetryConfiguration>(config =>
+    {
+        config.SetAzureTokenCredential(new DefaultAzureCredential());
+        // DefaultAzureCredential essaie dans l'ordre :
+        //   1. VisualStudioCredential  → local dev (VS Code / Visual Studio connecté)
+        //   2. ManagedIdentityCredential → Azure prod (Function App avec identité assignée)
+    });
+}
+```
+
+**Étape 3 — Azure Portal (prod uniquement)**
+
+Dans la Function App → Identity → System assigned → **On**. Puis dans la ressource Application Insights → Access control (IAM) → Add role assignment → `Monitoring Metrics Publisher` → identité de la Function App.
+
+---
+
+#### Profils de supervision — adapter les filtres à l'objectif
+
+##### Warning ≠ Performance — la distinction critique
+
+> **Erreur de conception fréquente :** activer les logs `Warning` en pensant obtenir des données de performance. Les `Warning` EMT signalent une **dégradation de fiabilité** (retries, circuit breaker). Les vraies données de performance (latences, débit, durées P95) viennent des **métriques `System.Diagnostics.Metrics`** exposées par `MetricsProvider`.
+
+| Ce que tu vois | Ce que ça mesure réellement | Profil |
+|---|---|---|
+| `LogError` : panne permanente, DLQ | **Disponibilité** — le service est tombé | Availability |
+| `LogWarning` : retry tentative 3/10, circuit open | **Fiabilité/Dégradation** — le service souffre mais tient encore | Reliability |
+| `LogInformation` : saga step démarré | **Activité** — flux normal | Debug |
+| `receive_duration_ms`, `send_duration_ms` | **Performance** — latences réelles en ms | Performance |
+
+---
+
+##### Profil 1 — Availability (configuration actuelle — production nominale)
+
+**Objectif :** Détecter les pannes, les DLQ, les exceptions non gérées. Coût minimal.
+
+```csharp
+// AppInsightsNoiseFilter — seuil Error
+if (item is TraceTelemetry trace && trace.SeverityLevel < SeverityLevel.Error)
+    return;
+
+// Program.cs ConfigureLogging
+logging.AddFilter("RAMQ", LogLevel.Error);
+```
+
+```json
+// host.json — inchangé
+"Function": "None", "Host": "Warning", "Microsoft": "Warning"
+```
+
+**Alertes KQL :**
+```kql
+// Pannes actives sur 5 min
+traces
+| where severityLevel >= 3
+| summarize errors = count() by bin(timestamp, 5m), cloud_RoleName
+| where errors > 0
+
+// Taux DLQ
+customMetrics
+| where name == "messages_dlq_total"
+| summarize dlq = sum(value) by bin(timestamp, 5m)
+| where dlq > 0
+```
+
+---
+
+##### Profil 2 — Reliability / Dégradation (activation temporaire)
+
+**Objectif :** Détecter les dégradations avant qu'elles deviennent des pannes — retries croissants, circuit breaker qui s'ouvre. À activer ponctuellement lors d'incidents ou de montées en charge.
+
+```csharp
+// AppInsightsNoiseFilter — abaisser le seuil à Warning
+if (item is TraceTelemetry trace && trace.SeverityLevel < SeverityLevel.Warning)
+    return;
+
+// Program.cs ConfigureLogging
+logging.AddFilter("RAMQ", LogLevel.Warning);
+```
+
+**Alertes KQL :**
+```kql
+// Volume de retries en croissance (signal de dégradation)
+traces
+| where severityLevel == 2 and message contains "Retry exponentiel"
+| summarize retries = count() by bin(timestamp, 5m), cloud_RoleName
+| where retries > 10  // seuil à ajuster selon le SLO
+
+// Transitions circuit breaker
+customMetrics
+| where name == "circuit_transitions_total"
+| summarize transitions = sum(value) by bin(timestamp, 5m), tostring(customDimensions.entity)
+| where transitions > 0
+```
+
+---
+
+##### Profil 3 — Performance (nécessite OTel Metrics — non encore activé)
+
+**Objectif :** Mesurer les latences P95, le débit, les durées par étape du routing slip. Les métriques EMT (`receive_duration_ms`, `send_duration_ms`, etc.) sont déjà émises par `MetricsProvider` via `System.Diagnostics.Metrics` mais ne parviennent pas encore à Azure Monitor — elles nécessitent un exporteur OpenTelemetry séparé.
+
+```csharp
+// NuGet à ajouter : Azure.Monitor.OpenTelemetry.Exporter
+if (!string.IsNullOrWhiteSpace(appInsightsCs))
+{
+    // Pipeline AppInsights existant — inchangé
+    services.AddApplicationInsightsTelemetryWorkerService();
+    services.ConfigureFunctionsApplicationInsights();
+    services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
+    services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
+
+    // ← NOUVEAU : export des métriques EMT (System.Diagnostics.Metrics) vers Azure Monitor
+    // Les métriques arrivent dans la table customMetrics de Log Analytics
+    services.AddOpenTelemetry()
+        .WithMetrics(metrics =>
+        {
+            metrics.AddMeter("RAMQ.COM.EnterpriseMessageTransit"); // Meter déclaré dans MetricsProvider
+            metrics.AddAzureMonitorMetricExporter(o => o.ConnectionString = appInsightsCs);
+        });
+}
+```
+
+> **Note :** Ce pipeline OTel est indépendant du pipeline AppInsights SDK. Les deux coexistent — AppInsights SDK gère les traces/logs, OTel MeterProvider gère les métriques. Il n'y a pas de conflit.
+
+**Métriques EMT disponibles après activation :**
+
+| Métrique | Type | Dimension | Usage performance |
+|---|---|---|---|
+| `receive_duration_ms` | Histogram | `entity_name` | Latence de réception par queue/topic |
+| `send_duration_ms` | Histogram | `entity_name` | Latence d'envoi |
+| `retry_delay_ms` | Histogram | `attempt` | Délai réel appliqué par backoff exponentiel |
+| `messages_sent_total` | Counter | `entity_name`, `entity_type` | Débit d'envoi |
+| `messages_received_total` | Counter | `entity_name`, `entity_type` | Débit de réception |
+| `routing_slip_compensation_total` | Counter | `slip_name`, `reason` | Taux d'échec saga |
+| `claim_check_upload_duration_ms` | Histogram | `entity_name` | Latence upload blob |
+| `journal_write_duration_ms` | Histogram | — | Latence écriture journal |
+
+**KQL performance dans `customMetrics` :**
+```kql
+// P95 latence réception par entité — détecter les queues lentes
+customMetrics
+| where name == "receive_duration_ms"
+| summarize p95_ms = percentile(value, 95), avg_ms = avg(value)
+    by tostring(customDimensions.entity_name), bin(timestamp, 5m)
+| order by p95_ms desc
+
+// Débit messages envoyés par minute
+customMetrics
+| where name == "messages_sent_total"
+| summarize throughput = sum(value) by bin(timestamp, 1m), tostring(customDimensions.entity_name)
+
+// Taux d'échec saga (compensation routing slip)
+customMetrics
+| where name == "routing_slip_compensation_total"
+| summarize compensations = sum(value) by bin(timestamp, 5m), tostring(customDimensions.slip_name)
+| where compensations > 0
+```
+
+---
+
+##### Récapitulatif — quel profil activer quand
+
+| Situation | Profil actif | Durée recommandée |
+|---|---|---|
+| Production nominale | **Availability** — Error uniquement | Permanent |
+| Incident en cours / SLA dégradé | **Reliability** — Warning | Durée de l'incident |
+| Optimisation de performance / capacity planning | **Performance** — OTel Metrics | Permanent (faible coût) |
+| Debug fonctionnel ciblé | Désactiver `TraceTelemetry < Error` temporairement | 30 min max en prod |
 
 ---
 
