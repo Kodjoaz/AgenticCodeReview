@@ -44,11 +44,15 @@ var builder = new HostBuilder()
             ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
             ?? string.Empty;
 
+        var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
+
         if (!string.IsNullOrWhiteSpace(appInsightsCs))
         {
             services.AddApplicationInsightsTelemetryWorkerService();
             services.ConfigureFunctionsApplicationInsights();
             services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
+            services.Configure<TelemetryConfiguration>(config =>
+                config.SetAzureTokenCredential(credential));
         }
 
         var telemetryBuilder = services.AddOpenTelemetry()
@@ -64,10 +68,14 @@ var builder = new HostBuilder()
             .UseFunctionsWorkerDefaults();
 
         if (!string.IsNullOrWhiteSpace(appInsightsCs))
-            telemetryBuilder.UseAzureMonitorExporter(o => o.ConnectionString = appInsightsCs);
+            telemetryBuilder.UseAzureMonitorExporter(o =>
+            {
+                o.ConnectionString = appInsightsCs;
+                o.Credential = credential;
+            });
 
         // R12 — Boilerplate EMT réduit à un appel.
-        services.AddEMTSampleProducerDefaults(ctx.Configuration, new AzureIdentity::Azure.Identity.VisualStudioCredential());
+        services.AddEMTSampleProducerDefaults(ctx.Configuration, credential);
 
         services.AddProducer<SlipEnvelope>("ReserverVoiture");
 

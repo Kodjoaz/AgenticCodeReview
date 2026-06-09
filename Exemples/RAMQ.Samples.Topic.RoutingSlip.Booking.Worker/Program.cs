@@ -42,15 +42,17 @@ var builder = new HostBuilder()
             ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
             ?? string.Empty;
 
+        var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
+
         if (!string.IsNullOrWhiteSpace(appInsightsCs))
         {
             services.AddApplicationInsightsTelemetryWorkerService();
             services.ConfigureFunctionsApplicationInsights();
             services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
             services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
+            services.Configure<TelemetryConfiguration>(config =>
+                config.SetAzureTokenCredential(credential));
         }
-
-        var credential = new AzureIdentity::Azure.Identity.VisualStudioCredential();
 
         var telemetryBuilder = services.AddOpenTelemetry()
             .WithTracing(t =>

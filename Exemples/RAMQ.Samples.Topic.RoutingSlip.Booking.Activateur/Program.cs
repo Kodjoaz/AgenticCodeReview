@@ -36,16 +36,20 @@ var builder = new HostBuilder()
             ?? Environment.GetEnvironmentVariable("APPLICATIONINSIGHTS_CONNECTION_STRING")
             ?? string.Empty;
 
+        var credential = new VisualStudioCredential();
+
         if (!string.IsNullOrWhiteSpace(appInsightsCs))
         {
             services.AddApplicationInsightsTelemetryWorkerService();
             services.ConfigureFunctionsApplicationInsights();
             services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
             services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
+            services.Configure<TelemetryConfiguration>(config =>
+                config.SetAzureTokenCredential(credential));
         }
         // AppInsights injecte opts.MinLevel = Warning ET des règles Warning.
         // R12 — Boilerplate EMT réduit à un appel.
-        services.AddEMTSampleProducerDefaults(ctx.Configuration, new VisualStudioCredential());
+        services.AddEMTSampleProducerDefaults(ctx.Configuration, credential);
 
         // Producer → publie le slip vers le topic (première étape = ReserverVoiture)
         services.AddProducer<SlipEnvelope>("ReserverVoiture");
