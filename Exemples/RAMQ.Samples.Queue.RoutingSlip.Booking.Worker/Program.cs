@@ -113,7 +113,11 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
     public void Process(ITelemetry item)
     {
         if (item is TraceTelemetry trace && trace.SeverityLevel < SeverityLevel.Error)
-            return;
+        {
+            trace.Properties.TryGetValue("CategoryName", out var category);
+            if (category == null || !category.StartsWith("RAMQ", StringComparison.OrdinalIgnoreCase))
+                return;
+        }
         if (item is DependencyTelemetry dep)
         {
             var data = dep.Data ?? string.Empty;
