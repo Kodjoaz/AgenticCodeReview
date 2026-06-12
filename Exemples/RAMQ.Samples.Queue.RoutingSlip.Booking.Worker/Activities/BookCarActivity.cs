@@ -43,6 +43,10 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
             CancellationToken ct)
         {
            
+            _logger.LogInformation(
+                "[{Step}] Tentative {Attempt} — ReservationId={Id}, Voiture={Car}, SlipId={SlipId}",
+                ctx.StepName, ctx.Attempt, ctx.Arguments.ReservationId, ctx.Arguments.CarModel, ctx.SlipId);
+
             // Span métier — enfant du routing_slip.step émis par EMT.
             // Visible dans Jaeger : routing_slip.step > booking.car.reserve
             using var span = BookingTelemetry.Source.StartActivity("booking.car.reserve", ActivityKind.Client);
@@ -64,7 +68,9 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 span?.SetTag("booking.retry.reason", "HTTP 503 Service Unavailable");
                 span?.AddEvent(new ActivityEvent("retry.scheduled",
                     tags: new ActivityTagsCollection { ["attempt"] = ctx.Attempt, ["max_attempts"] = 3 }));
-                
+                _logger.LogWarning(
+                    "[{Step}] Service voiture indisponible (transitoire) — Tentative {Attempt}/3, SlipId={SlipId}",
+                    ctx.StepName, ctx.Attempt, ctx.SlipId);
                 return ActivityResult.RetryExponential(
                     $"Service de réservation voiture indisponible — tentative {ctx.Attempt}",
                     new HttpRequestException("HTTP 503 Service Unavailable (SIMULATION)"));
@@ -83,7 +89,9 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 span?.SetTag("booking.retry.reason", "HTTP 504 Gateway Timeout");
                 span?.AddEvent(new ActivityEvent("dlq.budget_consumption",
                     tags: new ActivityTagsCollection { ["attempt"] = ctx.Attempt }));
-             
+                _logger.LogWarning(
+                    "[{Step}] Panne permanente (CRASH-) — Tentative {Attempt}, SlipId={SlipId}",
+                    ctx.StepName, ctx.Attempt, ctx.SlipId);
                 return ActivityResult.RetryExponential(
                     $"Service voiture inaccessible — panne permanente simulée (tentative {ctx.Attempt})",
                     new TimeoutException("HTTP 504 Gateway Timeout (SIMULATION CRASH-)"));
@@ -122,7 +130,7 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 span?.SetStatus(ActivityStatusCode.Error, "Voiture indisponible — Fault → DLQ");
                 span?.SetTag("booking.car.available", false);
                 span?.SetTag("error.type",           "Fault");
-                _logger.LogWarning(
+                _logger.LogError(
                     "[{Step}] Voiture '{Model}' indisponible → Fault. SlipId={SlipId}",
                     ctx.StepName, ctx.Arguments.CarModel, ctx.SlipId);
                 return ActivityResult.Fault(

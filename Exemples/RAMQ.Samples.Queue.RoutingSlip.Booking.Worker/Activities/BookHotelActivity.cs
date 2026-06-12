@@ -49,10 +49,7 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
             ActivityContext<BookHotelArgs> ctx,
             CancellationToken ct)
         {
-            _logger.LogInformation(
-                "[TRACE] Entrée dans ExecuteAsync — Step={Step}, Attempt={Attempt}, HotelName={HotelName}, SlipId={SlipId}",
-                ctx.StepName, ctx.Attempt, ctx.Arguments.HotelName, ctx.SlipId);
-
+            
             var confirmationVoiture = ctx.GetVariable<string>("ConfirmationVoiture");
 
             _logger.LogInformation(
@@ -63,15 +60,6 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
             // Span métier — enfant du routing_slip.step émis par EMT.
             using var span = BookingTelemetry.Source.StartActivity("booking.hotel.reserve", ActivityKind.Client);
 
-            // Log pour vérifier la condition TRANSIENT-
-            if (!ctx.Arguments.HotelName.StartsWith("TRANSIENT-", StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.LogInformation("[TRACE] HotelName ne commence PAS par TRANSIENT- : {HotelName}", ctx.Arguments.HotelName);
-            }
-            else if (ctx.Attempt > 2)
-            {
-                _logger.LogInformation("[TRACE] Tentative > 2 pour TRANSIENT- : Attempt={Attempt}, HotelName={HotelName}", ctx.Attempt, ctx.Arguments.HotelName);
-            }
             span?.SetTag("booking.slip_id",        ctx.SlipId.ToString());
             span?.SetTag("booking.reservation_id", ctx.Arguments.ReservationId.ToString());
             span?.SetTag("booking.step",           ctx.StepName);
@@ -105,7 +93,7 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 span?.SetStatus(ActivityStatusCode.Error, "Hôtel complet — Fault → compensation + DLQ");
                 span?.SetTag("booking.hotel.available", false);
                 span?.SetTag("error.type",              "Fault");
-                _logger.LogWarning(
+                _logger.LogError(
                     "[{Step}] Hôtel '{Hotel}' complet → Fault + compensation. SlipId={SlipId}",
                     ctx.StepName, ctx.Arguments.HotelName, ctx.SlipId);
 

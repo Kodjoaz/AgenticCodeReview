@@ -99,7 +99,7 @@ namespace RAMQ.Samples.Queue.RoutingSlip.Booking.Worker.Activities
                 span?.SetStatus(ActivityStatusCode.Error, "Vol annulé — Fault → compensation + DLQ");
                 span?.SetTag("booking.flight.available", false);
                 span?.SetTag("error.type",               "Fault");
-                _logger.LogWarning(
+                _logger.LogError(
                     "[{Step}] Vol '{Flight}' annulé → Fault + compensation. SlipId={SlipId}",
                     ctx.StepName, ctx.Arguments.FlightName, ctx.SlipId);
 
