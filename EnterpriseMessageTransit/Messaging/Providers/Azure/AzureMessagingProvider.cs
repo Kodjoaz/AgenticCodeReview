@@ -145,10 +145,13 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             activity?.SetTag("messaging.session_id",  context.SessionId);
 
             // P4-T2 — Propagation W3C Trace Context dans les ApplicationProperties Service Bus.
-            // Permet au consumer de rattacher son span à celui du producteur (corrélation cross-service).
+            // "traceparent"   : lu par RoutingSlipExecutor/BaseConsumer pour créer le span messaging.consume.
+            // "Diagnostic-Id" : lu par le trigger Azure Functions (host) pour parenter l'invocation Activity
+            //                   avec le TraceId du producteur → end-to-end correlation dans Application Insights.
             if (Activity.Current?.Id is { } traceId)
             {
-                message.ApplicationProperties["traceparent"] = traceId;
+                message.ApplicationProperties["traceparent"]  = traceId;
+                message.ApplicationProperties["Diagnostic-Id"] = traceId;
                 var traceState = Activity.Current.TraceStateString;
                 if (!string.IsNullOrEmpty(traceState))
                     message.ApplicationProperties["tracestate"] = traceState;

@@ -170,7 +170,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             using var activity = traceparent != null
                 ? MessagingActivitySource.Source.StartActivity("messaging.retry.immediate", ActivityKind.Internal, parentId: traceparent)
                 : MessagingActivitySource.Source.StartActivity("messaging.retry.immediate", ActivityKind.Internal);
-            activity?.SetTag("messaging.system",         "servicebus");
+            activity?.SetTag("messaging.system",                  "servicebus");
+            activity?.SetTag("messaging.source.traceparent",      traceparent);
             activity?.SetTag("messaging.message_id",     message.MessageId);
             activity?.SetTag("messaging.delivery_count", attempt);
             activity?.SetTag("messaging.max_delivery",   maxDeliveryCount);
@@ -321,7 +322,8 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
             using var activity = traceparent != null
                 ? MessagingActivitySource.Source.StartActivity("messaging.retry.exponential", ActivityKind.Internal, parentId: traceparent)
                 : MessagingActivitySource.Source.StartActivity("messaging.retry.exponential", ActivityKind.Internal);
-            activity?.SetTag("messaging.system",         "servicebus");
+            activity?.SetTag("messaging.system",                  "servicebus");
+            activity?.SetTag("messaging.source.traceparent",      traceparent);
             activity?.SetTag("messaging.message_id",     message.MessageId);
             activity?.SetTag("messaging.session_id",     message.SessionId);
             activity?.SetTag("messaging.delivery_count", attempt);

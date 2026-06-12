@@ -69,6 +69,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.RoutingSlip
             using var consumeActivity = traceparent != null
                 ? MessagingActivitySource.Source.StartActivity("messaging.consume", ActivityKind.Consumer, parentId: traceparent)
                 : MessagingActivitySource.Source.StartActivity("messaging.consume", ActivityKind.Consumer);
+            // Tag aussi consumeActivity pour que ServiceBusCorrelationInitializer le trouve
+            // quand Activity.Current = consumeActivity (après le StartActivity avec remote parent).
+            consumeActivity?.SetTag("messaging.source.traceparent", traceparent);
             consumeActivity?.SetTag("messaging.system", "servicebus");
 
             // 1. Lire l'enveloppe

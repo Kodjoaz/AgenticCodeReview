@@ -17,6 +17,7 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Consumer
                 ActivityKind.Consumer,
                 parentId: traceparent);
             consumeActivity?.SetTag("messaging.system", "servicebus");
+            consumeActivity?.SetTag("messaging.source.traceparent", traceparent);
 
             var deserializeActivity = MessagingActivitySource.Source.StartActivity(
                 "messaging.deserialize",

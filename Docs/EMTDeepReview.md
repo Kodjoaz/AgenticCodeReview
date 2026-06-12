@@ -373,7 +373,7 @@ public class MessageTransitContext<TMessage> where TMessage : class
 | Exception | Action EMT |
 |---|---|
 | Succès | `CompleteMessageAsync` |
-| `ImmediateRetryException` | `AbandonMessageAsync` (relivraison immédiate) |
+| `ImmediateRetryException` | `AbandonAsync` avec `ReferralCount = attempt` dans `propertiesToModify` — Service Bus relivrera le message avec la propriété applicative à jour, ce qui permet à `DeserializeMessageSafe` de calculer `Attempt = ReferralCount + 1` correctement |
 | `ExponentialRetryException` | délai exponentiel + relivraison |
 | `ImmediateDLQException` | `DeadLetterMessageAsync` |
 | `OperationCanceledException` | propagé |
@@ -3230,13 +3230,18 @@ services.AddOpenTelemetry()
   ║  │  └──────────────────────────────────────┘ │      ║        │
   ║  │                                            │      ║        │
   ║  │  ┌──────────────────────────────────────┐ │      ║        │
-  ║  │  │ FILTRES (3 niveaux, voir §13.10.8)   │ │      ║        │
-  ║  │  │  ① logging.AddFilter("RAMQ",Error)   │ │      ║        │
-  ║  │  │     → bloque Warning/Info du worker  │ │      ║        │
+  ║  │  │ FILTRES (4 niveaux, voir §13.10.8)   │ │      ║        │
+  ║  │  │  ①-A AddFilter("RAMQ",Information)   │ │      ║        │
+  ║  │  │     → console ✅, AppInsights override│ │      ║        │
+  ║  │  │  ①-B ConfigureFunctionsAppInsights() │ │      ║        │
+  ║  │  │     → pose Warning sur AI provider   │ │      ║        │
+  ║  │  │  ①-C AddFilter<AILoggerProvider>     │ │      ║        │
+  ║  │  │     ("RAMQ",Information) → override  │ │      ║        │
   ║  │  │  ② host.json logLevel                │ │      ║        │
   ║  │  │     → bloque logs du host Functions  │ │      ║        │
   ║  │  │  ③ AppInsightsNoiseFilter             │ │      ║        │
-  ║  │  │     → bloque TraceTelemetry < Error  │ │      ║        │
+  ║  │  │     → bloque TraceTelemetry<Error     │ │      ║        │
+  ║  │  │       sauf namespace RAMQ             │ │      ║        │
   ║  │  │     → bloque DependencyTelemetry bruit│ │      ║        │
   ║  │  └──────────────────────────────────────┘ │      ║        │
   ║  │                                            │      ║        │
@@ -5189,13 +5194,13 @@ Cette sous-section liste les **gaps observabilité ligne par ligne** identifiés
 | **O1** | `BaseConsumer.cs` (toutes lignes) | 0 occurrence `_logger.Log*` dans la lib EMT — délègue à `AzureConsumerTelemetry` | ✅ Volontaire (SRP). Garder. | 🟢 OK |
 | **O2** | `Producer.cs:173-175` | `LogWarning(jEx, "Journal failed (publish)")` mais **aucun scope** → log orphelin sans `MessageId` en customDim si l'appelant n'a pas posé de scope | Wrapper le bloc `try { await _journal... } catch { _logger.LogWarning }` dans un `using var s = _logger.BeginScope(new { context.MessageId, context.CorrelationId })` | 🟠 Majeur |
 | **O3** | `RetryPolicyHandler.cs` (8 logs) | Logs riches mais **aucun scope** | Idem O2 pour chaque appel | 🟠 Majeur |
-| **O4** | `AzureMessagingProvider.cs:140-141` | Span `messaging.send` créé mais **pas de propagation `traceparent`** dans `ApplicationProperties` | Implémenter W3C TraceContext propagation (lot R14 nouveau) — déjà documenté comme Phase 3 dans `tracing.md:139` | 🔴 **Critique** |
-| **O5** | `RoutingSlipExecutor.cs:122-124` | Span `routing_slip.step` parent du step suivant **non lié** car re-création d'`Activity` à chaque worker | Lier via `parentContext: ActivityContext.Parse(traceparent)` depuis SlipEnvelope.Header.TraceContext | 🔴 **Critique** |
+| **O4** | `AzureMessagingProvider.cs:140-141` | ✅ **Résolu (R14 P4-T2+T3)** — `traceparent` + `Diagnostic-Id` injectés dans `ApplicationProperties`; `messaging.source.traceparent` taggué sur la nouvelle Activity (fix P4-T3) | Résolu — voir §13.9 Lot R14 | ✅ Résolu |
+| **O5** | `RoutingSlipExecutor.cs:122-124` | ✅ **Résolu (R14 P4-T3)** — `messaging.source.traceparent` maintenant posé sur l'Activity créée par `StartActivity`, pas sur la root Azure Functions Activity | Résolu — voir §13.9 Lot R14 P4-T3 | ✅ Résolu |
 | **O6** | `JsonMessageSerializer.cs` (9 logs) | Logs sur désérialisation mais **niveau LogLevel.Error pour erreurs récupérables** | Repasser à `LogWarning` ; reserver `LogError` aux exceptions inattendues | 🟡 Mineur |
 | **O7** | `ClaimCheckPreparer.cs:57-59` | Span `messaging.claimcheck.upload` mais **pas de métrique `claim_check_uploads_total`** alors qu'`IncrementClaimCheckUploads` existe | Ajouter l'appel `_metrics?.IncrementClaimCheckUploads(...)` après upload réussi | 🟡 Mineur |
 | **O8** | Samples Consumer (19 fichiers) | Toutes utilisent `BeginScope({MessageId, SessionId})` ✅ | Bonne pratique — exemple à imiter. **Documenter** dans `CONTRIBUTING.md` côté samples. | 🟢 OK |
 | **O9** | Samples Activator (Azure Functions) | Aucun n'utilise `Logger.BeginScope` autour de `ConsumeAsync` | Ajouter scope englobant dans chaque Activator pour préserver la corrélation côté Function host | 🟠 Majeur |
-| **O10** | `RetryPolicyHandler.cs:447` | `ReferralCount` injecté dans `ApplicationProperties` mais **pas comme tag span** | Ajouter `activity?.SetTag("messaging.referral_count", referralCount)` lors du retry | 🟡 Mineur |
+| **O10** | `RetryPolicyHandler.cs` | ✅ **Résolu** — `HandleImmediateRetryAsync` n'injectait pas `ReferralCount` dans `propertiesToModify` de `AbandonAsync` : Service Bus relivrait sans incrémenter la propriété applicative, et `DeserializeMessageSafe` calculait `Attempt = ReferralCount + 1 = 1` à chaque relivraison. Fix : `AbandonAsync(new Dictionary<string, object> { [AzureMessagingProperties.ReferralCount] = attempt }, ct)`. Tag span `messaging.referral_count` ajouté en même temps sur les spans retry immediate et exponential. | Résolu | ✅ Résolu |
 | **O11** | `ServiceBusHealthCheck.cs` | Test connectivité SB ✅ mais ne vérifie pas `RequiresDuplicateDetection = true` | Étendre selon recommandation lot R4 (cf. §11.4) — idempotence triangle | 🟠 Majeur (déjà dans R4) |
 | **O12** | Aucun fichier | **Aucun Workbook Azure Monitor pré-livré** dans le repo | Créer `docs/observability/workbooks/emt-overview.workbook.json` (template) | 🟡 Mineur |
 | **O13** | Aucun fichier | Aucun template Bicep pour Diagnostic Settings Service Bus | Créer `docs/observability/bicep/diag-servicebus.bicep` (cf. §13.3.1) | 🟠 Majeur |
@@ -5224,6 +5229,15 @@ Ajoutés au plan de résolution (§11) :
 1. `AzureMessagingProvider.SendAsync` + `SendBatchAsync` : injectent `traceparent` (et `tracestate` si présent) dans `ApplicationProperties` — Producer → Service Bus → Consumer en un seul arbre de trace.
 2. `AzureFunctionMessagingAdapter.GetTraceparent()` : lit `traceparent` depuis `ApplicationProperties` du message reçu.
 3. `AzureConsumerTelemetry.BeginReceive(traceparent)` : crée le span `messaging.consume` avec `parentId: traceparent` — lien W3C entre Publisher et Consumer visible dans Application Map.
+
+**Livré (P4-T3) — Correction propagation bout-en-bout :**
+
+4. `AzureMessagingProvider.SendAsync` : injecte également `Diagnostic-Id` (même valeur que `traceparent`) dans `ApplicationProperties`. Requis pour que le trigger Azure Functions (SDK `Azure.Messaging.ServiceBus`) reconnaisse le parent de trace et crée l'invocation Activity comme enfant direct de la trace Producer — sans ce header, Azure Functions crée une nouvelle racine et les traces apparaissent fragmentées dans Application Insights.
+5. Correction du tag `messaging.source.traceparent` : après `StartActivity("messaging.consume", parentId: traceparent)`, `Activity.Current` pointe vers la **nouvelle** Activity créée, et non vers l'Activity racine Azure Functions. Le tag était posé sur l'ancienne Activity (avant l'appel), donc `ServiceBusCorrelationInitializer.GetTagItem(...)` retournait `null` et la corrélation échouait silencieusement. Fix : tagguer l'Activity **retournée** par `StartActivity` — corrigé dans :
+   - `AzureConsumerTelemetry.BeginReceive` — span `messaging.consume`
+   - `RoutingSlipExecutor.RunAsync` — span `messaging.consume` du routing slip
+   - `RetryPolicyHandler.HandleImmediateRetryAsync` — span `messaging.retry.immediate`
+   - `RetryPolicyHandler.HandleExponentialRetryAsync` — span `messaging.retry.exponential`
 
 #### Lot R15 — Réconciliation périodique des messages vs journal
 
@@ -5959,17 +5973,28 @@ volumes
 ```
 CHEMIN 1 — Logs du code worker (ILogger dans ton code RAMQ)
 ─────────────────────────────────────────────────────────────────────
-_logger.LogError("Service en panne permanente...")
+_logger.LogInformation("[BookCar] Tentative 1...")
   → Microsoft.Extensions.Logging pipeline (processus worker)
-    → FILTRE ①-A : logging.AddFilter("RAMQ", LogLevel.Error) [Program.cs]
-    │   → bloque Information et Warning avant AppInsights
-    │   → ⚠️ peut être court-circuité par ConfigureFunctionsApplicationInsights()
+    → FILTRE ①-A global : logging.AddFilter("RAMQ", LogLevel.Information) [Program.cs]
+    │   → s'applique à TOUS les providers (console, AppInsights…)
+    │   → la console affiche le log ✅
+    │
+    → FILTRE ①-B provider : ConfigureFunctionsApplicationInsights() pose silencieusement
+    │   (ApplicationInsightsLoggerProvider, null) → Warning
+    │   → ECRASE le filtre global ①-A pour AppInsights uniquement
+    │   → sans override → AppInsights ne voit que Warning+ même si ①-A dit Information ❌
+    │
+    → OVERRIDE nécessaire :
+    │   logging.AddFilter<ApplicationInsightsLoggerProvider>("RAMQ", LogLevel.Information)
+    │   → règle (provider + catégorie) bat la règle (provider seul) de ①-B
+    │   → AppInsights voit les logs RAMQ Information ✅
     ↓
     ApplicationInsightsLoggerProvider → AppInsights
     → Chain ITelemetryProcessor
-      → FILTRE ①-B : AppInsightsNoiseFilter — TraceTelemetry < Error
-      │   → filet de sécurité : supprime tout TraceTelemetry Warning/Information
-      │   → incontournable car opère directement dans le pipeline AppInsights
+      → FILTRE ①-C : AppInsightsNoiseFilter — TraceTelemetry < Error sauf namespace RAMQ
+      │   → bloque Warning/Information des autres namespaces (Microsoft, Azure…)
+      │   → laisse passer les TraceTelemetry RAMQ Information/Warning
+      │   → incontournable — opère directement dans le pipeline AppInsights
       ↓
     → table AppTraces (Log Analytics)
 
@@ -6002,7 +6027,8 @@ HttpClient / Azure SDK / OTel exporter / Azure Identity
 
 | Si le bruit vient de... | Filtre à utiliser | Pourquoi |
 |---|---|---|
-| Logs `ILogger` de ton code RAMQ (Warning/Information non désirés) | `logging.AddFilter("RAMQ", LogLevel.Error)` dans `Program.cs` | Filtre au niveau de l'`ILogger` avant toute transmission |
+| Logs RAMQ Information/Warning **manquants dans AppInsights** (visibles en console seulement) | `logging.AddFilter<ApplicationInsightsLoggerProvider>("RAMQ", LogLevel.Information)` dans `Program.cs` | `ConfigureFunctionsApplicationInsights()` pose un filtre Warning pour `ApplicationInsightsLoggerProvider` — le filtre global `AddFilter("RAMQ", Information)` ne le bat pas. Seul un filtre provider+catégorie gagne. |
+| Logs RAMQ Information/Warning **non désirés** dans AppInsights (trop de bruit) | `logging.AddFilter("RAMQ", LogLevel.Error)` dans `Program.cs` + `AppInsightsNoiseFilter` | Double couverture : filtre ILogger + filet `ITelemetryProcessor` |
 | Logs de démarrage Azure Functions (Executing, Warmup, Host...) | `host.json` `logLevel` | Ces logs viennent du **processus host**, hors de portée du worker |
 | Dépendances HTTP ou InProc capturées automatiquement par le SDK | `AppInsightsNoiseFilter` (`ITelemetryProcessor`) | Ce sont des **DependencyTelemetry** — ni `Program.cs` ni `host.json` ne les voient |
 
@@ -6036,23 +6062,48 @@ Exemple : "Executing 'Functions.ReserverVol'"
   → Seul host.json "Function": "None" peut le bloquer
 ```
 
-#### `AddFilter("RAMQ", LogLevel.Error)` dans `Program.cs` — le filtre le plus fiable pour le code RAMQ
+#### `AddFilter` dans `Program.cs` — nuances console vs Application Insights
 
-En dotnet-isolated avec `ConfigureFunctionsApplicationInsights()`, le `ApplicationInsightsLoggerProvider` **respecte** les `AddFilter()` déclarés dans `ConfigureLogging`. Ce filtre agit au niveau de l'`ILogger` lui-même — le log Warning/Information n'est jamais créé, donc il ne peut pas atteindre AppInsights.
+> ⚠️ **Piège fréquent :** on ajoute `AddFilter("RAMQ", LogLevel.Information)` dans `Program.cs`, les logs RAMQ Information apparaissent dans la **console locale** mais restent absents de **Application Insights**. Ce n'est pas un bug — c'est un effet de `ConfigureFunctionsApplicationInsights()`.
+
+##### Pourquoi console et AppInsights ne voient pas la même chose
+
+`ConfigureFunctionsApplicationInsights()` (appelé dans le bloc `services.ConfigureFunctionsApplicationInsights()`) enregistre silencieusement une règle de filtre **spécifique au provider** `ApplicationInsightsLoggerProvider` :
+
+```
+(provider: ApplicationInsightsLoggerProvider, category: null) → LogLevel.Warning
+```
+
+L'algorithme de sélection .NET préfère les règles **provider-spécifiques** aux règles globales. Résultat :
+
+| Filtre déclaré | S'applique à | RAMQ Information visible dans... |
+|---|---|---|
+| `AddFilter("RAMQ", LogLevel.Information)` | **Tous les providers** (console, AppInsights) | Console ✅ / AppInsights ❌ (override Warning de ConfigureFunctions) |
+| `AddFilter<ApplicationInsightsLoggerProvider>("RAMQ", LogLevel.Information)` | **AppInsights uniquement** | Console ✅ / AppInsights ✅ |
+
+La règle globale perd contre la règle provider-spécifique de `ConfigureFunctionsApplicationInsights()`. La règle provider+catégorie gagne contre la règle provider-seul car elle est **plus spécifique**.
+
+##### Solution — filtre provider-spécifique RAMQ
 
 ```csharp
 .ConfigureLogging(logging =>
 {
-    logging.AddFilter("RAMQ",      LogLevel.Error);   // ← seuls Error/Critical RAMQ → AppInsights ✅
-    logging.AddFilter("Microsoft", LogLevel.Warning); // ← console ET AppInsights worker ✅
+    logging.AddFilter("RAMQ",      LogLevel.Information); // console ET autres providers
+    logging.AddFilter("Microsoft", LogLevel.Warning);
     logging.AddFilter("System",    LogLevel.Warning);
     logging.AddFilter("Azure",     LogLevel.Warning);
+    // Override le filtre Warning par défaut de ConfigureFunctionsApplicationInsights()
+    // pour le namespace RAMQ uniquement — sans cela, AppInsights ne reçoit que Warning+.
+    logging.AddFilter<Microsoft.Extensions.Logging.ApplicationInsights.ApplicationInsightsLoggerProvider>(
+        "RAMQ", LogLevel.Information);
 })
 ```
 
-> **Pourquoi `"RAMQ"` dans `host.json` est désormais redondant :** le filtre code-side ci-dessus garantit qu'aucun log RAMQ Warning/Information ne quitte le worker. L'entrée `"RAMQ"` dans `host.json` peut être omise. En revanche, les autres entrées (`Function`, `Host`, `Microsoft`) restent **indispensables** car elles filtrent les logs du processus **host** — hors de portée de `Program.cs`.
+> **Pourquoi l'override est nécessaire :** `ConfigureFunctionsApplicationInsights()` pose `(ApplicationInsightsLoggerProvider, null) → Warning`. Sans la ligne `AddFilter<ApplicationInsightsLoggerProvider>("RAMQ", Information)`, les logs `LogInformation` du namespace RAMQ sont bloqués par cette règle avant d'atteindre l'`ITelemetryProcessor` — donc avant même que `AppInsightsNoiseFilter` puisse les traiter.
 
-> **Limite :** `AddFilter("Microsoft", Warning)` dans `Program.cs` filtre les logs Microsoft du **worker** uniquement. Les logs Microsoft générés par le **processus host** (Executing, Warmup, etc.) ne sont pas affectés — c'est pour cela que `host.json` reste nécessaire pour ces catégories.
+> **host.json `"RAMQ": "Information"` :** contrôle le pipeline **host** (processus host Azure Functions), pas le pipeline worker. Ces deux filtres sont **complémentaires** — `host.json` pour les logs du host, `AddFilter<ApplicationInsightsLoggerProvider>` pour les logs du worker vers AppInsights.
+
+> **Limite :** `AddFilter("Microsoft", Warning)` dans `Program.cs` filtre les logs Microsoft du **worker** uniquement. Les logs Microsoft générés par le **processus host** (Executing, Warmup, etc.) ne sont pas affectés — `host.json` reste nécessaire pour ces catégories.
 
 ---
 
@@ -6071,7 +6122,7 @@ En dotnet-isolated avec `ConfigureFunctionsApplicationInsights()`, le `Applicati
 | `POST /Settlement/Complete` | `DependencyTelemetry` (HTTP) | Functions message settlement → HttpClient | `AppInsightsNoiseFilter` : `data.Contains("/Settlement/")` |
 | `TableClient.AddEntity` | `DependencyTelemetry` (InProc) | Azure.Data.Tables SDK → DependencyTrackingTelemetryModule | `AppInsightsNoiseFilter` : `type.Contains("Microsoft.Tables")` |
 | `function BookingActivateur (8.8 s)` | `DependencyTelemetry` (InProc) | Runtime Azure Functions — track automatiquement la durée de chaque invocation | `AppInsightsNoiseFilter` : `type == "InProc"` |
-| `LogWarning` / `LogInformation` du code RAMQ (ex: retry tentative 3/10) | `TraceTelemetry` | `ILogger<T>` dans ton code worker (catégorie commence par `RAMQ`) | `AppInsightsNoiseFilter` : `trace.SeverityLevel < SeverityLevel.Error` (fiable) **ou** `logging.AddFilter("RAMQ", LogLevel.Error)` dans `Program.cs` (peut être court-circuité) |
+| `LogWarning` / `LogInformation` du code RAMQ (ex: retry tentative 3/10) | `TraceTelemetry` | `ILogger<T>` dans ton code worker (catégorie commence par `RAMQ`) | Pour les **laisser passer** : `AddFilter<ApplicationInsightsLoggerProvider>("RAMQ", Information)` + `AppInsightsNoiseFilter` patché (laisse RAMQ < Error). Pour les **bloquer** : `AddFilter("RAMQ", LogLevel.Error)` — mais ne suffit pas seul car `ConfigureFunctionsApplicationInsights()` peut court-circuiter. |
 
 > **Piège classique :** `FilterHttpRequestMessage` (OTel) ne résout PAS le problème des dépendances. Ce filtre contrôle uniquement la création de *spans OTel* — il ne touche pas le pipeline SDK AppInsights. S'il bloque `*.in.applicationinsights.azure.com`, l'OTel exporter ne peut plus envoyer de données. **Ne jamais l'utiliser pour filtrer le bruit AppInsights.**
 
@@ -6137,14 +6188,22 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
 {
     public void Process(ITelemetry item)
     {
-        // ── Logs ILogger sous le niveau Error ────────────────────────────────────
+        // ── Logs ILogger sous le niveau Error — sauf namespace RAMQ ────────────────
         // ConfigureFunctionsApplicationInsights() peut court-circuiter les AddFilter()
         // définis dans ConfigureLogging, laissant passer Warning/Information vers AppInsights.
         // Ce filtre agit directement dans le pipeline ITelemetryProcessor — incontournable.
         // SeverityLevel : Verbose=0, Information=1, Warning=2, Error=3, Critical=4
-        // ⚠️ Désactiver (commenter) pour voir les logs Warning de retry en debug.
+        //
+        // Règle : bloquer les TraceTelemetry < Error sauf si la catégorie commence par "RAMQ".
+        // Cela permet aux logs RAMQ Information/Warning d'atteindre AppInsights tout en
+        // supprimant le bruit des autres namespaces (Azure, Microsoft, System...).
+        // Pour voir TOUS les logs Warning en debug : commenter le bloc ci-dessous.
         if (item is TraceTelemetry trace && trace.SeverityLevel < SeverityLevel.Error)
-            return;
+        {
+            trace.Properties.TryGetValue("CategoryName", out var category);
+            if (category == null || !category.StartsWith("RAMQ", StringComparison.OrdinalIgnoreCase))
+                return;
+        }
 
         if (item is DependencyTelemetry dep)
         {
