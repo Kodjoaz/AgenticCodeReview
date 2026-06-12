@@ -28,7 +28,9 @@ var builder = new HostBuilder()
         logging.AddFilter("Azure",     LogLevel.Warning);
         logging.AddFilter("Microsoft", LogLevel.Warning);
         logging.AddFilter("System",    LogLevel.Warning);
-        logging.AddFilter("RAMQ",    LogLevel.Error);
+        //logging.AddFilter("RAMQ",    LogLevel.Information);
+        logging.AddFilter<Microsoft.Extensions.Logging.ApplicationInsights.ApplicationInsightsLoggerProvider>(
+           "RAMQ", LogLevel.Information);
     })
     .ConfigureAppConfiguration((_, config) =>
     {
@@ -50,8 +52,6 @@ var builder = new HostBuilder()
             services.ConfigureFunctionsApplicationInsights();
             services.AddApplicationInsightsTelemetryProcessor<AppInsightsNoiseFilter>();
             services.AddSingleton<ITelemetryInitializer, ServiceBusCorrelationInitializer>();
-            services.Configure<TelemetryConfiguration>(config =>
-                config.SetAzureTokenCredential(credential));
         }
 
         var telemetryBuilder = services.AddOpenTelemetry()
@@ -112,7 +112,7 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
 {
     public void Process(ITelemetry item)
     {
-        if (item is TraceTelemetry trace && trace.SeverityLevel < SeverityLevel.Error)
+        if (item is TraceTelemetry trace && trace.SeverityLevel < SeverityLevel.Information)
         {
             trace.Properties.TryGetValue("CategoryName", out var category);
             if (category == null || !category.StartsWith("RAMQ", StringComparison.OrdinalIgnoreCase))
@@ -139,7 +139,6 @@ internal sealed class AppInsightsNoiseFilter(ITelemetryProcessor next) : ITeleme
         next.Process(item);
     }
 }
-
 
 
 
