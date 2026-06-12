@@ -183,7 +183,9 @@ namespace RAMQ.COM.EnterpriseMessageTransit.Messaging.Providers.Azure
 
                 if (attempt < maxDeliveryCount)
                 {
-                    await actions.AbandonAsync(null, cancellationToken);
+                    await actions.AbandonAsync(
+                        new Dictionary<string, object> { [AzureMessagingProperties.ReferralCount] = attempt },
+                        cancellationToken);
 
                     var entry = new JournalEntry(
                         _consumer ?? "RetryPolicyHandler",
